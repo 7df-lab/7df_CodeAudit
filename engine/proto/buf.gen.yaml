@@ -1,0 +1,15 @@
+version: v1
+plugins:
+  # Go 代码生成
+  - plugin: buf.build/protocolbuffers/go
+    out: ../libs/proto-gen/go
+    opt: paths=source_relative
+  - plugin: buf.build/grpc/go
+    out: ../libs/proto-gen/go
+    opt: paths=source_relative
+
+  # Python 代码生成
+  - plugin: buf.build/protocolbuffers/python
+    out: ../libs/proto-gen/python
+  - plugin: buf.build/grpc/python
+    out: ../libs/proto-gen/python

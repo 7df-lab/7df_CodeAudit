@@ -1,0 +1,48 @@
+{
+  "description": "融合结果黄金样本 - 基本场景（SAST+AI同位置匹配）（ADR-133 重生成：真去重后同位置AI重复项并入SAST主发现，total=1；旧值2为未去重行为）",
+  "test_case": "basic_merge",
+  "input": {
+    "task_id": "task-golden-001",
+    "sast_findings": [
+      {
+        "finding_id": "sast-golden-001",
+        "task_id": "task-golden-001",
+        "source_tool": "semgrep",
+        "file_path": "src/vulnerable.py",
+        "start_line": 42,
+        "end_line": 45,
+        "cwe_id": "CWE-89",
+        "severity": "SEVERITY_HIGH",
+        "confidence": 0.85
+      }
+    ],
+    "ai_findings": [
+      {
+        "finding_id": "ai-golden-001",
+        "task_id": "task-golden-001",
+        "source_tool": "ai_agent",
+        "file_path": "src/vulnerable.py",
+        "start_line": 42,
+        "end_line": 45,
+        "cwe_id": "CWE-89",
+        "severity": "SEVERITY_HIGH",
+        "confidence": 0.92
+      }
+    ]
+  },
+  "expected_output": {
+    "total_count": 1,
+    "removed_false_positives": 0,
+    "added_ai_findings": 0,
+    "metrics": {
+      "input_sast_count": 1,
+      "input_ai_count": 1,
+      "output_count": 1,
+      "merged_count": 1,
+      "removed_false_positives": 0,
+      "added_ai_findings": 0
+    },
+    "merge_group_count": 1,
+    "filtered_count": 0
+  }
+}

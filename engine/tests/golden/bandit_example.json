@@ -1,0 +1,23 @@
+{
+  "tool_name": "bandit",
+  "findings": [
+    {
+      "source_tool": "bandit",
+      "source_rule_id": "B608",
+      "location_file_path": "./tests/samples/python/app.py",
+      "location_start_line": 7,
+      "location_end_line": 7,
+      "title": "Possible SQL injection vector through string-based query construction.",
+      "severity": "SEVERITY_MEDIUM",
+      "confidence": 0.7
+    }
+  ],
+  "metrics": {
+    "files_scanned": 1,
+    "findings_count": 1,
+    "by_severity": {
+      "SEVERITY_MEDIUM": 1
+    }
+  },
+  "status": "SCAN_STATUS_COMPLETED"
+}

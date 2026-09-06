@@ -1,0 +1,58 @@
+{
+  "description": "融合结果黄金样本 - 误报过滤场景（ADR-133 重生成：真去重后合并组保留SAST主发现，total=1；旧值2为未去重行为）",
+  "test_case": "filter_false_positive",
+  "input": {
+    "task_id": "task-golden-002",
+    "sast_findings": [
+      {
+        "finding_id": "sast-golden-002",
+        "task_id": "task-golden-002",
+        "source_tool": "bandit",
+        "file_path": "src/config.py",
+        "start_line": 15,
+        "cwe_id": "CWE-200",
+        "severity": "SEVERITY_LOW",
+        "confidence": 0.4,
+        "ai_verdict": "AI_VERDICT_FALSE_POSITIVE",
+        "ai_confidence": 0.95
+      },
+      {
+        "finding_id": "sast-golden-003",
+        "task_id": "task-golden-002",
+        "source_tool": "semgrep",
+        "file_path": "src/auth.py",
+        "start_line": 88,
+        "cwe_id": "CWE-798",
+        "severity": "SEVERITY_CRITICAL",
+        "confidence": 0.95
+      }
+    ],
+    "ai_findings": [
+      {
+        "finding_id": "ai-golden-002",
+        "task_id": "task-golden-002",
+        "source_tool": "ai_agent",
+        "file_path": "src/auth.py",
+        "start_line": 88,
+        "cwe_id": "CWE-798",
+        "severity": "SEVERITY_CRITICAL",
+        "confidence": 0.98
+      }
+    ]
+  },
+  "expected_output": {
+    "total_count": 1,
+    "removed_false_positives": 1,
+    "added_ai_findings": 0,
+    "metrics": {
+      "input_sast_count": 2,
+      "input_ai_count": 1,
+      "output_count": 1,
+      "merged_count": 1,
+      "removed_false_positives": 1,
+      "added_ai_findings": 0
+    },
+    "merge_group_count": 1,
+    "filtered_count": 1
+  }
+}

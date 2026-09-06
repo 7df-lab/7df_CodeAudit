@@ -1,0 +1,443 @@
+{
+  "name": "codeaudit-vscode",
+  "displayName": "CodeAudit 代码审计",
+  "description": "CodeAudit 扫描平台 VS Code 插件：工作区一键扫描、漏洞结果内联展示、AI 修复建议审批落盘",
+  "version": "0.1.0",
+  "publisher": "codeaudit",
+  "license": "UNLICENSED",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.local/admins/codeaudit-vscode-plugin.git"
+  },
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": [
+    "Linters",
+    "Testing"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "CodeAudit",
+      "properties": {
+        "codeaudit.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:8080",
+          "description": "CodeAudit 平台网关地址（gateway-service HTTP 入口）"
+        },
+        "codeaudit.consoleUrl": {
+          "type": "string",
+          "default": "",
+          "description": "CodeAudit Web 控制台地址（默认空=由 serverUrl 推导同主机 :4173；控制台使用浏览器登录态，无需配置 token）"
+        },
+        "codeaudit.projectId": {
+          "type": "string",
+          "default": "",
+          "description": "工作区绑定的平台项目 ID（可通过命令 CodeAudit: 选择平台项目 自动写入）"
+        },
+        "codeaudit.scanMode": {
+          "type": "string",
+          "default": "SCAN_MODE_PARALLEL",
+          "enum": [
+            "SCAN_MODE_SAST_ONLY",
+            "SCAN_MODE_AI_ONLY",
+            "SCAN_MODE_PARALLEL",
+            "SCAN_MODE_AI_ENHANCED_SAST",
+            "SCAN_MODE_COMPARE"
+          ],
+          "enumDescriptions": [
+            "模式A 纯SAST",
+            "模式B 纯AI",
+            "模式C SAST+AI融合（推荐）",
+            "模式D AI增强SAST（扫描→同段去重→逐条沙箱验证）",
+            "模式E SAST+AI对比"
+          ],
+          "description": "扫描模式（与平台 04 §1 扫描模式一致；弃用模式不提供）"
+        },
+        "codeaudit.sastTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "SAST 工具列表（留空则由平台按项目语言自动选择；可用命令 CodeAudit: 扫描工作区 前查看 /v1/tools）"
+        },
+        "codeaudit.excludeGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/.git/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/.venv/**",
+            "**/vendor/**",
+            "**/.vscode/**"
+          ],
+          "description": "打包上传时排除的文件 glob"
+        },
+        "codeaudit.minPackFiles": {
+          "type": "number",
+          "default": 10,
+          "description": "打包文件数低于该值时中止扫描上传（防 VS Code 文件枚举瞬态异常导致空包），设为 0 关闭检查"
+        },
+        "codeaudit.autoOpenAiContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "扫描启动时自动展开“AI 交互上下文”实时视图（关闭后仍可从状态栏/任务进度面板/命令面板打开）"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "codeaudit.login",
+        "title": "CodeAudit: 登录平台",
+        "shortTitle": "登录",
+        "category": "CodeAudit",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "codeaudit.logout",
+        "title": "CodeAudit: 退出登录",
+        "shortTitle": "退出登录",
+        "category": "CodeAudit"
+      },
+      {
+        "command": "codeaudit.selectProject",
+        "title": "CodeAudit: 选择平台项目并绑定工作区",
+        "shortTitle": "选择项目",
+        "category": "CodeAudit"
+      },
+      {
+        "command": "codeaudit.scanWorkspace",
+        "title": "CodeAudit: 扫描工作区",
+        "shortTitle": "扫描",
+        "category": "CodeAudit",
+        "icon": "$(play)"
+      },
+      {
+        "command": "codeaudit.cancelScan",
+        "title": "CodeAudit: 取消当前任务",
+        "shortTitle": "取消任务",
+        "category": "CodeAudit",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "codeaudit.runningMenu",
+        "title": "CodeAudit: 运行中任务操作（暂停/取消/上下文）",
+        "shortTitle": "任务操作",
+        "category": "CodeAudit"
+      },
+      {
+        "command": "codeaudit.pauseScan",
+        "title": "CodeAudit: 暂停扫描",
+        "icon": "$(debug-pause)",
+        "enablement": "codeaudit.taskRunning"
+      },
+      {
+        "command": "codeaudit.resumeScan",
+        "title": "CodeAudit: 恢复扫描",
+        "icon": "$(debug-start)",
+        "enablement": "codeaudit.taskPaused"
+      },
+      {
+        "command": "codeaudit.refreshFindings",
+        "title": "CodeAudit: 刷新扫描结果",
+        "shortTitle": "刷新",
+        "category": "CodeAudit",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "codeaudit.clearFindings",
+        "title": "CodeAudit: 清空本地结果",
+        "shortTitle": "清空结果",
+        "category": "CodeAudit"
+      },
+      {
+        "command": "codeaudit.showAiContext",
+        "title": "CodeAudit: 查看 AI 交互上下文",
+        "shortTitle": "AI 上下文",
+        "category": "CodeAudit",
+        "icon": "$(robot)"
+      },
+      {
+        "command": "codeaudit.openFinding",
+        "title": "CodeAudit: 打开漏洞位置",
+        "shortTitle": "打开位置",
+        "category": "CodeAudit"
+      },
+      {
+        "command": "codeaudit.fixFinding",
+        "title": "CodeAudit: AI 修复此漏洞",
+        "shortTitle": "AI 修复",
+        "category": "CodeAudit",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "codeaudit.applyLowRiskFixes",
+        "title": "CodeAudit: 批量应用低风险修复",
+        "shortTitle": "应用低风险修复",
+        "category": "CodeAudit",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "codeaudit.copyFindingId",
+        "title": "CodeAudit: 复制 Finding ID",
+        "shortTitle": "复制 ID",
+        "category": "CodeAudit"
+      },
+      {
+        "command": "codeaudit.copyFilePath",
+        "title": "CodeAudit: 复制文件路径",
+        "shortTitle": "复制路径",
+        "category": "CodeAudit"
+      },
+      {
+        "command": "codeaudit.rollbackFixes",
+        "title": "CodeAudit: 回滚最近一次批量修复",
+        "shortTitle": "回滚",
+        "category": "CodeAudit",
+        "icon": "$(history)"
+      },
+      {
+        "command": "codeaudit.rollbackFix",
+        "title": "CodeAudit: 回滚此漏洞修复",
+        "shortTitle": "回滚修复",
+        "category": "CodeAudit",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "codeaudit.openConsole",
+        "title": "CodeAudit: 在控制台打开",
+        "shortTitle": "控制台",
+        "category": "CodeAudit"
+      },
+      {
+        "command": "codeaudit.selectTask",
+        "title": "CodeAudit: 切换任务（绑定历史任务并拉取结果）",
+        "shortTitle": "切换任务",
+        "category": "CodeAudit",
+        "icon": "$(list-unordered)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codeaudit",
+          "title": "CodeAudit",
+          "icon": "media/shield.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "codeaudit-panel",
+          "title": "CodeAudit",
+          "icon": "media/shield.svg"
+        }
+      ]
+    },
+    "views": {
+      "codeaudit": [
+        {
+          "id": "codeaudit.findings",
+          "name": "扫描结果"
+        },
+        {
+          "id": "codeaudit.progress",
+          "name": "任务进度",
+          "when": "!codeaudit.findingDetail"
+        },
+        {
+          "type": "webview",
+          "id": "codeaudit.findingDetail",
+          "name": "漏洞详情",
+          "when": "codeaudit.findingDetail"
+        }
+      ],
+      "codeaudit-panel": [
+        {
+          "type": "webview",
+          "id": "codeaudit.aiContext",
+          "name": "AI 交互上下文"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "codeaudit.findings",
+        "contents": "未登录 CodeAudit 平台。\n[登录平台](command:codeaudit.login)\n登录后可绑定项目并发起扫描。",
+        "when": "!codeaudit.loggedIn"
+      },
+      {
+        "view": "codeaudit.findings",
+        "contents": "当前工作区未绑定平台项目。\n[选择平台项目](command:codeaudit.selectProject)\n绑定后即可一键扫描。",
+        "when": "codeaudit.loggedIn && !codeaudit.boundProject"
+      },
+      {
+        "view": "codeaudit.findings",
+        "contents": "尚无扫描结果。\n[扫描工作区](command:codeaudit.scanWorkspace)\n运行期间可在“任务进度”面板实时查看各阶段与 AI 交互上下文。",
+        "when": "codeaudit.loggedIn && codeaudit.boundProject"
+      },
+      {
+        "view": "codeaudit.progress",
+        "contents": "暂无进行中的任务。\n[扫描工作区](command:codeaudit.scanWorkspace)\n扫描运行时，这里实时展示阶段进度与 AI 交互上下文。",
+        "when": "!codeaudit.hasTask"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "codeaudit.scanWorkspace",
+          "when": "view == codeaudit.findings",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codeaudit.refreshFindings",
+          "when": "view == codeaudit.findings",
+          "group": "navigation@2"
+        },
+        {
+          "command": "codeaudit.login",
+          "when": "view == codeaudit.findings && !codeaudit.loggedIn",
+          "group": "navigation@3"
+        },
+        {
+          "command": "codeaudit.rollbackFixes",
+          "when": "view == codeaudit.findings",
+          "group": "navigation@4"
+        },
+        {
+          "command": "codeaudit.applyLowRiskFixes",
+          "when": "view == codeaudit.findings",
+          "group": "navigation@5"
+        },
+        {
+          "command": "codeaudit.showAiContext",
+          "when": "view == codeaudit.progress",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codeaudit.cancelScan",
+          "when": "view == codeaudit.progress && codeaudit.taskRunning",
+          "group": "navigation@2"
+        },
+        {
+          "command": "codeaudit.selectProject",
+          "when": "view == codeaudit.findings",
+          "group": "1_session@1"
+        },
+        {
+          "command": "codeaudit.logout",
+          "when": "view == codeaudit.findings && codeaudit.loggedIn",
+          "group": "1_session@2"
+        },
+        {
+          "command": "codeaudit.clearFindings",
+          "when": "view == codeaudit.findings",
+          "group": "2_results@1"
+        },
+        {
+          "command": "codeaudit.showAiContext",
+          "when": "view == codeaudit.findings",
+          "group": "3_view@1"
+        },
+        {
+          "command": "codeaudit.openConsole",
+          "when": "view == codeaudit.findings",
+          "group": "3_view@2"
+        },
+        {
+          "command": "codeaudit.scanWorkspace",
+          "when": "view == codeaudit.findings",
+          "group": "3_view@0"
+        },
+        {
+          "command": "codeaudit.selectTask",
+          "when": "view == codeaudit.findings",
+          "group": "3_view@3"
+        },
+        {
+          "command": "codeaudit.pauseScan",
+          "when": "view == codeaudit.progress && codeaudit.taskRunning && !codeaudit.taskPaused",
+          "group": "navigation@3"
+        },
+        {
+          "command": "codeaudit.resumeScan",
+          "when": "view == codeaudit.progress && codeaudit.taskPaused",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "codeaudit.fixFinding",
+          "when": "view == codeaudit.findings && viewItem == finding",
+          "group": "inline"
+        },
+        {
+          "command": "codeaudit.rollbackFix",
+          "when": "view == codeaudit.findings && viewItem == findingFixed",
+          "group": "inline"
+        },
+        {
+          "command": "codeaudit.openFinding",
+          "when": "view == codeaudit.findings && viewItem =~ /^finding/",
+          "group": "1_fix@1"
+        },
+        {
+          "command": "codeaudit.fixFinding",
+          "when": "view == codeaudit.findings && viewItem == finding",
+          "group": "1_fix@2"
+        },
+        {
+          "command": "codeaudit.rollbackFix",
+          "when": "view == codeaudit.findings && viewItem == findingFixed",
+          "group": "1_fix@2"
+        },
+        {
+          "command": "codeaudit.copyFindingId",
+          "when": "view == codeaudit.findings && viewItem =~ /^finding/",
+          "group": "2_util@1"
+        },
+        {
+          "command": "codeaudit.openConsole",
+          "when": "view == codeaudit.findings && viewItem =~ /^finding/",
+          "group": "2_util@2"
+        },
+        {
+          "command": "codeaudit.copyFilePath",
+          "when": "view == codeaudit.findings && viewItem == file",
+          "group": "1_util@1"
+        },
+        {
+          "command": "codeaudit.showAiContext",
+          "when": "view == codeaudit.progress && viewItem == ai",
+          "group": "inline"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "tsc -p ./tsconfig.test.json && node test/run.js",
+    "package": "npx @vscode/vsce package && node scripts/verify-vsix.js"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.6",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.94.0",
+    "glob": "^10.4.5",
+    "mocha": "^11.1.0",
+    "typescript": "^5.7.0"
+  }
+}

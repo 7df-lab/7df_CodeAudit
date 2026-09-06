@@ -1,0 +1,42 @@
+[submodule "engine"]
+	path = engine
+	url = https://gitlab.local/codeaudit/engine.git
+	branch = main
+	ignore = dirty
+	update = merge
+[submodule "web"]
+	path = web
+	url = https://gitlab.local/codeaudit/web.git
+	branch = main
+	ignore = dirty
+	update = merge
+[submodule "vscode-plugin"]
+	path = vscode-plugin
+	url = https://gitlab.local/codeaudit/vscode-plugin.git
+	branch = main
+	ignore = dirty
+	update = merge
+[submodule "dsh-runtime"]
+	path = dsh-runtime
+	url = https://gitlab.local/codeaudit/dsh-runtime.git
+	branch = main
+	ignore = dirty
+	update = merge
+[submodule "manager"]
+	path = manager
+	url = https://gitlab.local/codeaudit/manager.git
+	branch = main
+	ignore = dirty
+	update = merge
+[submodule "openshell-gateway"]
+	path = openshell-gateway
+	url = https://gitlab.local/codeaudit/openshell-gateway.git
+	branch = main
+	ignore = dirty
+	update = merge
+[submodule "dsh-pentest-sse"]
+	path = dsh-pentest-sse
+	url = https://gitlab.local/codeaudit/dsh-pentest-sse.git
+	branch = main
+	ignore = dirty
+	update = merge

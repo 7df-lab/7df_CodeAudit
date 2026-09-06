@@ -1,0 +1,50 @@
+# openshell-manager —— LXC 107 docker compose 部署。
+#
+# 链路：codeaudit / 引擎 → 本服务(:18800) → gateway.internal:8080(网关 gRPC)。
+# 容器内天然非环回绑定，OPENSHELL_MANAGER_TOKEN 必配（服务自身 validate()
+# 红线：非环回无 token 拒绝启动）；/api/* 全部要求 Bearer，/healthz 豁免。
+#
+# 不挂 docker.sock：本服务只通过 gRPC 与网关交互，沙箱容器由网关创建。
+# gateway.internal 经 extra_hosts 指向 host-gateway，走 LXC 已发布的 8080
+# （与网关 compose 的 host.openshell.internal 同一机制）。
+
+services:
+  manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.manager
+    image: openshell-manager:2.0.0
+    container_name: openshell-manager
+    restart: unless-stopped
+
+    user: "65534"
+    extra_hosts:
+      - "gateway.internal:host-gateway"
+      - "host.docker.internal:host-gateway"
+
+    ports:
+      - "18800:18800"   # 发布到 LXC，供 codeaudit / 宿主机引擎访问（Bearer token）
+
+    environment:
+      OPENSHELL_MANAGER_BIND: 0.0.0.0
+      OPENSHELL_MANAGER_TOKEN: ${OPENSHELL_MANAGER_TOKEN:?set in .env (see env.template)}
+      OPENSHELL_GATEWAY_ENDPOINT: ${OPENSHELL_GATEWAY_ENDPOINT:-gateway.internal:8080}
+
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:18800/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+networks:
+  default:
+    # 网络名带项目全名（伞仓部署链一览：codeaudit-engine / -sandbox-gateway /
+    # -sandbox-gateway-manager / -web），不用缩写
+    name: codeaudit-sandbox-gateway-manager-net
+    ipam:
+      config:
+        # 显式钉住网段：daemon.json 的默认池含 192.168.0.0/16，避免自动分配
+        # 撞上物理 LAN（LXC=gateway.internal / PVE=pve.internal）。
+        - subnet: 10.10.109.0/24

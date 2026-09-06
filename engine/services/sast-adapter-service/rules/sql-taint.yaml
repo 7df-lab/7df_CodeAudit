@@ -1,0 +1,19 @@
+# CodeAudit 本地污点规则（ADR-144）：SQL 注入 source→sink 传播链。
+# ADR-158: 执行引擎 semgrep→OpenGrep（semgrep 开源分叉, 同 YAML 规则模式）——
+# OpenGrep 默认导出 dataflow_trace 变量级链路（taint_source/intermediate_vars/taint_sink），
+# semgrep OSS 不导出（ADR-158 实验）。逐步明细经 source_raw 透传至前端渲染。
+# 范围：函数内参数/变量 → cursor.execute。规则随适配器维护（01 §5 自定义适配器口径）。
+rules:
+  - id: codeaudit-sql-taint-user-param
+    languages: [python]
+    mode: taint
+    message: 函数参数未经净化流入 SQL 执行（source→sink 污点传播）
+    severity: ERROR
+    pattern-sinks:
+      - pattern: $CURSOR.execute($QUERY)
+    pattern-sources:
+      - patterns:
+          - pattern-inside: |
+              def $FN(...):
+                  ...
+          - pattern: $PARAM

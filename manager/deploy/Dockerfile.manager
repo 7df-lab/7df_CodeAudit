@@ -1,0 +1,21 @@
+# openshell-manager 镜像 —— Python 服务 + 供应商 OpenShell SDK（python 子树）。
+# 服务 HTTP 层自 ADR-174（2026-09-01）起为 FastAPI/uvicorn；SDK 依赖
+# grpc/protobuf/httpx/cloudpickle（服务仓库 libs/OpenShell 整树 7.2G，几乎全是
+# Rust target/ 构建产物 —— 镜像只取 libs/OpenShell/python）。配置不打进镜像，
+# 运行态经 compose environment 覆盖。
+FROM python:3.12-slim
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1
+
+RUN pip install --no-cache-dir fastapi uvicorn grpcio grpcio-status protobuf httpx cloudpickle
+
+COPY openshell_manager/ ./openshell_manager/
+COPY libs/OpenShell/python/ ./libs/OpenShell/python/
+COPY config.json ./
+
+# 只读运行：token 走环境变量，不写 tokenFile；非 root 无特权。
+USER 65534:65534
+
+EXPOSE 18800
+CMD ["python3", "-m", "openshell_manager"]

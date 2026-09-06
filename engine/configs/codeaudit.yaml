@@ -1,0 +1,139 @@
+# =============================================================================
+# CodeAudit 全局配置文件（唯一可调值承载处 — ADR-137）
+#
+# 规则（人类裁决 2026-08-29："整个项目的各类硬编码内容均存放在配置文件中"）：
+#   1. 本文件承载全项目全部非密钥可调值：端口、地址、超时、重试、分页、限流、
+#      工具命令、融合阈值、Webhook 订阅等。代码内不再保留业务缺省值——
+#      缺键启动即失败（fail-fast），杜绝"代码默认值与部署环境漂移"。
+#   2. 优先级：环境变量（CODEAUDIT_*，部署/CI 覆盖用）> 本文件。
+#   3. 密钥（JWT secret、API key、webhook secret）一律不入本文件——
+#      本文件只记录"读取哪个环境变量"（凭据纪律，ADR-115）。
+#   4. 数值溯源：设计级数值（超时/限流/SLA/阈值）的权威仍是 07_非功能指标基线.md
+#      （R2），本文件是其在部署中的操作载体，逐项注释引用出处。
+# =============================================================================
+
+global:
+  config_version: 1
+
+# ---- 服务监听端口（依据: ADR-113/114/117 端口分配表）----
+ports:
+  gateway: 8080
+  sast_adapter: 50051
+  project: 50052
+  task: 50054
+  dsh_runtime: 50057
+  storage: 50055
+  result: 50058
+
+# ---- 服务间地址（本地/直跑口径；容器内由 env CODEAUDIT_*_ADDR 覆盖为服务名）----
+addresses:
+  sast_adapter: localhost:50051
+  project: localhost:50052
+  task: localhost:50054
+  dsh_runtime: localhost:50057
+  result: localhost:50058
+  storage: localhost:50055
+
+gateway:
+  # JWT 密钥读取的环境变量名（密钥值本身绝不入此文件，ADR-115）
+  jwt_secret_env: CODEAUDIT_JWT_SECRET
+  # 限流是否信任 X-Forwarded-For（仅部署于可信反向代理之后为 true）
+  # 依据: 07 §7 单用户限流口径；ADR-132 防客户端伪造
+  trust_proxy: false
+  rate_limit_per_min: 50            # 07 §7 gateway（单用户）50 req/min
+  grpc_call_timeout_s: 30           # 网关→服务同步调用上界（07 §8 矩阵最短行 10m 的 REST 交互口径）
+  shutdown_grace_s: 15              # 优雅停机排空窗口
+  uploads_dir: data/uploads         # ADR-145: 代码压缩包上传解包根目录（相对仓库根）
+  repos_dir: data/repos             # ADR-195: 仓库拉取流任务源根（与 task.repos_dir 同值，source-file 端点回查）
+  jwt:
+    access_ttl_min: 30              # 03 §4 access 30min
+    refresh_ttl_day: 7              # 03 §4 refresh 7d
+
+task:
+  orchestrator:
+    # step_timeouts_s 已整体撤销（ADR-191 补遗，人类指令"都撤掉"2026-09-03）：编排
+    # 全部步骤不再设外层时限——沙箱 DSH 审计回合（ai/verify/missed/review）深度分析
+    # 实测 30m 仍健康流式（gw-9b602266 实证被网掐死于提交前一步）；其余步骤同样
+    # ctx 直通（任务取消仍可传播）。回合结束只认 DSH 流式显式信号；断流自愈=
+    # SSE streamErr→teardown→降级链（07 §10）。07 §8 矩阵超时列自此仅供 RPC
+    # 客户端参考，编排器不再强制。
+  max_auto_retries: 2               # proto L174 "FAILED→QUEUED 自动重试≤2次"
+  repos_dir: data/repos            # ADR-163: 仓库拉取模式 git clone 根目录（项目配 repo_url 时启动前置 clone）
+  clone_timeout_s: 300             # ADR-163: 单次 git clone 上限
+
+result:
+  page_size_default: 20             # proto L227 "每页大小，默认20"
+  page_size_max: 100                # proto L227 "最大100"
+  report:
+    default_template: standard      # HandleTaskCompleted 触发口径
+  kafka:
+    brokers: ["kafka:9092"]         # 01 §4.3（容器口径；env CODEAUDIT_KAFKA_BROKERS 覆盖）
+    topic_task_completed: task.completed
+    topic_verdict_updated: finding.verdict.updated
+  consumer_backoff_s: 3             # ADR-135 消费错误退避
+  persist_timeout_s: 30             # 09 §2 落盘调用的宽限上界
+  export_dir: .agent/evidence/exports   # ADR-129 导出真实落盘位置
+
+sast_adapter:
+  scan_timeout_s: 120               # 07 §8 RunMultipleScans 20m 的本地样本上界
+  tools:
+    # 工具执行映射（实现细节级配置，ADR-121；解析器注册见 adapters.Registry）
+    # {project} 占位符 = 扫描目标路径
+    bandit:
+      argv: ["bandit", "-r", "-f", "json", "-q", "{project}"]
+      python_module: bandit         # PATH 无该命令时的 python -m 兜底
+      pythonpath: .toolchain/pylibs
+    opengrep:
+      # ADR-158: 引擎替代 semgrep→OpenGrep 1.29.0（semgrep 开源分叉，同 YAML 规则/同 JSON 输出），
+      # 默认导出 dataflow_trace 变量级污点链路（semgrep OSS 不导出）。
+      # {rules}=仓库内本服务规则目录（handler 启动时解析）；{project}=扫描目标
+      argv: ["opengrep", "--json", "--quiet", "--no-git-ignore", "--config", "{rules}/sql-taint.yaml", "{project}"]
+
+dsh_runtime:
+  session:
+    ttl_s: 1800                     # 07 §8 "DSH 会话存活 30m"
+    janitor_interval_ratio: 6       # 过期清理周期 = TTL/ratio（ADR-134）
+  timeouts_s:
+    chat: 120                       # 07 §8 DSH→AIInference(Chat) 120s
+    rule_scan: 60                   # RuleScan 本地样本上界
+    missed_scan: 60                 # SearchMissedVulns 内部 RuleScan
+    findings_fetch: 30              # result-service 取实体（07 §8 宽限）
+    persist: 30                     # batchCreateFindingsToResult（07 §8 宽限）
+  sandbox:                          # ADR-168: 沙箱内 DSH bridge 通道（JSON-RPC⇄SSE），南向唯一入口=openshell-manager
+    mode: "openshell"               # "off"（降级内置 RuleScan/NEEDS_MANUAL，显式标注 ADR-175）| "openshell"（manager 不可达同样降级）
+    manager_url: "http://gateway.internal:18800"  # env OPENSHELL_MANAGER_URL 优先；现役=LXC 107 容器化实例（CD/openshell-manager）
+    manager_token: ""               # 空=OPENSHELL_MANAGER_TOKEN > ../openshell-manager/config.json tokenFile
+    workspace: "default"            # 网关工作区（须预先存在；manager 无建区接口，与引擎同源）
+    image: "dsh-pentest-sse:1.2.3"  # 沙箱镜像（构建事实源 CD/dsh-pentest-sse/；1.2.3=+SSE 断流归因诊断 ADR-200 补遗②；1.2.2=contextWindow 150000；1.2.1=+窗口校正 ADR-193）
+    wait_ready_timeout_s: 300       # 07 §8 沙箱就绪等待上界
+    exec_timeout_s: 600             # 07 §8 OpenShell 沙箱执行 30m 的本地映射上界
+    dsh_max_tokens: 32768              # bridge DSH_MAX_TOKENS（人类指令 2026-09-04 统一 32768，与镜像 settings.yaml models[].maxTokens 对齐——两层同值不再有覆盖歧义；实测单步最大输出 ~10K，32K 预算充裕；provider 校验上限 [1,131072]）
+    gateway_dial_addr: "gateway.internal:8080"  # 服务路由拨号（沙箱服务域无 DNS 通配，直拨网关+Host 头路由）；空=由 manager host 推导
+    interaction_dir: "data/ai-interaction"   # AI 交互日志落盘根（ADR-168；最终交互日志留存）
+
+# ADR-175: ai_inference 段已随服务删除（LLM 语义分析走沙箱内 DSH）
+# ADR-197: knowledge 段已随服务删除（Skills/KG/RAG 全部下线）
+
+# ---- 融合参数（07 §10）----
+fusion:
+  similarity_threshold: 0.8         # 07 §10 默认相似度阈值
+  confidence_boost: 0.1             # 07 §10 置信度提升
+  filter_threshold: 0.8             # 07 §10 过滤阈值
+
+# ---- Webhook 出站订阅（14号 §6；Q6 裁决：承载于全局配置）----
+# secret 通过 secret_env 指向的环境变量注入，不入库。
+webhook:
+  subscriptions: []
+  # - endpoint: https://ci.example.com/hooks/codeaudit
+  #   secret_env: CODEAUDIT_WEBHOOK_SECRET_1
+  #   events: ["task.completed", "finding.verdict.updated"]
+  max_retries: 5                    # 07 §8 通知行（重试 5 / 指数退避）
+  signature_ttl_min: 5              # 防重放窗口
+auth:
+  # V2.1 (ADR-205): 用户注册策略——project-service 装配（env 可覆盖）。
+  # invitation=邀请码制（默认）/ open=开放注册 / disabled=关闭注册
+  registration_mode: invitation
+  # 邀请码制下的有效码（V1 配置静态分发；表+管理 RPC 为 V2.2 候选）。
+  # 生产部署建议经 env CODEAUDIT_INVITE_CODES（逗号分隔）注入，不入库此文件。
+  invite_codes: []
+  # - CODEAUDIT-BOOTSTRAP-2026

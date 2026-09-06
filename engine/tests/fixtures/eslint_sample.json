@@ -1,0 +1,19 @@
+[
+  {
+    "filePath": "tests/samples/javascript/app.js",
+    "messages": [
+      {
+        "ruleId": "security/detect-eval-with-expression",
+        "severity": 2,
+        "message": "eval with user input detected.",
+        "line": 6,
+        "column": 1,
+        "nodeType": "CallExpression",
+        "endLine": 6,
+        "endColumn": 20
+      }
+    ],
+    "errorCount": 1,
+    "warningCount": 0
+  }
+]

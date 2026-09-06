@@ -1,0 +1,8 @@
+FROM debian:13-slim AS gateway
+RUN apt-get update && apt-get install -y --no-install-recommends libz3-4 libstdc++6 libgcc-s1 ca-certificates && rm -rf /var/lib/apt/lists/*
+ARG TARGETARCH
+WORKDIR /app
+COPY deploy/docker/.build/prebuilt-binaries/${TARGETARCH}/openshell-gateway /usr/local/bin/openshell-gateway
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/openshell-gateway"]
+CMD ["--bind-address", "0.0.0.0", "--port", "8080"]

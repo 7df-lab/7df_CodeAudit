@@ -1,0 +1,63 @@
+# 伞仓部署清单 —— sandbox-deploy.sh 的唯一配置来源。
+# 顺序即依赖拓扑：`./sandbox-deploy.sh all` 按此序执行 enabled 项目。
+#
+# 字段：
+#   name/dir   项目名与伞仓内目录（相对伞仓根；目录内含统一契约的 deploy.sh）
+#   target     lxc-compose | lxc-image | pending
+#   vmid       目标 LXC（lxc-* 用）
+#   remote     LXC 内部署目录（lxc-compose 用）
+#   image      lxc-image 用：镜像 tag（构建上下文由各 deploy.sh 按伞仓布局自行组装）
+#   images     该项目依赖的上游镜像清单（逗号分隔）——deploy 前经 deploy/pull-images.sh
+#              幂等预拉（多源 mirror 兜底 + retag 回原名）；缺省=无预拉
+#   depends    依赖的项目名（deploy 单项时自动先部署未就绪依赖）
+#   enabled    false = 仅登记不执行
+
+[[project]]
+name    = "openshell-gateway"
+dir     = "openshell-gateway"
+target  = "lxc-compose"
+vmid    = 107
+remote  = "/root/os-deploy/deploy/docker"
+images  = "ghcr.io/nvidia/openshell/gateway:latest"
+depends = []
+enabled = true
+
+[[project]]
+name    = "openshell-manager"
+dir     = "manager/deploy"
+target  = "lxc-compose"
+vmid    = 107
+remote  = "/root/os-deploy/deploy/openshell-manager"
+images  = "python:3.12-slim"
+depends = ["openshell-gateway"]
+enabled = true
+
+[[project]]
+name    = "codeaudit"
+dir     = "deploy/prod"
+target  = "lxc-compose"
+vmid    = 107
+remote  = "/root/os-deploy/deploy/codeaudit"
+images  = "postgres:16-alpine,redis:7-alpine,minio/minio:latest,bitnami/kafka:3.7,golang:1.22-alpine,alpine:3.19"
+depends = ["openshell-manager"]
+enabled = true
+
+[[project]]
+name    = "dsh-pentest-sse"
+dir     = "dsh-pentest-sse"
+target  = "lxc-image"
+vmid    = 107
+image   = "dsh-pentest-sse:latest"
+images  = "ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:aeef1c63f00e2913ea002ccb3aaf925f338b5c5d70e63576f0d95c16a138044e"
+depends = ["openshell-manager"]
+enabled = true
+
+[[project]]
+name    = "web"
+dir     = "web"
+target  = "lxc-compose"
+vmid    = 107
+remote  = "/root/os-deploy/deploy/web"
+images  = "node:20-alpine,nginx:1.27-alpine"
+depends = ["codeaudit"]
+enabled = true

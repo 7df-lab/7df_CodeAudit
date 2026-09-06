@@ -1,0 +1,26 @@
+{
+  "tool_name": "json",
+  "findings": [
+    {
+      "source_tool": "json",
+      "source_rule_id": "sql-injection-001",
+      "location_file_path": "app.py",
+      "location_start_line": 7,
+      "location_end_line": 7,
+      "location_start_column": 0,
+      "location_end_column": 0,
+      "cwe_id": "CWE-89",
+      "title": "SQL injection",
+      "severity": "SEVERITY_HIGH",
+      "confidence": 0.9
+    }
+  ],
+  "metrics": {
+    "files_scanned": 1,
+    "findings_count": 1,
+    "by_severity": {
+      "SEVERITY_HIGH": 1
+    }
+  },
+  "status": "SCAN_STATUS_COMPLETED"
+}

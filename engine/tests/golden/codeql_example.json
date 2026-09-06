@@ -1,0 +1,25 @@
+{
+  "tool_name": "codeql",
+  "findings": [
+    {
+      "source_tool": "codeql",
+      "source_rule_id": "py/sql-injection",
+      "location_file_path": "app.py",
+      "location_start_line": 7,
+      "location_end_line": 7,
+      "location_start_column": 14,
+      "location_end_column": 48,
+      "title": "SQL injection due to user-provided value.",
+      "severity": "SEVERITY_HIGH",
+      "confidence": 0.8
+    }
+  ],
+  "metrics": {
+    "files_scanned": 1,
+    "findings_count": 1,
+    "by_severity": {
+      "SEVERITY_HIGH": 1
+    }
+  },
+  "status": "SCAN_STATUS_COMPLETED"
+}

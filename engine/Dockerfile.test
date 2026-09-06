@@ -1,0 +1,58 @@
+# CodeAudit 测试环境 Dockerfile
+# 用途：安装完整工具链，用于本地开发和测试
+# 构建：docker build -f Dockerfile.test -t codeaudit-test .
+# 运行：docker run -it -v $(pwd):/workspace codeaudit-test
+
+FROM ubuntu:22.04
+
+# 基础工具
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    git \
+    unzip \
+    make \
+    python3 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go 1.22
+RUN wget -q https://go.dev/dl/go1.22.5.linux-amd64.tar.gz && \
+    tar -C /usr/local -xzf go1.22.5.linux-amd64.tar.gz && \
+    rm go1.22.5.linux-amd64.tar.gz
+ENV PATH=$PATH:/usr/local/go/bin:/root/go/bin
+ENV GOPATH=/root/go
+# 使用中国 Go 代理
+ENV GOPROXY=https://goproxy.cn,https://goproxy.io,direct
+
+# protoc（从 GitHub releases 下载，带重试）
+RUN PROTOC_VERSION=25.1 && \
+    for i in 1 2 3; do \
+      curl -fSL --retry 3 --retry-delay 5 \
+        "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" \
+        -o /tmp/protoc.zip && break || echo "Retry $i..."; \
+    done && \
+    unzip -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*' && \
+    rm /tmp/protoc.zip
+
+# Go protoc 插件（使用中国代理）
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+# buf（通过 Go 安装）
+RUN go install github.com/bufbuild/buf/cmd/buf@latest
+
+# Python gRPC 工具（使用清华镜像）
+RUN pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple grpcio grpcio-tools
+
+# 工作目录
+WORKDIR /workspace
+
+# 验证工具安装
+RUN echo "=== 工具链验证 ===" && \
+    echo "go: $(go version)" && \
+    echo "buf: $(buf --version 2>/dev/null || echo 'installed via go')" && \
+    echo "protoc: $(protoc --version)" && \
+    echo "python3: $(python3 --version)"
+
+CMD ["/bin/bash"]

@@ -1,0 +1,1 @@
+"""OpenShell manager microservice package."""

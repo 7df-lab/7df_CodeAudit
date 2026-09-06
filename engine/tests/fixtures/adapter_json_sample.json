@@ -1,0 +1,21 @@
+{
+  "tool": "json",
+  "findings": [
+    {
+      "rule_id": "sql-injection-001",
+      "title": "SQL injection",
+      "description": "user input flows into SQL",
+      "severity": "high",
+      "confidence": "high",
+      "cwe": "CWE-89",
+      "location": {
+        "path": "app.py",
+        "start_line": 7,
+        "end_line": 7,
+        "start_column": 14,
+        "end_column": 48
+      },
+      "raw_payload": {"source": "adapter-sample"}
+    }
+  ]
+}

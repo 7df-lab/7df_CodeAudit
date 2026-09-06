@@ -1,0 +1,18 @@
+# libs 整树曾因 7.2G Rust target/ 构建产物整体忽略；镜像只需要
+# libs/OpenShell/python（vendored SDK，920K）——2026-09-05 起纳管该子树：
+# 它是 Dockerfile.manager 的 COPY 输入，gitignored 会让 fresh clone 必败
+# （LESSONS #3）。新增 vendored 内容时注意维护下面的白名单链。
+libs/*
+!libs/OpenShell/
+libs/OpenShell/*
+!libs/OpenShell/python/
+.token
+manager.log
+__pycache__/
+*.pyc
+config.json
+build/
+sp/
+.zcode/
+sp.tgz
+deploy/env

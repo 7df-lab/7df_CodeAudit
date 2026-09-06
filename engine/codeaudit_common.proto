@@ -1,0 +1,1440 @@
+// codeaudit_common.proto
+// CodeAudit 统一数据结构与接口契约定义 —— V2.1（V2.0 定版 + ADR-205 增量）
+//
+// ★ 本文件是全部数据结构与服务接口的唯一事实源（SSOT）。
+//   任何 .md 文档禁止内嵌 protobuf 定义副本，只允许引用本文件。
+//
+// V2.1 变更记录（ADR-205，2026-09-05）：
+//   UserService 8→13 RPC：+= RegisterUser/ListUsers/CreateUser/ChangePassword/ResetPassword；
+//   User += role=6、must_change_password=7；新增 enum Role（admin/developer/viewer）。
+//   均为 additive（字段号新增不复用，06 兼容策略 §6）。
+//
+// V2.0 变更记录（相对 V1.x，见《设计体系综合评估报告.md》R1-R7）：
+//   [R1] 确立本文件为唯一契约源；V1.x 中接口文档内嵌的冲突定义全部作废
+//   [R4] ScanMode 补 SAST_REVIEW=4；TaskStatus 补 TIMEOUT=7、CREATED=8；
+//        枚举编号基准统一为 AI_ONLY=1（工作流文档旧版 AI_ONLY=0 作废）
+//   [R5] 新增 StorageService、NotificationService 服务定义（兑现"补充8接口"声明）
+//   [R7] DSHRuntimeService 定版 11 个 RPC
+//   [3.1] 新增服务定义段：14 个 logical service ↔ 9 个部署服务的映射见
+//        《01 总体架构设计.md》；CompareResults 并入 SASTFusionService（N7），
+//        KnowledgeGraphService 新增 GetKGQuality（评审缺口补齐）
+//   修正：LanguageInfo 字段号 1/2/3（原从 2 起编）；
+//        REVIEW_CONJECTION_FAIL → REVIEW_CONCLUSION_FAIL（拼写）；
+//        FindingReview.confidence 由 int32 百分制改为 float 0.0-1.0（全局统一）；
+//        UnifiedFinding 定版 23 字段版（source_tool=4）；
+//        CodeAnalysisResult/SASTScanResult/ReportResult/VerifiedFinding/
+//        Pagination* 以本文件结构为唯一版本
+
+syntax = "proto3";
+
+package codeaudit.common.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/codeaudit/api/common/v1";
+option java_package = "com.codeaudit.api.common.v1";
+
+// ============================================================
+// 位置信息
+// ============================================================
+
+message LocationInfo {
+  string file_path = 1;
+  int32 start_line = 2;
+  int32 end_line = 3;
+  int32 start_column = 4;
+  int32 end_column = 5;
+  string function_name = 6;
+  string class_name = 7;
+  string module_name = 8;
+}
+
+// ============================================================
+// 统一审计结果（定版 23 字段；接口文档 §3.2 的 18 字段版作废）
+// ============================================================
+
+message UnifiedFinding {
+  // 唯一标识
+  string finding_id = 1;
+  string task_id = 2;
+  string project_id = 3;
+
+  // 来源信息
+  string source_tool = 4;        // codeql, semgrep, bandit, ai_agent
+  string source_rule_id = 5;
+  bytes source_raw = 6;          // 原始输出（JSON序列化）
+
+  // 漏洞位置
+  LocationInfo location = 7;
+
+  // 漏洞信息
+  string cwe_id = 8;             // CWE-89 格式
+  string title = 9;
+  string description = 10;
+  Severity severity = 11;
+  float confidence = 12;         // 0.0 - 1.0
+
+  // 证据链
+  EvidenceChain evidence = 13;
+
+  // AI增强字段
+  AIVerdict ai_verdict = 14;
+  float ai_confidence = 15;      // 0.0 - 1.0
+  string ai_reasoning = 16;
+  string ai_fix_suggestion = 17;
+  // 机器可应用补丁（apply_patch 语法，ADR-183）：上下文/删除行经服务端从工作区快照
+  // 逐字重建校验，消费端（VS Code 插件）按内容锚定应用；空=无可用补丁（不编造）
+  string diff_patch = 24;
+
+  // 融合字段
+  repeated string matched_findings = 18;
+  bool is_unique = 19;
+  string dedup_group = 20;
+
+  // 状态
+  FindingStatus status = 21;
+
+  // 时间戳
+  google.protobuf.Timestamp created_at = 22;
+  google.protobuf.Timestamp updated_at = 23;
+}
+
+// ============================================================
+// 证据链
+// ============================================================
+
+message EvidenceChain {
+  string source_code = 1;
+  repeated FlowStep data_flow = 2;
+  string sink_description = 3;
+  string sanitizer_description = 4;
+  repeated string references = 5;
+}
+
+message FlowStep {
+  string file_path = 1;
+  int32 line = 2;
+  string code_snippet = 3;
+  FlowRole role = 4;
+  string description = 5;
+}
+
+// ============================================================
+// 枚举类型
+// ============================================================
+
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_CRITICAL = 1;
+  SEVERITY_HIGH = 2;
+  SEVERITY_MEDIUM = 3;
+  SEVERITY_LOW = 4;
+  SEVERITY_INFO = 5;
+}
+
+enum AIVerdict {
+  AI_VERDICT_UNSPECIFIED = 0;
+  AI_VERDICT_TRUE_POSITIVE = 1;
+  AI_VERDICT_FALSE_POSITIVE = 2;
+  AI_VERDICT_LIKELY_TRUE = 3;
+  AI_VERDICT_LIKELY_FALSE = 4;
+  AI_VERDICT_UNCERTAIN = 5;
+  AI_VERDICT_NEEDS_MANUAL = 6;
+}
+
+enum FlowRole {
+  FLOW_ROLE_UNSPECIFIED = 0;
+  FLOW_ROLE_SOURCE = 1;
+  FLOW_ROLE_PROPAGATION = 2;
+  FLOW_ROLE_SANITIZER = 3;
+  FLOW_ROLE_SINK = 4;
+}
+
+enum FindingStatus {
+  FINDING_STATUS_UNSPECIFIED = 0;
+  FINDING_STATUS_PENDING = 1;
+  FINDING_STATUS_CONFIRMED = 2;
+  FINDING_STATUS_FALSE_POSITIVE = 3;
+  FINDING_STATUS_FIXED = 4;
+  FINDING_STATUS_IGNORED = 5;
+}
+
+// 扫描模式：五模式定版（模式D=AI增强SAST=AI_ENHANCED_SAST）。
+// 编号基准：AI_ONLY=1。工作流文档旧版（AI_ONLY=0）与接口文档旧版（无SAST_REVIEW）均作废。
+// 五模式矩阵（ADR-186，人类决策 2026-09-03；ADR-182 四模式矩阵的扩展）：
+//   A=纯SAST（多工具并行→去重合并） / B=纯AI / C=SAST+AI并行→融合去重输出（默认推荐） /
+//   D=AI增强SAST（SAST扫描→同段去重→逐条DSH沙箱验证→SAST+AI判断汇总→报告） /
+//   E=SAST+AI并行各自完成→单SAST/单AI/SAST+AI 三分桶同维度对比（ADR-182 前称"模式D"）。
+// 旧值 TRADITIONAL_FIRST(2)/SAST_REVIEW(4) 弃用：枚举值保留兼容历史任务，UI 不再提供；
+// 4a验证（VerifySASTResults，模式D 阶段3 复用，ADR-186）/4b漏报/审核能力保留在服务端（RPC 不变）。
+enum ScanMode {
+  SCAN_MODE_UNSPECIFIED = 0;
+  SCAN_MODE_SAST_ONLY = 6;             // 模式A：纯SAST多工具并行审计→去重合并产出
+  SCAN_MODE_AI_ONLY = 1;               // 模式B：纯AI审计（ADR-182 前称"模式A"，流程不变）
+  SCAN_MODE_PARALLEL = 3;              // 模式C：SAST+AI并行审计→融合去重输出（默认推荐；原四象限对比语义移至 SCAN_MODE_COMPARE）
+  SCAN_MODE_AI_ENHANCED_SAST = 5;      // 模式D：AI增强SAST——SAST扫描→同文件同段去重→逐条DSH沙箱验证→SAST+AI判断汇总→报告（ADR-186）
+  SCAN_MODE_COMPARE = 7;               // 模式E：SAST+AI并行单独完成→三分桶（单SAST/单AI/SAST+AI）同维度对比（ADR-186 前称"模式D"）
+  SCAN_MODE_TRADITIONAL_FIRST = 2;     // 【已弃用 ADR-182】旧模式B SAST→AI增强（4a验证+4b漏报→融合）
+  SCAN_MODE_SAST_REVIEW = 4;           // 【已弃用 ADR-182】旧模式D SAST→AI审核
+}
+
+// 任务状态：补 CREATED 与 TIMEOUT（状态机图中的 CREATED 节点自此有枚举支撑）
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_CREATED = 8;   // 已创建（StartTask: CREATED→RUNNING）
+  TASK_STATUS_PENDING = 1;   // （保留值，2026-09-01 审批流废除后不再产生）
+  TASK_STATUS_QUEUED = 2;    // 已入队（自动重试目标态，StartTask → RUNNING）
+  TASK_STATUS_RUNNING = 3;   // 执行中
+  TASK_STATUS_COMPLETED = 4; // 已完成
+  TASK_STATUS_FAILED = 5;    // 失败（FAILED→QUEUED 自动重试≤2次，之后转 DEAD 需人工 RetryScanTask）
+  TASK_STATUS_CANCELLED = 6; // 已取消
+  TASK_STATUS_TIMEOUT = 7;   // 超时
+  TASK_STATUS_DEAD = 9;      // 重试耗尽，等待人工处理（新增，见治理规则 3.2）
+  TASK_STATUS_PAUSED = 10;   // ADR-200: 已暂停（PauseTask；AI 交互会话回合闸门挂起，ResumeTask 恢复）
+}
+
+enum Priority {
+  PRIORITY_UNSPECIFIED = 0;
+  PRIORITY_LOW = 1;
+  PRIORITY_NORMAL = 2;
+  PRIORITY_HIGH = 3;
+  PRIORITY_URGENT = 4;
+}
+
+// ============================================================
+// 通用响应
+// ============================================================
+
+message ErrorResponse {
+  int32 code = 1;
+  string message = 2;
+  string detail = 3;
+  string request_id = 4;
+  google.protobuf.Timestamp timestamp = 5;
+  repeated ErrorDetail details = 6;
+}
+
+message ErrorDetail {
+  string field = 1;
+  string message = 2;
+  string reason = 3;
+}
+
+// ============================================================
+// 请求元数据 —— 同时作为幂等键载体（治理规则 3.2 / R6）：
+// 服务端以 (caller_service, request_id) 去重，窗口 24h。
+// RunAIAnalysis / RunSASTScan 等写操作必须携带。
+// ============================================================
+
+message RequestMetadata {
+  string request_id = 1;      // 请求ID（UUID）
+  string trace_id = 2;        // 链路追踪ID
+  string span_id = 3;         // 跨度ID
+  string caller_service = 4;  // 调用方服务名
+  google.protobuf.Timestamp timestamp = 5;
+}
+
+// ============================================================
+// 分页（统一 cursor-based；接口文档 §7.1 的 page+offset+cursor 混合版作废）
+// ============================================================
+
+message PaginationRequest {
+  string cursor = 1;    // 起始游标，首次为空
+  int32 page_size = 2;  // 每页大小，默认20，最大100
+}
+
+message PaginationResponse {
+  string next_cursor = 1;  // 下一页游标，无更多数据为空
+  bool has_next = 2;
+  int32 total = 3;         // 可选：总数
+}
+
+// ============================================================
+// 排序
+// ============================================================
+
+message SortRequest {
+  string field = 1;
+  SortOrder order = 2;
+}
+
+enum SortOrder {
+  SORT_ORDER_UNSPECIFIED = 0;
+  SORT_ORDER_ASC = 1;
+  SORT_ORDER_DESC = 2;
+}
+
+// ============================================================
+// 过滤
+// ============================================================
+
+message FilterRequest {
+  repeated FilterCondition conditions = 1;
+  LogicalOperator operator = 2;
+}
+
+message FilterCondition {
+  string field = 1;
+  FilterOperator operator = 2;
+  string value = 3;
+  repeated string values = 4;
+}
+
+enum FilterOperator {
+  FILTER_OPERATOR_UNSPECIFIED = 0;
+  FILTER_OPERATOR_EQ = 1;
+  FILTER_OPERATOR_NEQ = 2;
+  FILTER_OPERATOR_GT = 3;
+  FILTER_OPERATOR_GTE = 4;
+  FILTER_OPERATOR_LT = 5;
+  FILTER_OPERATOR_LTE = 6;
+  FILTER_OPERATOR_IN = 7;
+  FILTER_OPERATOR_NOT_IN = 8;
+  FILTER_OPERATOR_CONTAINS = 9;
+  FILTER_OPERATOR_STARTS_WITH = 10;
+}
+
+enum LogicalOperator {
+  LOGICAL_OPERATOR_UNSPECIFIED = 0;
+  LOGICAL_OPERATOR_AND = 1;
+  LOGICAL_OPERATOR_OR = 2;
+}
+
+// ============================================================
+// 代码分析相关（定版：cpg_storage_path + FileInfo 结构）
+// ============================================================
+
+message CodeAnalysisResult {
+  string cpg_storage_path = 1;
+  string cpg_access_url = 2;
+  repeated FileInfo files = 3;
+  ProjectFeatures features = 4;
+  LanguageStats language_stats = 5;
+}
+
+message FileInfo {
+  string file_path = 1;
+  string language = 2;
+  int32 line_count = 3;
+  int32 function_count = 4;
+  int32 class_count = 5;
+  bool parse_success = 6;
+  string parse_error = 7;
+}
+
+message ProjectFeatures {
+  int32 total_files = 1;
+  int32 total_lines = 2;
+  int32 total_functions = 3;
+  int32 total_classes = 4;
+  float avg_complexity = 5;
+  repeated ModuleFeatures modules = 6;
+}
+
+message ModuleFeatures {
+  string module_path = 1;
+  int32 files = 2;
+  int32 lines = 3;
+  int32 functions = 4;
+  float complexity = 5;
+  repeated string dependencies = 6;
+}
+
+message LanguageStats {
+  map<string, LanguageInfo> languages = 1;
+}
+
+message LanguageInfo {
+  int32 files = 1;        // 修正：字段号从 1 起编（V1.x 误从 2 起编）
+  int32 lines = 2;
+  float percentage = 3;
+}
+
+// ============================================================
+// SAST扫描相关（定版：map<string, ToolScanResult> 结构化版本）
+// ============================================================
+
+message SASTScanResult {
+  map<string, ToolScanResult> results = 1;
+  int32 total_findings = 2;
+  int64 total_duration_ms = 3;
+}
+
+message ToolScanResult {
+  string tool_name = 1;
+  repeated string finding_ids = 2;  // ID引用，不内嵌完整finding（与 VerifiedFind 对齐）
+  ScanMetrics metrics = 3;
+  ScanStatus status = 4;
+  string error_message = 5;
+}
+
+message ScanMetrics {
+  int64 duration_ms = 1;
+  int32 files_scanned = 2;
+  int32 lines_scanned = 3;
+  int32 findings_count = 4;
+  map<string, int32> findings_by_severity = 5;
+}
+
+enum ScanStatus {
+  SCAN_STATUS_UNSPECIFIED = 0;
+  SCAN_STATUS_RUNNING = 1;
+  SCAN_STATUS_COMPLETED = 2;
+  SCAN_STATUS_FAILED = 3;
+  SCAN_STATUS_TIMEOUT = 4;
+  SCAN_STATUS_CANCELLED = 5;
+}
+
+// ============================================================
+// AI推理相关
+// ============================================================
+
+message AIInferenceResult {
+  repeated string ai_finding_ids = 1;
+  repeated string verified_finding_ids = 2;
+  int32 ai_findings_count = 3;
+  int32 verified_count = 4;
+  int32 false_positive_count = 5;
+  AnalysisMetrics metrics = 6;
+}
+
+message VerifiedFinding {
+  string original_finding_id = 1;  // ID引用版定版（内嵌 message 版作废）
+  AIVerdict verdict = 2;
+  float confidence = 3;
+  string reasoning = 4;
+  string fix_suggestion = 5;
+  repeated EvidenceItem evidence = 6;
+}
+
+message EvidenceItem {
+  string type = 1;
+  string description = 2;
+  string file_path = 3;
+  int32 line = 4;
+  string code_snippet = 5;
+  float confidence = 6;
+}
+
+message FixSuggestion {
+  string finding_id = 1;
+  string description = 2;
+  string code_fix = 3;
+  string diff_patch = 4;
+  repeated string references = 5;
+  float confidence = 6;
+}
+
+message AnalysisMetrics {
+  int64 total_duration_ms = 1;
+  int64 llm_inference_ms = 2;
+  int64 code_analysis_ms = 3;
+  reserved 4;                        // ADR-197: knowledge_query_ms（knowledge-service 删除）
+  reserved "knowledge_query_ms";
+  int32 total_tokens_used = 5;
+  int32 total_iterations = 6;
+  int32 findings_verified = 7;
+  int32 findings_discovered = 8;
+}
+
+enum AnalysisStatus {
+  ANALYSIS_STATUS_UNSPECIFIED = 0;
+  ANALYSIS_STATUS_INITIALIZING = 1;
+  ANALYSIS_STATUS_RUNNING = 2;
+  ANALYSIS_STATUS_COMPLETED = 3;
+  ANALYSIS_STATUS_FAILED = 4;
+  ANALYSIS_STATUS_CANCELLED = 5;
+  ANALYSIS_STATUS_PARTIAL = 6;
+}
+
+// ============================================================
+// 融合相关（FusionMetrics 补齐 removed/added 两字段，消除 7vs5 冲突）
+// ============================================================
+
+message FusionResult {
+  repeated string fused_finding_ids = 1;
+  int32 total_count = 2;
+  int32 removed_false_positives = 3;
+  int32 added_ai_findings = 4;
+  FusionMetrics metrics = 5;
+  FusionReport report = 6;
+}
+
+message FusionMetrics {
+  int64 duration_ms = 1;
+  int32 input_sast_count = 2;
+  int32 input_ai_count = 3;
+  int32 output_count = 4;
+  int32 merged_count = 5;
+  int32 removed_false_positives = 6;  // 补齐（原仅存在于接口文档版）
+  int32 added_ai_findings = 7;        // 补齐
+}
+
+message FusionReport {
+  repeated MergeGroup merge_groups = 1;
+  repeated ConflictItem conflicts = 2;
+  repeated FilteredItem filtered = 3;
+  ComparisonSummary comparison = 4;
+}
+
+message MergeGroup {
+  string group_id = 1;
+  repeated string merged_finding_ids = 2;
+  string primary_finding_id = 3;
+  string merge_reason = 4;
+}
+
+message ConflictItem {
+  repeated string finding_ids = 1;
+  string conflict_type = 2;
+  string resolution = 3;
+}
+
+message FilteredItem {
+  string finding_id = 1;
+  string filter_reason = 2;
+}
+
+message ComparisonSummary {
+  int32 sast_total = 1;
+  int32 ai_total = 2;
+  int32 both_found = 3;
+  int32 sast_only = 4;
+  int32 ai_only = 5;
+  int32 disagreement = 6;
+  ComparisonMetrics metrics = 7;
+}
+
+message ComparisonMetrics {
+  int32 total_unique = 1;
+  float sast_precision = 2;
+  float sast_recall = 3;
+  float sast_f1 = 4;
+  float ai_precision = 5;
+  float ai_recall = 6;
+  float ai_f1 = 7;
+  int64 sast_duration_ms = 8;
+  int64 ai_duration_ms = 9;
+}
+
+// ============================================================
+// 报告相关（定版：report_id=1, report_url=2, format=枚举）
+// ============================================================
+
+message ReportResult {
+  string report_id = 1;
+  string report_url = 2;
+  ReportFormat format = 3;
+  int64 file_size_bytes = 4;
+  ReportSummary summary = 5;
+}
+
+message ReportSummary {
+  int32 total_findings = 1;
+  map<string, int32> by_severity = 2;
+  map<string, int32> by_cwe = 3;
+  map<string, int32> by_status = 4;
+  float risk_score = 5;
+}
+
+enum ReportFormat {
+  REPORT_FORMAT_UNSPECIFIED = 0;
+  REPORT_FORMAT_PDF = 1;
+  REPORT_FORMAT_HTML = 2;
+  REPORT_FORMAT_JSON = 3;
+  REPORT_FORMAT_CSV = 4;
+}
+
+// ============================================================
+// 任务阶段相关
+// ============================================================
+
+message TaskStage {
+  string stage_id = 1;
+  StageType type = 2;
+  StageStatus status = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp completed_at = 5;
+  string error_message = 6;
+  map<string, string> metadata = 7;
+}
+
+enum StageType {
+  STAGE_TYPE_UNSPECIFIED = 0;
+  STAGE_TYPE_CODE_ANALYSIS = 1;
+  STAGE_TYPE_SAST_SCAN = 2;
+  STAGE_TYPE_AI_INFERENCE = 3;
+  STAGE_TYPE_RESULT_FUSION = 4;
+  STAGE_TYPE_REPORT_GENERATION = 5;
+  STAGE_TYPE_AI_REVIEW = 6;        // 新增：模式D审核阶段
+}
+
+enum StageStatus {
+  STAGE_STATUS_UNSPECIFIED = 0;
+  STAGE_STATUS_PENDING = 1;
+  STAGE_STATUS_RUNNING = 2;
+  STAGE_STATUS_COMPLETED = 3;
+  STAGE_STATUS_FAILED = 4;
+  STAGE_STATUS_SKIPPED = 5;
+}
+
+
+// ============================================================
+// AI审核相关 (模式D)
+// ============================================================
+
+message AuditReviewReport {
+  string task_id = 1;
+  int32 total_findings = 2;
+
+  // 整体评估
+  OverallAssessment overall = 3;
+
+  // 逐条审核结果
+  repeated FindingReview reviews = 4;
+
+  // 审核统计
+  ReviewStats stats = 5;
+
+  // 审核元数据
+  ReviewMetadata metadata = 6;
+}
+
+message OverallAssessment {
+  // 质量评分 (0-100)
+  int32 quality_score = 1;
+
+  // 覆盖度评估
+  CoverageAssessment coverage = 2;
+
+  // 风险评估
+  RiskAssessment risk = 3;
+
+  // 审核结论
+  ReviewConclusion conclusion = 4;
+
+  // 总体建议
+  string summary = 5;
+}
+
+message CoverageAssessment {
+  // CWE覆盖度 (0-100)
+  int32 cwe_coverage_score = 1;
+
+  // 已覆盖的CWE
+  repeated string covered_cwes = 2;
+
+  // 可能遗漏的CWE
+  repeated string potentially_missing_cwes = 3;
+
+  // 规则覆盖度 (0-100)
+  int32 rule_coverage_score = 4;
+}
+
+message RiskAssessment {
+  // 遗漏风险等级
+  RiskLevel omission_risk = 1;
+
+  // 误报风险等级
+  RiskLevel false_positive_risk = 2;
+
+  // 高危漏洞遗漏可能性
+  bool high_severity_omission_possible = 3;
+
+  // 风险说明
+  repeated string risk_details = 4;
+}
+
+enum RiskLevel {
+  RISK_LEVEL_UNSPECIFIED = 0;
+  RISK_LEVEL_LOW = 1;
+  RISK_LEVEL_MEDIUM = 2;
+  RISK_LEVEL_HIGH = 3;
+}
+
+enum ReviewConclusion {
+  REVIEW_CONCLUSION_UNSPECIFIED = 0;
+  REVIEW_CONCLUSION_PASS = 1;           // 审核通过
+  REVIEW_CONCLUSION_PASS_WITH_NOTES = 2; // 通过但有备注
+  REVIEW_CONCLUSION_NEEDS_REVIEW = 3;    // 需要人工复核
+  REVIEW_CONCLUSION_FAIL = 4;            // 审核不通过（修正拼写：原 CONJECTION）
+}
+
+message FindingReview {
+  string finding_id = 1;
+
+  // 审核意见
+  ReviewOpinion opinion = 2;
+
+  // 置信度（修正：由 int32 百分制改为 float 0.0-1.0，与其他 confidence 字段统一）
+  float confidence = 3;
+
+  // 审核理由
+  string reasoning = 4;
+
+  // 严重性评估
+  SeverityAssessment severity_assessment = 5;
+
+  // 位置评估
+  LocationAssessment location_assessment = 6;
+
+  // 建议
+  repeated string suggestions = 7;
+}
+
+enum ReviewOpinion {
+  REVIEW_OPINION_UNSPECIFIED = 0;
+  REVIEW_OPINION_CONFIRM = 1;        // 确认：结果合理
+  REVIEW_OPINION_SUGGEST_REVIEW = 2; // 建议：需要人工复核
+  REVIEW_OPINION_QUESTION = 3;       // 质疑：可能误报
+  REVIEW_OPINION_REJECT = 4;         // 拒绝：确认误报
+}
+
+message SeverityAssessment {
+  // 原始严重性
+  Severity original_severity = 1;
+
+  // 建议严重性
+  Severity suggested_severity = 2;
+
+  // 严重性合理性
+  bool severity_appropriate = 3;
+
+  // 调整理由
+  string adjustment_reason = 4;
+}
+
+message LocationAssessment {
+  // 位置准确性
+  bool location_accurate = 1;
+
+  // 函数名正确性
+  bool function_name_correct = 2;
+
+  // 代码行正确性
+  bool line_number_correct = 3;
+
+  // 位置问题说明
+  string location_issue = 4;
+}
+
+message ReviewStats {
+  // 审核结果分布
+  map<string, int32> by_opinion = 1;
+
+  // 严重性调整统计
+  int32 severity_adjusted_count = 2;
+
+  // 位置问题统计
+  int32 location_issue_count = 3;
+
+  // 需要人工复核数量
+  int32 needs_manual_review_count = 4;
+}
+
+message ReviewMetadata {
+  // 审核时间
+  google.protobuf.Timestamp review_time = 1;
+
+  // 审核耗时 (毫秒)
+  int64 duration_ms = 2;
+
+  // 审核模型
+  string model_used = 3;
+
+  // 审核版本
+  string review_version = 4;
+}
+
+// ============================================================
+// 通知与存储相关（V2.0 新增，兑现接口补充声明）
+// ============================================================
+
+enum NotificationType {
+  NOTIFICATION_TYPE_UNSPECIFIED = 0;
+  NOTIFICATION_TYPE_EMAIL = 1;
+  NOTIFICATION_TYPE_WEBHOOK = 2;
+  NOTIFICATION_TYPE_IN_APP = 3;
+}
+
+enum NotificationEvent {
+  NOTIFICATION_EVENT_UNSPECIFIED = 0;
+  NOTIFICATION_EVENT_TASK_CREATED = 1;
+  NOTIFICATION_EVENT_TASK_COMPLETED = 2;
+  NOTIFICATION_EVENT_TASK_FAILED = 3;
+  NOTIFICATION_EVENT_HIGH_SEVERITY_FOUND = 4;
+  NOTIFICATION_EVENT_REPORT_READY = 5;
+}
+
+message Notification {
+  string notification_id = 1;
+  string user_id = 2;
+  NotificationType type = 3;
+  NotificationEvent event = 4;
+  string title = 5;
+  string body = 6;
+  map<string, string> payload = 7;
+  google.protobuf.Timestamp created_at = 8;
+  bool read = 9;
+}
+
+message StoredFile {
+  string file_id = 1;
+  string file_path = 2;           // 对象存储内的key
+  int64 size_bytes = 3;
+  string content_type = 4;
+  string checksum_sha256 = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp expires_at = 7;  // 预签名URL过期时间（如适用）
+}
+
+
+// ============================================================
+// ============================================================
+// 服务接口定义段（V2.0 新增）
+//
+// 11 个 logical service ↔ 7 个部署服务映射（ADR-175 ai-inference / ADR-197 knowledge 删除）：
+//   gateway-service      → （无独立proto，纯网关）
+//   project-service      → ProjectService + UserService
+//   task-service         → TaskService
+//   result-service       → ResultService + ReportService
+//   dsh-runtime-service    → DSHRuntimeService + CodeAnalysisService
+//   sast-adapter-service → SASTAdapterService + SASTFusionService
+//   storage-service      → StorageService + NotificationService
+// ============================================================
+// ============================================================
+
+// ------------------------------------------------------------
+// TaskService（task-service 部署）——任务编排与状态机
+// ------------------------------------------------------------
+service TaskService {
+  // 任务生命周期
+  rpc CreateScanTask(CreateScanTaskRequest) returns (ScanTask);
+  rpc GetScanTask(GetScanTaskRequest) returns (ScanTask);
+  rpc CancelScanTask(CancelScanTaskRequest) returns (ScanTask);
+  rpc RetryScanTask(RetryScanTaskRequest) returns (ScanTask);   // DEAD状态人工重试入口
+  rpc ListScanTasks(ListScanTasksRequest) returns (ListScanTasksResponse);
+
+  // 状态机驱动（供内部服务回调，全部幂等）。
+  // 2026-09-01 人类裁定：审批流（提交/批准/拒绝）废除——有创建权限即有启动权限，
+  // CREATED → RUNNING 经 StartTask 直达（原 SubmitTask/ApproveTask 中间门删除）。
+  rpc StartTask(StartTaskRequest) returns (ScanTask);            // CREATED|QUEUED → RUNNING
+  rpc PauseTask(PauseTaskRequest) returns (ScanTask);            // ADR-200: RUNNING → PAUSED（AI 交互会话回合闸门挂起）
+  rpc ResumeTask(ResumeTaskRequest) returns (ScanTask);          // ADR-200: PAUSED → RUNNING（会话继续）
+  rpc CompleteTask(CompleteTaskRequest) returns (ScanTask);      // RUNNING → COMPLETED
+  rpc FailTask(FailTaskRequest) returns (ScanTask);              // RUNNING → FAILED/DEAD
+  rpc UpdateStageStatus(UpdateStageStatusRequest) returns (ScanTask);
+
+  // 进度与阶段
+  rpc GetTaskProgress(GetTaskProgressRequest) returns (TaskProgress);
+  rpc WatchTaskProgress(WatchTaskProgressRequest) returns (stream TaskProgressEvent);
+  rpc ReportStageComplete(ReportStageCompleteRequest) returns (google.protobuf.Empty);  // 幂等
+  rpc ReportStageFailed(ReportStageFailedRequest) returns (google.protobuf.Empty);      // 幂等
+  rpc GetTaskContext(GetTaskContextRequest) returns (TaskContext);
+
+  // 执行日志（ADR-167）：流水线可观测（沙箱生命周期/降级链/挖掘统计）；
+  // 追加幂等（R4），GUI 经网关 GET /v1/tasks/{id}/logs 拉取
+  rpc AppendTaskLog(AppendTaskLogRequest) returns (AppendTaskLogResponse);  // 幂等
+  rpc GetTaskLogs(GetTaskLogsRequest) returns (GetTaskLogsResponse);
+  // ADR-189 任务快照订阅流：task/进度/日志任一变更即推增量帧（GUI WebSocket 上游
+  // 真推送；首帧=订阅位之后的当前状态；settled=true 终帧后服务端关流）
+  rpc StreamTaskSnapshot(StreamTaskSnapshotRequest) returns (stream TaskSnapshotDelta);
+}
+
+// ------------------------------------------------------------
+// ProjectService（project-service 部署）——项目域（含用户）
+// ------------------------------------------------------------
+service ProjectService {
+  rpc CreateProject(CreateProjectRequest) returns (Project);
+  rpc GetProject(GetProjectRequest) returns (Project);
+  rpc UpdateProject(UpdateProjectRequest) returns (Project);
+  rpc DeleteProject(DeleteProjectRequest) returns (google.protobuf.Empty);
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc GetProjectConfig(GetProjectConfigRequest) returns (ProjectConfig);
+  rpc UpdateProjectConfig(UpdateProjectConfigRequest) returns (ProjectConfig);
+  rpc GetProjectStats(GetProjectStatsRequest) returns (ProjectStats);
+  rpc AddProjectMember(AddProjectMemberRequest) returns (ProjectMember);
+  rpc RemoveProjectMember(RemoveProjectMemberRequest) returns (google.protobuf.Empty);
+  rpc ListProjectMembers(ListProjectMembersRequest) returns (ListProjectMembersResponse);
+}
+
+// ------------------------------------------------------------
+// UserService（project-service 部署）——用户子域
+// V1.0 不含 MFA（MFA 接口已在最终审查中删除）
+// V2.1 (ADR-205): 8→13 RPC，新增用户生命周期五接口
+// ------------------------------------------------------------
+service UserService {
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc Logout(LogoutRequest) returns (google.protobuf.Empty);
+  rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
+  rpc GetCurrentUser(GetCurrentUserRequest) returns (User);
+  rpc GetUser(GetUserRequest) returns (User);
+  rpc UpdateUser(UpdateUserRequest) returns (User);
+  rpc ValidatePermission(ValidatePermissionRequest) returns (ValidatePermissionResponse);
+  rpc GetUserPermissions(GetUserPermissionsRequest) returns (UserPermissions);
+  // V2.1 (ADR-205)：自助注册/管理列表/管理员建号/自助改密/管理员重置
+  rpc RegisterUser(RegisterUserRequest) returns (LoginResponse);  // 幂等；注册即登录（默认邀请码制，configs auth.registration_mode）
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);    // 管理端（网关 admin 门禁）
+  rpc CreateUser(CreateUserRequest) returns (User);               // 幂等；管理员直建，must_change_password 置真（一次性临时密码语义）
+  rpc ChangePassword(ChangePasswordRequest) returns (google.protobuf.Empty);  // 幂等；自助改密，成功即清除 must_change_password
+  rpc ResetPassword(ResetPasswordRequest) returns (ResetPasswordResponse);    // 幂等；管理员重置为服务端生成的临时密码
+}
+
+// ------------------------------------------------------------
+// ResultService（result-service 部署）——审计结果域
+// ------------------------------------------------------------
+service ResultService {
+  rpc CreateFinding(CreateFindingRequest) returns (AuditFinding);
+  rpc GetFinding(GetFindingRequest) returns (AuditFinding);
+  rpc UpdateFinding(UpdateFindingRequest) returns (AuditFinding);
+  rpc DeleteFinding(DeleteFindingRequest) returns (google.protobuf.Empty);
+  rpc ListFindings(ListFindingsRequest) returns (ListFindingsResponse);
+  rpc BatchCreateFindings(BatchCreateFindingsRequest) returns (BatchCreateFindingsResponse);  // 幂等
+  rpc BatchUpdateFindings(BatchUpdateFindingsRequest) returns (BatchUpdateFindingsResponse);  // 幂等
+  rpc BatchUpdateVerdict(BatchUpdateVerdictRequest) returns (BatchUpdateVerdictResponse);
+  rpc UpdateVerdict(UpdateVerdictRequest) returns (AuditFinding);
+  rpc GetFindingsByVerdict(GetFindingsByVerdictRequest) returns (ListFindingsResponse);
+  rpc GetTaskResultStats(GetTaskResultStatsRequest) returns (ResultStats);
+  rpc ExportFindings(ExportFindingsRequest) returns (ExportFindingsResponse);
+
+  // 误报反馈闭环（评审整合项）
+  rpc SubmitFindingFeedback(SubmitFindingFeedbackRequest) returns (SubmitFindingFeedbackResponse);
+}
+
+// ------------------------------------------------------------
+// ReportService（result-service 部署）——报告生成子域
+// 统一经 Kafka task.completed 触发；gRPC 直调 GenerateReport 仅作降级路径（幂等）
+// ------------------------------------------------------------
+service ReportService {
+  rpc GenerateReport(GenerateReportRequest) returns (GenerateReportResponse);  // 幂等
+  rpc GetReport(GetReportRequest) returns (Report);
+  rpc ListReports(ListReportsRequest) returns (ListReportsResponse);
+  rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
+  rpc GetTemplate(GetTemplateRequest) returns (ReportTemplate);
+  rpc DownloadReport(DownloadReportRequest) returns (stream ReportChunk);
+}
+
+// ------------------------------------------------------------
+// DSHRuntimeService（dsh-runtime-service 部署）——Agent编排
+// 定版 12 RPC（V1.x 工作流文档的 3 RPC 版作废；ADR-168 += GetAIInteractionLog）
+// RunAIAnalysis / ReviewSASTResults 必须携带幂等键（R6）
+// ------------------------------------------------------------
+service DSHRuntimeService {
+  // 分析主接口（模式A/B/C）
+  rpc RunAIAnalysis(RunAIAnalysisRequest) returns (RunAIAnalysisResponse);                  // 模式B/C
+  rpc VerifySASTResults(VerifySASTResultsRequest) returns (VerifySASTResultsResponse);  // 模式D AI增强SAST 阶段3（ADR-186 复用原4a；含同段去重）
+  rpc SearchMissedVulns(SearchMissedVulnsRequest) returns (SearchMissedVulnsResponse);  // 【已弃用 ADR-182】原4b，仅历史模式兼容
+  rpc ReviewSASTResults(ReviewSASTResultsRequest) returns (ReviewSASTResultsResponse);  // 【已弃用 ADR-182】旧模式D，仅历史模式兼容
+
+  // 进度与会话
+  rpc GetAnalysisProgress(GetAnalysisProgressRequest) returns (AnalysisProgress);
+  rpc WatchAnalysisProgress(WatchAnalysisProgressRequest) returns (stream AnalysisProgressEvent);
+  rpc GetSessionStatus(GetSessionStatusRequest) returns (SessionStatus);
+  rpc CancelAnalysis(CancelAnalysisRequest) returns (google.protobuf.Empty);
+  rpc PauseAnalysis(PauseAnalysisRequest) returns (google.protobuf.Empty);   // ADR-200: 会话回合闸门挂起（当前回合跑完生效）
+  rpc ResumeAnalysis(ResumeAnalysisRequest) returns (google.protobuf.Empty); // ADR-200: 释放闸门继续后续回合
+  // AI 交互日志（ADR-168）：沙箱内 DSH bridge SSE 交互的原始留存，游标增量读取
+  rpc GetAIInteractionLog(GetAIInteractionLogRequest) returns (GetAIInteractionLogResponse);
+  // ADR-189 交互日志订阅流：人性化流写入即推增量（字节游标语义与 GetAIInteractionLog
+  // 一致；complete=true 终帧后服务端关流）
+  rpc StreamAIInteractionLog(StreamAIInteractionLogRequest) returns (stream GetAIInteractionLogResponse);
+}
+
+// ------------------------------------------------------------
+// CodeAnalysisService（dsh-runtime-service 部署，内嵌模块）
+// ExtractFeatures 已删除（合并入 AnalyzeCode，架构简化决策）
+// ------------------------------------------------------------
+service CodeAnalysisService {
+  rpc AnalyzeCode(AnalyzeCodeRequest) returns (AnalyzeCodeResponse);
+  rpc QueryCPG(QueryCPGRequest) returns (QueryCPGResponse);
+  rpc GetCallGraph(GetCallGraphRequest) returns (CallGraph);
+  rpc GetDataFlow(GetDataFlowRequest) returns (DataFlowGraph);
+  rpc GetAnalysisProgress(GetAnalysisProgressRequest) returns (CodeAnalysisProgress);
+}
+
+// ADR-175（2026-09-01 人类裁决）：ai-inference-service 删除（九服务→八服务）——
+// LLM 语义分析自 ADR-140 起走沙箱内 DSH；RuleScan 兜底内嵌 dsh-runtime（显式降级标注）
+// ADR-197（2026-09-04 人类裁决）：knowledge-service 删除（八服务→七服务）——
+// KnowledgeGraphService/RAGRetrievalService 服务与全部消息、DSHRuntimeService 的 Skills 三 RPC
+// 一并移除；Neo4j/Milvus 后端从未实接（ADR-135 恒降级/哈希伪嵌入），Skills 存储随服务删除
+// ------------------------------------------------------------
+
+// ------------------------------------------------------------
+// RAGRetrievalService（knowledge-service 部署，Milvus兜底层）
+// RebuildIndex 保留为后台任务接口（不做同步API暴露，最终审查决定）
+// ------------------------------------------------------------
+
+// ------------------------------------------------------------
+// SASTAdapterService（sast-adapter-service 部署）——工具适配子域
+// RunSASTScan 必须携带幂等键（R6）
+// ------------------------------------------------------------
+service SASTAdapterService {
+  rpc RunSASTScan(RunSASTScanRequest) returns (RunSASTScanResponse);
+  rpc RunMultipleScans(RunMultipleScansRequest) returns (RunMultipleScansResponse);
+  rpc ListAvailableTools(ListAvailableToolsRequest) returns (ListAvailableToolsResponse);
+  rpc GetToolInfo(GetToolInfoRequest) returns (SASTToolInfo);
+  rpc ValidateToolConfig(ValidateToolConfigRequest) returns (ValidateToolConfigResponse);
+  rpc GetScanProgress(GetScanProgressRequest) returns (ScanProgress);
+}
+
+// ------------------------------------------------------------
+// SASTFusionService（sast-adapter-service 部署）——融合与对比子域
+// SASTComparisonService 已移除：CompareResults/CalculateMetrics/
+// GenerateComparisonReport 并入本服务（执行最终审查声明的合并，N7）
+// ------------------------------------------------------------
+service SASTFusionService {
+  rpc FuseResults(FuseResultsRequest) returns (FuseResultsResponse);       // 幂等
+  rpc AlignLocations(AlignLocationsRequest) returns (AlignLocationsResponse);
+  rpc ClusterFindings(ClusterFindingsRequest) returns (ClusterFindingsResponse);
+  rpc ResolveConflicts(ResolveConflictsRequest) returns (ResolveConflictsResponse);
+  rpc GetFusionConfig(GetFusionConfigRequest) returns (FusionConfig);
+  rpc UpdateFusionConfig(UpdateFusionConfigRequest) returns (FusionConfig);
+
+  // 并入自 SASTComparisonService（模式C）
+  rpc CompareResults(CompareResultsRequest) returns (CompareResultsResponse);
+  rpc CalculateMetrics(CalculateMetricsRequest) returns (ComparisonMetrics);
+  rpc GenerateComparisonReport(GenerateComparisonReportRequest) returns (ComparisonReport);
+}
+
+// ------------------------------------------------------------
+// StorageService（storage-service 部署）——V2.0 新增定义
+// 兑现"补充 UploadFile/DownloadFile/GetPresignedUrl/GetFileInfo/
+// DeleteFile/ListFiles"的整改声明
+// ------------------------------------------------------------
+service StorageService {
+  rpc UploadFile(stream UploadFileChunk) returns (StoredFile);
+  rpc DownloadFile(DownloadFileRequest) returns (stream DownloadFileChunk);
+  rpc GetPresignedUrl(GetPresignedUrlRequest) returns (GetPresignedUrlResponse);  // 前端直传
+  rpc GetFileInfo(GetFileInfoRequest) returns (StoredFile);
+  rpc DeleteFile(DeleteFileRequest) returns (google.protobuf.Empty);
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+}
+
+// ------------------------------------------------------------
+// NotificationService（storage-service 部署）——V2.0 新增定义
+// 消费 Kafka 事件（task.created/task.completed/task.stage.completed/
+// finding.created/finding.verdict.updated）并投递通知
+// ------------------------------------------------------------
+service NotificationService {
+  rpc SendNotification(SendNotificationRequest) returns (google.protobuf.Empty);
+  rpc SendBatchNotification(SendBatchNotificationRequest) returns (google.protobuf.Empty);
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  rpc MarkNotificationRead(MarkNotificationReadRequest) returns (Notification);
+}
+
+// ============================================================
+// 服务层请求/响应消息（骨架；具体字段随实现补充，结构以本文件为准）
+// ============================================================
+
+// --- TaskService ---
+message CreateScanTaskRequest {
+  RequestMetadata metadata = 1;   // 幂等键
+  string project_id = 2;
+  ScanMode scan_mode = 3;
+  repeated string sast_tools = 4;
+  Priority priority = 5;
+  map<string, string> config = 6;
+  string created_by = 7;          // ADR-199: 创建者（gateway 自 JWT 注入；事件通知收件人链）
+}
+message GetScanTaskRequest { string task_id = 1; }
+message CancelScanTaskRequest { string task_id = 1; string reason = 2; }
+message RetryScanTaskRequest {
+  string task_id = 1;
+  enum RetryScope { RETRY_ALL_FAILED = 0; RETRY_SPECIFIC = 1; RETRY_FROM_BEGINNING = 2; }
+  RetryScope scope = 2;
+  repeated string stage_ids = 3;
+}
+message ListScanTasksRequest {
+  string project_id = 1;
+  PaginationRequest pagination = 2;
+  FilterRequest filter = 3;
+  SortRequest sort = 4;
+}
+message ListScanTasksResponse {
+  repeated ScanTask tasks = 1;
+  PaginationResponse pagination = 2;
+}
+message StartTaskRequest { string task_id = 1; }
+message CompleteTaskRequest { string task_id = 1; }
+message FailTaskRequest { string task_id = 1; string error_message = 2; bool retryable = 3; }
+message UpdateStageStatusRequest {
+  string task_id = 1;
+  string stage_id = 2;
+  StageStatus status = 3;
+  string error_message = 4;
+}
+message GetTaskProgressRequest { string task_id = 1; }
+message WatchTaskProgressRequest { string task_id = 1; }
+message ReportStageCompleteRequest {
+  RequestMetadata metadata = 1;   // 幂等键
+  string task_id = 2;
+  string stage_id = 3;
+  map<string, string> output_refs = 4;  // 阶段产出引用（如finding_ids、cpg路径）
+}
+message ReportStageFailedRequest {
+  RequestMetadata metadata = 1;   // 幂等键
+  string task_id = 2;
+  string stage_id = 3;
+  string error_message = 4;
+}
+message GetTaskContextRequest { string task_id = 1; }
+
+// ---- 任务执行日志（ADR-167）----
+enum TaskLogLevel {
+  TASK_LOG_LEVEL_UNSPECIFIED = 0;
+  TASK_LOG_LEVEL_INFO = 1;
+  TASK_LOG_LEVEL_WARN = 2;
+  TASK_LOG_LEVEL_ERROR = 3;
+}
+message TaskLogEntry {
+  string log_id = 1;        // 服务端分配，任务内单调递增（GUI 增量游标）
+  string task_id = 2;
+  int64 ts_ms = 3;          // 服务端接收时刻（epoch 毫秒）
+  TaskLogLevel level = 4;
+  string source = 5;        // 产生方短名：sandbox / dsh-runtime / task / orchestrator
+  string message = 6;
+}
+message AppendTaskLogRequest {
+  RequestMetadata metadata = 1;   // 幂等键（R4）
+  string task_id = 2;
+  TaskLogLevel level = 3;
+  string source = 4;
+  string message = 5;
+}
+message AppendTaskLogResponse { TaskLogEntry entry = 1; }
+message GetTaskLogsRequest {
+  string task_id = 1;
+  int32 limit = 2;            // 缺省服务端默认；0=默认
+  string after_log_id = 3;    // 增量游标：只返回 log_id 严格大于它的条目
+}
+message GetTaskLogsResponse { repeated TaskLogEntry logs = 1; }
+
+// ---- ADR-189 任务快照订阅流（GUI WebSocket 上游真推送）----
+message StreamTaskSnapshotRequest {
+  string task_id = 1;
+  string logs_after = 2;      // 日志游标：只推 log_id 严格大于它的条目；空=从头
+}
+message TaskSnapshotDelta {
+  ScanTask task = 1;                 // 最近全量任务态（含阶段）
+  TaskProgress progress = 2;         // 派生进度（随 task 一并重算下发）
+  GetTaskLogsResponse logs = 3;      // 订阅位之后的日志增量
+  bool settled = 4;                  // 任务已终态：本帧后服务端关流
+}
+
+message ScanTask {
+  string task_id = 1;
+  string project_id = 2;
+  ScanMode scan_mode = 3;
+  repeated string sast_tools = 4;
+  TaskStatus status = 5;
+  Priority priority = 6;
+  repeated TaskStage stages = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+  string created_by = 10;
+  string error_message = 11;
+  int32 retry_count = 12;         // 自动重试次数（≤2）
+  // ADR-203 补遗: 源码指针快照（人类审核意见①）——启动时从项目 config 解析到的
+  // upload_file_id 回写任务自身；项目持有"当前"指针，任务持有"当时"快照，
+  // 项目重传/任务重试不漂移，报告可回答"扫的是哪份包"
+  map<string, string> config = 13;
+}
+message TaskProgress {
+  string task_id = 1;
+  TaskStatus status = 2;
+  float overall_percent = 3;
+  repeated TaskStage stages = 4;
+}
+message TaskProgressEvent {
+  string task_id = 1;
+  TaskStatus status = 2;
+  string stage_id = 3;
+  string message = 4;
+  google.protobuf.Timestamp timestamp = 5;
+}
+message TaskContext {
+  string task_id = 1;
+  string project_config_json = 2;
+  string cpg_storage_path = 3;
+  repeated string sast_finding_ids = 4;
+  repeated string ai_finding_ids = 5;
+}
+
+// --- ProjectService / UserService 骨架 ---
+message Project { string project_id = 1; string name = 2; string repo_url = 3; string default_branch = 4; ScanMode default_scan_mode = 5; google.protobuf.Timestamp created_at = 6; }
+message CreateProjectRequest { RequestMetadata metadata = 1; Project project = 2; }
+message GetProjectRequest { string project_id = 1; }
+message UpdateProjectRequest { Project project = 1; }
+message DeleteProjectRequest { string project_id = 1; }
+message ListProjectsRequest { PaginationRequest pagination = 1; FilterRequest filter = 2; }
+message ListProjectsResponse { repeated Project projects = 1; PaginationResponse pagination = 2; }
+message ProjectConfig { string project_id = 1; map<string, string> config = 2; }
+message GetProjectConfigRequest { string project_id = 1; }
+message UpdateProjectConfigRequest { ProjectConfig config = 1; }
+message ProjectStats { string project_id = 1; int32 total_tasks = 2; int32 total_findings = 3; float avg_f1 = 4; }
+message GetProjectStatsRequest { string project_id = 1; }
+message ProjectMember { string project_id = 1; string user_id = 2; string role = 3; }
+message AddProjectMemberRequest { RequestMetadata metadata = 1; ProjectMember member = 2; }
+message RemoveProjectMemberRequest { string project_id = 1; string user_id = 2; }
+message ListProjectMembersRequest { string project_id = 1; PaginationRequest pagination = 2; }
+message ListProjectMembersResponse { repeated ProjectMember members = 1; PaginationResponse pagination = 2; }
+
+// V2.1 (ADR-205): 全局角色（对齐 project-service rolePermissions：admin/developer/viewer）
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_ADMIN = 1;
+  ROLE_DEVELOPER = 2;
+  ROLE_VIEWER = 3;
+}
+message User { string user_id = 1; string username = 2; string email = 3; enum UserState { USER_STATE_UNSPECIFIED = 0; USER_STATE_ACTIVE = 1; USER_STATE_INACTIVE = 2; USER_STATE_LOCKED = 3; } UserState state = 4; google.protobuf.Timestamp created_at = 5; Role role = 6;  // V2.1 (ADR-205)
+  bool must_change_password = 7;  // V2.1 (ADR-205)：首登/重置后强制改密标记，ChangePassword 成功即清除
+}
+message LoginRequest { string username = 1; string password = 2; }
+message LoginResponse { string access_token = 1; string refresh_token = 2; int64 expires_in_s = 3; }
+message LogoutRequest { string access_token = 1; }
+message RefreshTokenRequest { string refresh_token = 1; }
+message RefreshTokenResponse { string access_token = 1; string refresh_token = 2; int64 expires_in_s = 3; }
+message GetCurrentUserRequest { string access_token = 1; }
+message GetUserRequest { string user_id = 1; }
+message UpdateUserRequest { User user = 1; }
+message ValidatePermissionRequest { string user_id = 1; string resource_type = 2; string resource_id = 3; string action = 4; }
+message ValidatePermissionResponse { bool allowed = 1; string reason = 2; }
+message GetUserPermissionsRequest { string user_id = 1; }
+message UserPermissions { string user_id = 1; repeated string permissions = 2; }
+
+// --- V2.1 用户生命周期 (ADR-205) ---
+message RegisterUserRequest { RequestMetadata metadata = 1; string username = 2; string email = 3; string password = 4; string invite_code = 5; }  // 自助注册：邀请码制默认（configs auth.registration_mode = invitation|open|disabled）
+message ListUsersRequest { PaginationRequest pagination = 1; User.UserState state = 2; string username_contains = 3; }
+message ListUsersResponse { repeated User users = 1; PaginationResponse pagination = 2; }
+message CreateUserRequest { RequestMetadata metadata = 1; string username = 2; string email = 3; string password = 4; Role role = 5; }  // 管理员直建：密码经网关侧生成的一次性临时密码由管理员转交
+message ChangePasswordRequest { RequestMetadata metadata = 1; string user_id = 2; string old_password = 3; string new_password = 4; }
+message ResetPasswordRequest { RequestMetadata metadata = 1; string user_id = 2; }
+message ResetPasswordResponse { string temporary_password = 1; bool must_change_password = 2; }
+
+// --- ResultService / ReportService 骨架 ---
+message AuditFinding { UnifiedFinding finding = 1; }
+message CreateFindingRequest { RequestMetadata metadata = 1; UnifiedFinding finding = 2; }
+message GetFindingRequest { string finding_id = 1; }
+message UpdateFindingRequest { UnifiedFinding finding = 1; }
+message DeleteFindingRequest { string finding_id = 1; }
+message ListFindingsRequest { string task_id = 1; PaginationRequest pagination = 2; FilterRequest filter = 3; SortRequest sort = 4; }
+message ListFindingsResponse { repeated UnifiedFinding findings = 1; PaginationResponse pagination = 2; }
+message BatchCreateFindingsRequest {
+  RequestMetadata metadata = 1;   // 幂等键
+  repeated UnifiedFinding findings = 2;
+}
+message BatchCreateFindingsResponse { repeated string finding_ids = 1; int32 failed_count = 2; }
+message BatchUpdateFindingsRequest {
+  RequestMetadata metadata = 1;   // 幂等键
+  repeated string finding_ids = 2;
+  map<string, string> patch_json = 3;
+}
+message BatchUpdateFindingsResponse { int32 updated_count = 1; repeated string failed_ids = 2; }
+message BatchUpdateVerdictRequest {
+  RequestMetadata metadata = 1;
+  repeated string finding_ids = 2;
+  AIVerdict verdict = 3;
+  float confidence = 4;
+}
+message BatchUpdateVerdictResponse { int32 updated_count = 1; }
+message UpdateVerdictRequest { string finding_id = 1; AIVerdict verdict = 2; float confidence = 3; string reasoning = 4; }
+message GetFindingsByVerdictRequest { string task_id = 1; AIVerdict verdict = 2; PaginationRequest pagination = 3; }
+message ResultStats { string task_id = 1; int32 total = 2; map<string, int32> by_severity = 3; map<string, int32> by_cwe = 4; map<string, int32> by_verdict = 5; }
+message GetTaskResultStatsRequest { string task_id = 1; }
+message ExportFindingsRequest { string task_id = 1; ReportFormat format = 2; repeated string finding_ids = 3; }
+message ExportFindingsResponse { string export_url = 1; }
+message SubmitFindingFeedbackRequest {
+  RequestMetadata metadata = 1;
+  string finding_id = 2;
+  enum FeedbackType { FEEDBACK_UNSPECIFIED = 0; FEEDBACK_FALSE_POSITIVE = 1; FEEDBACK_MISSED = 2; FEEDBACK_SEVERITY_WRONG = 3; }
+  FeedbackType feedback_type = 3;
+  string comment = 4;
+}
+message SubmitFindingFeedbackResponse { string feedback_id = 1; bool accepted = 2; }
+
+message GenerateReportRequest {
+  RequestMetadata metadata = 1;   // 幂等键
+  string task_id = 2;
+  string template_id = 3;
+  ReportFormat format = 4;
+}
+message GenerateReportResponse { ReportResult result = 1; }
+message GetReportRequest { string report_id = 1; }
+message Report { string report_id = 1; string task_id = 2; ReportFormat format = 3; string url = 4; google.protobuf.Timestamp generated_at = 5; }
+message ListReportsRequest { string task_id = 1; PaginationRequest pagination = 2; }
+message ListReportsResponse { repeated Report reports = 1; PaginationResponse pagination = 2; }
+message ListTemplatesRequest { PaginationRequest pagination = 1; }
+message ListTemplatesResponse { repeated ReportTemplate templates = 1; }
+message ReportTemplate { string template_id = 1; string name = 2; string description = 3; }
+message GetTemplateRequest { string template_id = 1; }
+message DownloadReportRequest { string report_id = 1; }
+message ReportChunk { bytes data = 1; }
+
+// --- DSHRuntimeService / CodeAnalysisService 骨架 ---
+message RunAIAnalysisRequest {
+  RequestMetadata metadata = 1;   // 幂等键（必须）
+  string task_id = 2;
+  string project_path = 3;
+  string cpg_storage_path = 4;
+  repeated string sast_finding_ids = 5;  // 模式B传入
+  ScanMode scan_mode = 6;
+  int32 max_iterations_per_agent = 7;
+  float confidence_threshold = 8;        // 0.0-1.0
+}
+message RunAIAnalysisResponse { AIInferenceResult result = 1; repeated FixSuggestion fix_suggestions = 2; }
+message VerifySASTResultsRequest {
+  RequestMetadata metadata = 1;
+  string task_id = 2;
+  repeated string finding_ids = 3;
+  int32 batch_size = 4;
+  int32 timeout_per_finding_ms = 5;
+  // ADR-173: 沙箱内整项目审查——待审项目代码目录（4a 经 openshell-manager /files
+  // 上传至沙箱磁盘后由 DSH 自行阅读源码判定，不再依赖报告行±5 的本地摘录）
+  string project_path = 6;
+}
+message VerifySASTResultsResponse { repeated VerifiedFinding verified = 1; }
+message SearchMissedVulnsRequest {
+  RequestMetadata metadata = 1;
+  string task_id = 2;
+  int32 max_depth = 3;
+  int32 timeout_ms = 4;
+  string project_path = 5;  // ADR-165: 扫描目标路径（此前缺失, 漏报搜索靠无人设置的环境变量断线）
+}
+message SearchMissedVulnsResponse { repeated UnifiedFinding missed_findings = 1; }
+message ReviewSASTResultsRequest {
+  RequestMetadata metadata = 1;   // 幂等键（必须）
+  string task_id = 2;
+  string project_path = 3;
+  string cpg_storage_path = 4;
+  repeated string sast_finding_ids = 5;
+  ReviewConfig config = 6;
+}
+message ReviewConfig {
+  enum ReviewDepth { REVIEW_DEPTH_UNSPECIFIED = 0; REVIEW_DEPTH_QUICK = 1; REVIEW_DEPTH_STANDARD = 2; REVIEW_DEPTH_THOROUGH = 3; }
+  ReviewDepth depth = 1;
+  bool assess_severity = 2;
+  bool verify_location = 3;
+  bool generate_suggestions = 4;
+  float confidence_threshold = 5;  // 0.0-1.0（原int32百分制作废，与其他字段统一）
+}
+message ReviewSASTResultsResponse { string task_id = 1; AuditReviewReport report = 2; }
+message GetAnalysisProgressRequest { string task_id = 1; }
+message AnalysisProgress { string task_id = 1; AnalysisStatus status = 2; float percent = 3; string current_agent = 4; int32 iteration = 5; }
+message WatchAnalysisProgressRequest { string task_id = 1; }
+message AnalysisProgressEvent { string task_id = 1; AnalysisStatus status = 2; string message = 3; google.protobuf.Timestamp timestamp = 4; }
+message GetSessionStatusRequest { string session_id = 1; }
+message SessionStatus { string session_id = 1; string state = 2; int64 active_sandboxes = 3; }
+message CancelAnalysisRequest { string task_id = 1; }
+
+// --- AI 交互日志（ADR-168；补遗②人性化渲染）---
+// 沙箱内 DSH 经 bridge（JSON-RPC⇄SSE）的交互流：任务运行中增量可读（GUI 实时回显），
+// 任务终态后即最终交互日志。chunk 为按 event type 人性化渲染的 utf-8 文本（中文行 +
+// 模型原话流式正文，ADR-168 补遗②——原始帧不面向用户，仅由 dsh-runtime 落盘
+// data/ai-interaction/<taskID>.sse.log 供机器调试）。游标为该人性化流的字节偏移。
+message GetAIInteractionLogRequest {
+  string task_id = 1;
+  int64 cursor = 2;         // 字节游标：返回严格大于该偏移的内容；0=从头
+  int32 max_bytes = 3;      // 单次返回上限（字节）；0=服务端默认
+}
+message GetAIInteractionLogResponse {
+  bytes chunk = 1;          // 人性化渲染文本（utf-8；按 event type 中文行+流式正文）
+  int64 next_cursor = 2;    // 下一次请求携带的游标
+  bool complete = 3;        // 分析已终态：日志不再增长（最终日志已可整体获取）
+  int64 total_bytes = 4;    // 当前日志总字节数
+}
+
+// ---- ADR-189 交互日志订阅流 ----
+message StreamAIInteractionLogRequest {
+  string task_id = 1;
+  int64 cursor = 2;         // 字节游标：语义同 GetAIInteractionLog.cursor
+  int32 max_bytes = 3;      // 单帧上限（字节）；0=服务端默认
+}
+
+message AnalyzeCodeRequest {
+  RequestMetadata metadata = 1;   // 幂等键
+  string task_id = 2;
+  string project_path = 3;
+  repeated string changed_files = 4;   // 增量扫描：仅变更文件；空=全量
+}
+message AnalyzeCodeResponse { CodeAnalysisResult result = 1; }
+message QueryCPGRequest { string cpg_storage_path = 1; string query = 2; }
+message QueryCPGResponse { string result_json = 1; }
+message GetCallGraphRequest { string cpg_storage_path = 1; string function_name = 2; }
+message CallGraph { string graph_json = 1; }
+message GetDataFlowRequest { string cpg_storage_path = 1; string source_function = 2; }
+message DataFlowGraph { string graph_json = 1; }
+message CodeAnalysisProgress { string task_id = 1; float percent = 2; int32 files_parsed = 3; }
+
+// ADR-175: ai-inference 专用消息已随服务删除
+
+// --- KnowledgeGraphService / RAGRetrievalService 骨架 ---
+   // 空=全库
+
+// --- SASTAdapterService / SASTFusionService 骨架 ---
+message RunSASTScanRequest {
+  RequestMetadata metadata = 1;   // 幂等键（必须）
+  string task_id = 2;
+  string project_path = 3;
+  string tool_id = 4;
+  int32 timeout_ms = 5;
+  map<string, string> tool_config = 6;
+}
+message RunSASTScanResponse { ToolScanResult result = 1; }
+message RunMultipleScansRequest {
+  RequestMetadata metadata = 1;
+  string task_id = 2;
+  string project_path = 3;
+  repeated string tool_ids = 4;
+}
+message RunMultipleScansResponse { SASTScanResult result = 1; }
+message ListAvailableToolsRequest {}
+message ListAvailableToolsResponse { repeated SASTToolInfo tools = 1; }
+message GetToolInfoRequest { string tool_id = 1; }
+message SASTToolInfo { string tool_id = 1; string name = 2; repeated string supported_languages = 3; string output_format = 4; }
+message ValidateToolConfigRequest { string tool_id = 1; map<string, string> tool_config = 2; }
+message ValidateToolConfigResponse { bool valid = 1; repeated string errors = 2; }
+message GetScanProgressRequest { string task_id = 1; string tool_id = 2; }
+message ScanProgress { string task_id = 1; string tool_id = 2; float percent = 3; ScanStatus status = 4; }
+
+message FuseResultsRequest {
+  RequestMetadata metadata = 1;   // 幂等键
+  string task_id = 2;
+  repeated string sast_finding_ids = 3;
+  repeated string ai_finding_ids = 4;
+}
+message FuseResultsResponse { FusionResult result = 1; }
+message AlignLocationsRequest { repeated string finding_ids = 1; }
+message AlignLocationsResponse { repeated MergeGroup aligned_groups = 1; }
+message ClusterFindingsRequest { repeated string finding_ids = 1; float similarity_threshold = 2; }
+message ClusterFindingsResponse { repeated MergeGroup clusters = 1; }
+message ResolveConflictsRequest { repeated string finding_ids = 1; }
+message ResolveConflictsResponse { repeated ConflictItem resolved = 1; }
+message FusionConfig { map<string, string> config = 1; }
+message GetFusionConfigRequest {}
+message UpdateFusionConfigRequest { FusionConfig config = 1; }
+message CompareResultsRequest { string task_id = 1; repeated string sast_finding_ids = 2; repeated string ai_finding_ids = 3; }
+message CompareResultsResponse { ComparisonSummary summary = 1; }
+message CalculateMetricsRequest { string task_id = 1; }
+message GenerateComparisonReportRequest { string task_id = 1; ReportFormat format = 2; }
+message ComparisonReport { string report_id = 1; ComparisonSummary summary = 2; string venn_data_url = 3; }
+
+// --- StorageService / NotificationService 骨架 ---
+message UploadFileChunk { bytes data = 1; string file_path = 2; string content_type = 3; bool first_chunk = 4; }
+message DownloadFileRequest { string file_id = 1; }
+message DownloadFileChunk { bytes data = 1; }
+message GetPresignedUrlRequest { string file_path = 1; enum UrlOp { URL_OP_UNSPECIFIED = 0; URL_OP_UPLOAD = 1; URL_OP_DOWNLOAD = 2; } UrlOp operation = 2; int64 ttl_seconds = 3; }
+message GetPresignedUrlResponse { string url = 1; google.protobuf.Timestamp expires_at = 2; }
+message GetFileInfoRequest { string file_id = 1; }
+message DeleteFileRequest { string file_id = 1; }
+message ListFilesRequest { string prefix = 1; PaginationRequest pagination = 2; }
+message ListFilesResponse { repeated StoredFile files = 1; PaginationResponse pagination = 2; }
+message SendNotificationRequest { RequestMetadata metadata = 1; Notification notification = 2; }
+message SendBatchNotificationRequest { RequestMetadata metadata = 1; repeated Notification notifications = 2; }
+message PauseTaskRequest { string task_id = 1; }
+message ResumeTaskRequest { string task_id = 1; }
+message PauseAnalysisRequest { string task_id = 1; }
+message ResumeAnalysisRequest { string task_id = 1; }
+message ListNotificationsRequest { string user_id = 1; bool unread_only = 2; PaginationRequest pagination = 3; }
+message ListNotificationsResponse { repeated Notification notifications = 1; PaginationResponse pagination = 2; }
+message MarkNotificationReadRequest { string notification_id = 1; }

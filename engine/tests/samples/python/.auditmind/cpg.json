@@ -1,0 +1,1 @@
+{"features":{"total_files":1,"total_lines":9},"files":[{"file_path":"tests/samples/python/app.py","language":"python","line_count":9}],"generated_at":"2026-08-30T19:44:24+08:00","languages":{"python":{"files":1,"lines":9}},"level":"ast-summary","project_path":"tests/samples/python"}

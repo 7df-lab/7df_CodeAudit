@@ -1,0 +1,52 @@
+# CodeAudit Console — nginx 站点配置（容器内由 envsubst 注入网关上游地址）
+# 客户端零直连微服务（14号 P1）：浏览器只与本容器同源通信，/v1 全部反代到 gateway。
+
+# WS 升级连接头映射（ADR-172 /v1/tasks/{id}/ws）：无 Upgrade 头时回退 keep-alive 语义
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # 上传代码压缩包 ≤25MB（gateway UploadArchive 上限 25MB + multipart 开销余量）
+    client_max_body_size 30m;
+
+    # gzip：antd/react 产物体积大头是 JS，压缩比显著
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    location / {
+        # SPA 路由回退（react-router history 模式）：非静态文件一律回 index.html
+        try_files $uri $uri/ /index.html;
+    }
+
+    # 静态资源带 hash，长缓存；index.html 不缓存（发版即生效）
+    location /assets/ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    # 网关反代：REST + WebSocket（ADR-172 /v1/tasks/{id}/ws 升级透传）
+    location /v1/ {
+        proxy_pass http://${CODEAUDIT_GATEWAY_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # 长连接/长轮询/大响应（报告下载、任务日志聚合）余量
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_buffering off;
+    }
+}

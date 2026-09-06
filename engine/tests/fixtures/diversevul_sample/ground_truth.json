@@ -1,0 +1,37 @@
+{
+  "version": "1.0",
+  "description": "SMK-6 样例标注集（流程验证用）",
+  "source": "内置样例（非真实 DiverseVul）",
+  "samples": [
+    {
+      "id": "sample-001",
+      "file": "tests/samples/python/app.py",
+      "line": 7,
+      "vulnerability_type": "SQL Injection",
+      "cwe": "CWE-89",
+      "severity": "HIGH",
+      "is_vulnerable": true,
+      "evidence": "cursor.execute(f\"SELECT * FROM users WHERE id = {user_id}\")"
+    },
+    {
+      "id": "sample-002",
+      "file": "tests/samples/python/app.py",
+      "line": 3,
+      "vulnerability_type": "None",
+      "cwe": "None",
+      "severity": "NONE",
+      "is_vulnerable": false,
+      "evidence": "import sqlite3"
+    },
+    {
+      "id": "sample-003",
+      "file": "tests/samples/python/app.py",
+      "line": 4,
+      "vulnerability_type": "None",
+      "cwe": "None",
+      "severity": "NONE",
+      "is_vulnerable": false,
+      "evidence": "def get_user(user_id):"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "tool_name": "spotbugs",
+  "findings": [
+    {
+      "source_tool": "spotbugs",
+      "source_rule_id": "SQL_INJECTION",
+      "location_file_path": "tests/samples/java/App.java",
+      "location_start_line": 7,
+      "location_end_line": 7,
+      "title": "Possible SQL injection",
+      "severity": "SEVERITY_CRITICAL",
+      "confidence": 0.75
+    }
+  ],
+  "metrics": {
+    "files_scanned": 1,
+    "findings_count": 2,
+    "by_severity": {
+      "SEVERITY_CRITICAL": 1,
+      "SEVERITY_HIGH": 1
+    }
+  },
+  "status": "SCAN_STATUS_COMPLETED"
+}

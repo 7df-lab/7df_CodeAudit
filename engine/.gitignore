@@ -1,0 +1,98 @@
+# CodeAudit 项目 Git忽略规则
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# IDE文件
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 编译产物
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.o
+*.a
+*.dll
+*.dylib
+
+# 构建目录
+build/
+dist/
+*.egg-info/
+*.egg
+
+# 依赖目录
+node_modules/
+vendor/
+venv/
+.venv/
+env/
+
+# 日志文件
+*.log
+logs/
+
+# 临时文件
+*.tmp
+*.temp
+.tmp/
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 密钥文件
+*.pem
+*.key
+*.crt
+*.p12
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# Docker
+docker-compose.override.yml
+
+# 测试覆盖率
+.coverage
+htmlcov/
+coverage/
+
+# pytest 缓存不入库(ADR-104目录卫生)
+.pytest_cache/
+
+# 会话证据与智能体工作目录：人类决定 2026-09-01 只归档本机不入 gitlab（ADR-169 补遗）；
+# R5 的"归档 .agent/evidence/"仍在本机磁盘执行，存量已跟踪文件不变
+.agent/evidence/
+services/**/.agent/
+
+# 运行时数据（ADR-169: 上传包/克隆仓库/AI 交互日志均不入库；目录由服务运行时创建）
+data/uploads/
+data/repos/
+data/ai-interaction/
+
+# 构建增量缓存与运行时分析产物（ADR-169）
+*.tsbuildinfo
+tests/samples/**/.codeaudit/
+
+# 模式D大型验证语料不入库（ADR-178，人类决策 2026-09-01）：
+# package/（132MB 解压树）+ package.zip（40MB）= OpenWrt/MTK 固件 SDK 真实语料，
+# 无任何已提交测试/脚本/CI 依赖；本机保留可复现，恢复方式见 tests/samples/README.md
+tests/samples/package/
+tests/samples/package.zip
+
+# 中文编码文件（系统生成的临时文件）
+**方向变更（人类决策**
+.toolchain/
+
+# sast-adapter 镜像内烘焙的 SAST 工具二进制（ADR-198）：版本/sha256 见同目录 PROVENANCE.md
+services/sast-adapter-service/tools/opengrep

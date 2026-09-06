@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/returntocorp/semgrep-interfaces/main/semgrep-interfaces/semgrep_output_v1.jsonschema",
+  "version": "1.60.0",
+  "paths": {
+    "scanned": ["app.py"]
+  },
+  "results": [
+    {
+      "check_id": "python.lang.security.injection.sql-injection.sql-injection",
+      "path": "app.py",
+      "start": {"line": 7, "col": 14, "offset": 120},
+      "end": {"line": 7, "col": 48, "offset": 154},
+      "extra": {
+        "fingerprint": "d3a4c7e1-7f0f-4f7f-b0d1-0b1f2d3c4e5f",
+        "message": "Detected possible SQL injection with user input.",
+        "metadata": {
+          "cwe": ["CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"],
+          "owasp": ["A03:2021 - Injection"],
+          "confidence": "HIGH",
+          "severity": "ERROR",
+          "shortlink": "https://sg.run/abc123"
+        },
+        "severity": "ERROR",
+        "lines": "    cursor.execute(f\"SELECT * FROM users WHERE id = {user_id}\")"
+      }
+    }
+  ],
+  "errors": []
+}

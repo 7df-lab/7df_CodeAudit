@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# 自动敏感信息清除：fix → 重新暂存被改文件 → check（未通过则阻断提交）
+set -uo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+
+out=$(bash "$ROOT/sanitize.sh" fix) || { echo "$out"; exit 1; }
+if [ "$(printf '%s' "$out" | grep -c '^\[fix\] 已替换')" != "0" ]; then
+  printf '%s\n' "$out"
+  printf '%s\n' "$out" | sed -n '/^\[fix\] 已替换/,/^\[fix\] 如/p' \
+    | grep '^\s*\./' | sed 's/^\s*//' \
+    | xargs -r -d '\n' git add --
+fi
+
+if ! bash "$ROOT/sanitize.sh" check; then
+  echo ""
+  echo "pre-commit: 检出敏感信息。人工确认后可 git commit --no-verify 跳过（慎用）。"
+  exit 1
+fi

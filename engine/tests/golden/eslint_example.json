@@ -1,0 +1,23 @@
+{
+  "tool_name": "eslint",
+  "findings": [
+    {
+      "source_tool": "eslint",
+      "source_rule_id": "security/detect-eval-with-expression",
+      "location_file_path": "tests/samples/javascript/app.js",
+      "location_start_line": 6,
+      "location_end_line": 6,
+      "title": "eval with user input detected.",
+      "severity": "SEVERITY_HIGH",
+      "confidence": 0.7
+    }
+  ],
+  "metrics": {
+    "files_scanned": 1,
+    "findings_count": 1,
+    "by_severity": {
+      "SEVERITY_HIGH": 1
+    }
+  },
+  "status": "SCAN_STATUS_COMPLETED"
+}

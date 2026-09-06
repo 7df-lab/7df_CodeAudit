@@ -1,0 +1,151 @@
+# =============================================================================
+# CodeAudit 生产模拟 overlay（deploy/docker-compose.sim.yml）
+#
+# 与 engine/docker-compose.yml（base，服务定义事实源）双文件叠加：
+#   docker compose -p codeaudit-sim \
+#     --project-directory <engine仓> \
+#     -f <engine仓>/docker-compose.yml \
+#     -f deploy/docker-compose.sim.yml up -d --build
+# （统一入口：deploy/sim.sh up / 伞仓 make deploy-sim）
+#
+# 目标：在一台 docker 宿主上**模拟生产部署实况**（拓扑同构于 LXC 107 的
+#   现役部署：base + overlay + env），后续开发测试一律在此环境内完成，
+#   不再使用宿主机裸栈直跑（12号 §1 现状插注的"宿主机直跑"退役路径）。
+#
+# 与生产的差异只有三点，其余拓扑/env 语义一致：
+#   1. 独立 project name（codeaudit-sim）+ 独立网络网段（10.10.210.0/24，
+#      避开现役生产的 10.10.110.0/24）+ 宿主发布端口 1xxxx 段——同 daemon 上
+#      模拟栈与生产栈物理隔离；
+#   2. console（前端容器）纳入模拟栈一并验证（生产经 web/deploy.sh 发布）；
+#   3. 各 gRPC 服务的占位 healthcheck（true）升级为真实 TCP 探针，
+#      供 e2e 等待就绪。
+#
+# ⚠ 每个服务只允许出现一次（YAML 重复键会被 lenient 解析器静默 last-wins、
+#   被 compose 严格解析拒绝——2026-09-05 查重键实测：v1 文件 task/storage/
+#   result/dsh-runtime 各定义两遍，"生产语义补全"组整体被吞）。改此文件必须
+#   跑 deploy/check-yaml-dups 或等价查重（U6/LESSONS #8）。
+# =============================================================================
+
+services:
+
+  # —— 容器名隔离(ADR-208 批次③):基础 compose 钉 codeaudit-* 容器名是生产身份,
+  #    sim 与生产同 daemon 共存必须自成 codeaudit-sim-* 前缀 ——
+  gateway:
+    container_name: codeaudit-sim-gateway
+  postgres:
+    container_name: codeaudit-sim-postgres
+  redis:
+    container_name: codeaudit-sim-redis
+  minio:
+    container_name: codeaudit-sim-minio
+  # ---- 基础设施参数钉位（模拟网内自洽：Kafka 广播容器名，非宿主 IP）----
+  kafka:
+    container_name: codeaudit-sim-kafka
+    environment:
+      CODEAUDIT_KAFKA_ADVERTISED: kafka
+
+  # ---- 生产语义补全（base 为开发宽容档，此处按生产档收紧）----
+  result:
+    container_name: codeaudit-sim-result
+    environment:
+      CODEAUDIT_STORE: postgres            # 生产档：真实 PG（dev_stack 同款）
+      CODEAUDIT_KAFKA_OPTIONAL: "0"        # 模拟栈内有 Kafka——真实消费，不降级
+    volumes:
+      - result_exports:/app/.agent/evidence/exports
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 50058"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  storage:
+    container_name: codeaudit-sim-storage
+    environment:
+      CODEAUDIT_STORE: s3                  # 生产档：文件=MinIO（ADR-199）
+      CODEAUDIT_S3_ENDPOINT: minio:9000
+      CODEAUDIT_S3_BUCKET: codeaudit-files
+      CODEAUDIT_S3_ACCESS_KEY: minioadmin
+      CODEAUDIT_S3_SECRET_KEY: minioadmin
+      CODEAUDIT_KAFKA_OPTIONAL: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 50055"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  task:
+    container_name: codeaudit-sim-task
+    # CODEAUDIT_STORAGE_ADDR（ADR-200 拉包）已回填 base compose；任务源共享卷
+    # agent_repos 亦在 base（gateway/task/sast-adapter/dsh-runtime 四方同卷），勿在此重复
+    environment:
+      CODEAUDIT_KAFKA_OPTIONAL: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 50054"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # ---- OpenShell 沙箱南向通道（外部依赖：openshell-manager，见 env.sim）----
+  dsh-runtime:
+    container_name: codeaudit-sim-dsh-runtime
+    environment:
+      OPENSHELL_MANAGER_URL: ${OPENSHELL_MANAGER_URL:-http://gateway.internal:18800}
+      OPENSHELL_MANAGER_TOKEN: ${OPENSHELL_MANAGER_TOKEN:-}
+      # 沙箱服务路由拨号经宿主发布网关（与生产 overlay 同机制，任意宿主可用；
+      # yaml 内现役实例 IP 仅遗留缺省）。OPENSHELL_PORT=openshell-gateway 发布口。
+      CODEAUDIT_GATEWAY_DIAL_ADDR: ${CODEAUDIT_GATEWAY_DIAL_ADDR:-host.docker.internal:8080}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 50057"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # ---- 健康检查升级：base 的占位 true → 真实 TCP 探针（e2e 就绪等待依赖）----
+  project:
+    container_name: codeaudit-sim-project
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 50052"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  sast-adapter:
+    container_name: codeaudit-sim-sast-adapter
+    # 运行时为 python:3.12-slim（debian，无 busybox nc）→ python 探针
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket;s=socket.socket();s.settimeout(2);s.connect(('127.0.0.1',50051))\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # ---- 前端控制台（生产模拟栈一并验证；生产经 web/deploy.sh 发布）----
+  console:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    container_name: codeaudit-sim-console
+    ports:
+      - "${CODEAUDIT_SIM_CONSOLE_PORT:-18088}:80"
+    environment:
+      CODEAUDIT_GATEWAY_UPSTREAM: gateway:8080
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    restart: unless-stopped
+
+volumes:
+  result_exports:
+
+networks:
+  default:
+    name: codeaudit-sim-net
+    ipam:
+      config:
+        # 与现役生产（10.10.110.0/24，prod overlay）隔离；避开 daemon 默认池与物理 LAN
+        - subnet: 10.10.210.0/24

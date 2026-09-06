@@ -1,0 +1,147 @@
+name: CodeAudit CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  GO_VERSION: '1.22'
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # 第一段：lint 代码检查
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Go Lint
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+          for svc in services/*-service; do
+            if [ -f "$svc/go.mod" ]; then
+              echo "Linting $svc..."
+              cd "$svc" && golangci-lint run ./... && cd ../..
+            fi
+          done
+
+      - name: Python Lint
+        run: |
+          pip install ruff
+          for svc in services/dsh-runtime-service; do
+            if [ -d "$svc/app" ]; then
+              echo "Linting $svc..."
+              cd "$svc" && ruff check app/ && cd ../..
+            fi
+          done
+
+  # 第二段：test 单元测试
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Go Tests
+        run: |
+          for svc in services/*-service; do
+            if [ -f "$svc/go.mod" ]; then
+              echo "Testing $svc..."
+              cd "$svc" && go test ./... -v && cd ../..
+            fi
+          done
+
+      # Python Tests 已删（2026-09-05, ADR-206）：dsh-runtime 为 Go 实现，
+      # services/ 下无 Python 服务测试；根级 Python 测试（contract 等）由 verify/gate 段覆盖
+
+  # 第三段：verify SSOT红线检查
+  verify:
+    name: Verify SSOT
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run verify.sh
+        run: bash .agent/verify.sh
+
+      # 13 §2 防线1：proto副本检测
+      - name: Check proto copies in docs
+        run: |
+          echo "=== Proto 副本检测 (13 §2 防线1) ==="
+          if grep -rn "^message \|^service \|^enum " --include="*.md" --exclude="03_*" --exclude="codeaudit_common.proto" .; then
+            echo "错误: 在 .md 文件中发现 proto 定义副本!"
+            exit 1
+          fi
+          echo "✓ 无 proto 副本"
+
+      # 13 §2 防线2：数值重复检测
+      - name: Check numeric values duplication
+        run: |
+          echo "=== 数值重复检测 (13 §2 防线2) ==="
+          # 检查 .md 文件中是否出现 07 中定义的数值
+          NUMERIC_PATTERN="[0-9]+(\.[0-9]+)?%|P95|F1|req/min|LOC/min"
+          FOUND=$(grep -rn "$NUMERIC_PATTERN" --include="*.md" --exclude="07_*" --exclude="11_*" --exclude="11a_*" --exclude=".agent/*" . 2>/dev/null || true)
+          if [ -n "$FOUND" ]; then
+            echo "警告: 在非07文档中发现数值模式:"
+            echo "$FOUND"
+            echo ""
+            echo "请确认这些数值是否应该引用 07 文档"
+          else
+            echo "✓ 无数值重复"
+          fi
+
+      # 13 §2 防线3：ADR完整性检查
+      - name: Check ADR completeness
+        run: |
+          echo "=== ADR 完整性检查 (13 §2 防线3) ==="
+          # 检查已批准的ADR是否有完整的受影响文档清单
+          if [ -f "13_文档治理与变更控制.md" ]; then
+            echo "检查 ADR 状态..."
+            # 简化检查：确认 ADR 索引存在
+            if grep -q "ADR-001" "13_文档治理与变更控制.md"; then
+              echo "✓ ADR 索引存在"
+            else
+              echo "警告: ADR 索引不完整"
+            fi
+          fi
+
+  # Proto 同步检查
+  proto-sync:
+    name: Proto Sync Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check proto sync
+        run: |
+          echo "=== Proto 同步检查 ==="
+          bash scripts/check-proto-sync.sh || echo "警告: Proto 同步检查失败"

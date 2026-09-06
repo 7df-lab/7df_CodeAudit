@@ -1,0 +1,57 @@
+# CodeAudit 部署 overlay —— 与 codeaudit 仓库的 docker-compose.yml 叠加：
+#   docker compose -f docker-compose.yml -f docker-compose.deploy.yml ...
+#
+# 只加部署态差异（restart 策略、dsh-runtime 的 manager 接线、网络钉位），
+# 不复制也不改写开发态 compose；构建上下文/服务定义以仓库文件为准。
+
+services:
+  # 生产档位（与 sim overlay 的「生产语义补全」同口径）：base 为开发宽容档，
+  # storage 缺 CODEAUDIT_STORE 落 memory 降级档（通知空、文件不落 MinIO、重启即丢）
+  storage:
+    restart: unless-stopped
+    environment:
+      CODEAUDIT_STORE: s3
+      # s3 档必备（storage main.go 校验；CODEAUDIT_S3_* 为现行命名，base 里的
+      # MINIO_* 为旧命名不生效）——与 sim overlay「生产语义补全」同口径
+      CODEAUDIT_S3_ENDPOINT: minio:9000
+      CODEAUDIT_S3_BUCKET: codeaudit-files
+      CODEAUDIT_S3_ACCESS_KEY: minioadmin
+      CODEAUDIT_S3_SECRET_KEY: minioadmin
+      CODEAUDIT_KAFKA_OPTIONAL: "0"
+
+  gateway:
+    restart: unless-stopped
+  project:
+    restart: unless-stopped
+  task:
+    restart: unless-stopped
+    # （task 的 codeaudit.yaml 挂载缺陷已在仓库 base compose 修复，overlay
+    #  不再重复声明；此条仅保留 restart 策略。）
+  sast-adapter:
+    restart: unless-stopped
+  result:
+    restart: unless-stopped
+  dsh-runtime:
+    restart: unless-stopped
+    # 沙箱传输接线：manager 是唯一网关通道（token 与 CD/openshell-manager/env 同值）
+    environment:
+      OPENSHELL_MANAGER_URL: ${OPENSHELL_MANAGER_URL:?set in .env}
+      OPENSHELL_MANAGER_TOKEN: ${OPENSHELL_MANAGER_TOKEN:?set in .env}
+      # 沙箱服务路由拨号（ADR-168 bridge 通道）：经宿主发布网关 + Host 头路由，
+      # host.docker.internal 由 extra_hosts 钉到 host-gateway——任意宿主可用；
+      # yaml 内的现役实例 IP 仅作无 overlay 时的遗留缺省（代码侧 env 覆盖已补，
+      # 954ba7fd）。改动端口须同步 CODEAUDIT_HOST_GATEWAY（openshell-gateway 占 8080）。
+      CODEAUDIT_GATEWAY_DIAL_ADDR: ${CODEAUDIT_GATEWAY_DIAL_ADDR:-host.docker.internal:8080}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  default:
+    # 网络名带项目名（原 codeaudit-net 与项目名 codeaudit 对不上）
+    name: codeaudit-engine-net
+    ipam:
+      config:
+        # 显式钉住网段：避开 daemon.json 默认池里的 192.168.0.0/16（物理 LAN）
+        # 与已占用的 10.10.0-5/38-44/105-108；旧 codeaudit_default(10.10.3.0/24)
+        # 为无标签残留网，不复用。与宿主 LAN 冲突时可用 env 覆盖。
+        - subnet: ${CODEAUDIT_ENGINE_SUBNET:-10.10.110.0/24}

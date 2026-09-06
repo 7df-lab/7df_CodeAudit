@@ -1,0 +1,21 @@
+<BugCollection version="4.7.3">
+  <BugInstance type="SQL_INJECTION" priority="1" rank="1">
+    <ShortMessage>Possible SQL injection</ShortMessage>
+    <LongMessage>User-controlled value flows into SQL query.</LongMessage>
+    <Class classname="app.App">
+      <SourceLine classname="app.App" start="7" end="7" sourcefile="App.java" sourcepath="tests/samples/java/App.java">
+      </SourceLine>
+    </Class>
+  </BugInstance>
+  <BugInstance type="XSS_SERVLET" priority="2" rank="2">
+    <ShortMessage>Possible XSS in servlet</ShortMessage>
+    <LongMessage>Unvalidated request parameter flows into response.</LongMessage>
+    <Class classname="app.Web">
+      <SourceLine classname="app.Web" start="21" end="21" sourcefile="Web.java" sourcepath="tests/samples/java/Web.java">
+      </SourceLine>
+    </Class>
+  </BugInstance>
+  <FindBugsProfile>
+    <TotalTime>150</TotalTime>
+  </FindBugsProfile>
+</BugCollection>
