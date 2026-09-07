@@ -163,7 +163,14 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
       socket.onclose = () => {
         wsLiveRef.current = false;
         if (!closed) setWsLive(false);
-        if (!closed && !settled) retryTimer = window.setTimeout(connect, 5000);
+        if (!closed && !settled) {
+          // 断线窗口即时回填：重连前后端游标已越过帧的内容只能经快照兜底，
+          // 此前等 5s 重连（或最坏 10s 轮询拍）——长任务中途断流即观测空白；
+          // 若 access token 已过期（WS 在线期无 REST 调用无续期），本次快照
+          // 401 会经 axios 拦截器单飞刷新，下轮重连即用新 token（gw-f6a3523 实证链）。
+          void qc.refetchQueries({ queryKey: ['task-snapshot', taskId] });
+          retryTimer = window.setTimeout(connect, 5000);
+        }
       };
       socket.onerror = () => socket.close();
     };

@@ -11,7 +11,7 @@ with the engine repo (its ``openshell_manager_client`` reads the same file for
       "bind":            "127.0.0.1",                # what the service binds
       "port":            18800,
       "tokenFile":       ".token",                   # relative to service root
-      "gatewayEndpoint": "gateway.internal:8080",
+      "gatewayEndpoint": "host.docker.internal:8080",
       "libPath":         "libs/OpenShell/python"     # relative to service root
     }
 
@@ -26,7 +26,8 @@ import os
 from pathlib import Path
 
 SERVICE_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_GATEWAY_ENDPOINT = "gateway.internal:8080"
+# 中性缺省(经 hosts 别名解析, 零 DNS 依赖); 有自定义域名时 env/config 覆盖(2026-09-08 内网域清中性)
+DEFAULT_GATEWAY_ENDPOINT = "host.docker.internal:8080"
 
 _config_cache: dict | None = None
 

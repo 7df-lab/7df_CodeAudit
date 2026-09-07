@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "bugClasses": [
+    {
+      "id": "real-entry-path",
+      "statement": "A hand-mounted plugin object bypasses the Loader's export unwrapping and the real service-resolution topology, so the suite can stay green while the shipped entry is broken. At least one keyless test must drive the real Loader/export path end-to-end."
+    },
+    {
+      "id": "config-evaluation-site",
+      "statement": "A syntactically accepted configuration value is not necessarily evaluated at the location that read it. Every documented interpolation site is verified mechanically, and expected-output production asserts semantic possibilities (registered tools, no UNKNOWN_TOOL) independently of the recorded fixture."
+    },
+    {
+      "id": "external-observation",
+      "statement": "HTTP readiness, build success, and a boot manifest are different facts, and a replacement service cannot prove that an existing page changed. Acceptance names the exact origin and observes the requested change there from outside the process."
+    },
+    {
+      "id": "attribution-evidence",
+      "statement": "Process attribution requires a conjunction of independent evidence; a shared text prefix is not a protocol. Informational and fatal diagnostics sharing one namespace use exact, narrow exclusions and stay fail-closed for unknown fatal lines."
+    }
+  ],
+  "entries": [
+    {
+      "id": "0001",
+      "postmortem": "docs/postmortem/0001-acp-default-export-drops-inject.md",
+      "bugClass": "real-entry-path",
+      "pinnedTests": [
+        {
+          "file": "apps/cli/tests/profiles/acp/tests/acp.e2e.ts",
+          "name": "session/new succeeds over real stdio (no model call)",
+          "lane": "e2e"
+        }
+      ],
+      "detectors": []
+    },
+    {
+      "id": "0002",
+      "postmortem": "docs/postmortem/0002-js-expression-disabled-filesystem-tools.md",
+      "bugClass": "config-evaluation-site",
+      "pinnedTests": [
+        {
+          "file": "packages/test-support/session-snapshot/tests/suite.spec.ts",
+          "name": "returns structured UNKNOWN_TOOL call ids and ignores other results",
+          "lane": "unit"
+        }
+      ],
+      "detectors": [
+        "scripts/verify-cordis-config.ts"
+      ]
+    },
+    {
+      "id": "0003",
+      "postmortem": "docs/postmortem/0003-web-agent-gui-feedback-loop.md",
+      "bugClass": "external-observation",
+      "pinnedTests": [
+        {
+          "file": "apps/web/tests/vite-entry.e2e.ts",
+          "name": "rejects the standalone Vite server with the full-host correction",
+          "lane": "web"
+        }
+      ],
+      "detectors": []
+    },
+    {
+      "id": "0004",
+      "postmortem": "docs/postmortem/0004-landlock-partial-notice-misclassified-child-failures.md",
+      "bugClass": "attribution-evidence",
+      "pinnedTests": [
+        {
+          "file": "packages/shell/bash-sandbox/tests/partial-landlock.spec.ts",
+          "name": "reports the fatal line after the notice as SANDBOX_UNAVAILABLE detail",
+          "lane": "unit"
+        },
+        {
+          "file": "packages/shell/bash-sandbox/tests/partial-landlock.spec.ts",
+          "name": "classifies a notice plus child Permission denied as a denial, not runner failure",
+          "lane": "unit"
+        }
+      ],
+      "detectors": []
+    }
+  ]
+}

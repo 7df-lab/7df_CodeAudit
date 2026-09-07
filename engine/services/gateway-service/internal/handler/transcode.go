@@ -82,7 +82,7 @@ func dial(addr string) *grpc.ClientConn {
 
 // Close releases backend connections.
 func (t *Transcoder) Close() {
-	for _, c := range []*grpc.ClientConn{t.projectConn, t.taskConn, t.resultConn, t.storageConn, t.adapterConn} {
+	for _, c := range []*grpc.ClientConn{t.projectConn, t.taskConn, t.resultConn, t.storageConn, t.adapterConn, t.dshConn} {
 		if c != nil {
 			_ = c.Close()
 		}
@@ -236,6 +236,12 @@ func (t *Transcoder) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		t.tools(w, r, rest)
 	case "notifications":
 		t.notifications(w, r, rest)
+	case "inference":
+		// ADR-217: 推理 provider/路由管理面——凭据写入与路由切换，全路由 admin 门禁
+		if !requireAdmin(w, r) {
+			return
+		}
+		t.inference(w, r, rest)
 	default:
 		writeError(w, http.StatusNotImplemented,
 			"route /v1/"+domain+" is not mapped to internal gRPC by gateway (03 §1.1); use gRPC directly")
@@ -887,12 +893,80 @@ func (t *Transcoder) tools(w http.ResponseWriter, r *http.Request, rest []string
 	writeJSON(w, http.StatusOK, b)
 }
 
+// inference — /v1/inference/*（推理 provider/路由管理面，ADR-217）。全路由 admin
+// 门禁（serveHTTP 分发处统一 requireAdmin）。透传 DSHRuntimeService → manager →
+// OpenShell 网关；workspace 不对外暴露（dsh-runtime 从全局配置注入）；credentials
+// 只进不出（任何响应不回显凭据）。写操作幂等键由网关生成注入（R4）。
+func (t *Transcoder) inference(w http.ResponseWriter, r *http.Request, rest []string) {
+	client := pb.NewDSHRuntimeServiceClient(t.dshConn)
+	switch {
+	case len(rest) == 1 && rest[0] == "providers" && r.Method == http.MethodGet:
+		t.call(w, t.dshConn, "DSHRuntimeService/ListInferenceProviders", func(ctx context.Context) (proto.Message, error) {
+			return client.ListInferenceProviders(ctx, &pb.ListInferenceProvidersRequest{})
+		})
+	case len(rest) == 1 && rest[0] == "providers" && r.Method == http.MethodPost:
+		req := &pb.UpsertInferenceProviderRequest{}
+		if err := decodeBody(r, req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
+		t.call(w, t.dshConn, "DSHRuntimeService/UpsertInferenceProvider", func(ctx context.Context) (proto.Message, error) {
+			return client.UpsertInferenceProvider(ctx, req)
+		})
+	case len(rest) == 2 && rest[0] == "providers" && r.Method == http.MethodGet:
+		req := &pb.GetInferenceProviderRequest{Name: rest[1]}
+		t.call(w, t.dshConn, "DSHRuntimeService/GetInferenceProvider", func(ctx context.Context) (proto.Message, error) {
+			return client.GetInferenceProvider(ctx, req)
+		})
+	case len(rest) == 2 && rest[0] == "providers" && r.Method == http.MethodPut:
+		req := &pb.UpsertInferenceProviderRequest{}
+		if err := decodeBody(r, req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.Name = rest[1] // 路径名权威：覆盖 body 同名字段
+		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
+		t.call(w, t.dshConn, "DSHRuntimeService/UpsertInferenceProvider", func(ctx context.Context) (proto.Message, error) {
+			return client.UpsertInferenceProvider(ctx, req)
+		})
+	case len(rest) == 2 && rest[0] == "providers" && r.Method == http.MethodDelete:
+		req := &pb.DeleteInferenceProviderRequest{
+			Name:     rest[1],
+			Metadata: &pb.RequestMetadata{RequestId: newRequestID()},
+		}
+		t.call(w, t.dshConn, "DSHRuntimeService/DeleteInferenceProvider", func(ctx context.Context) (proto.Message, error) {
+			return client.DeleteInferenceProvider(ctx, req)
+		})
+	case len(rest) == 1 && rest[0] == "route" && r.Method == http.MethodGet:
+		t.call(w, t.dshConn, "DSHRuntimeService/GetInferenceRoute", func(ctx context.Context) (proto.Message, error) {
+			return client.GetInferenceRoute(ctx, &pb.GetInferenceRouteRequest{})
+		})
+	case len(rest) == 1 && rest[0] == "route" && r.Method == http.MethodPut:
+		req := &pb.SetInferenceRouteRequest{}
+		if err := decodeBody(r, req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
+		t.call(w, t.dshConn, "DSHRuntimeService/SetInferenceRoute", func(ctx context.Context) (proto.Message, error) {
+			return client.SetInferenceRoute(ctx, req)
+		})
+	default:
+		writeError(w, http.StatusNotFound,
+			"use GET|POST /v1/inference/providers, GET|PUT|DELETE /v1/inference/providers/{name}, GET|PUT /v1/inference/route")
+	}
+}
+
 // notifications — NotificationService（storage-service，14号 §7 通知中心）。
 func (t *Transcoder) notifications(w http.ResponseWriter, r *http.Request, rest []string) {
 	client := pb.NewNotificationServiceClient(t.storageConn)
 	switch {
 	case len(rest) == 0 && r.Method == http.MethodGet:
-		req := &pb.ListNotificationsRequest{UserId: r.URL.Query().Get("user_id")}
+		// ADR-212: user_id 一律取 JWT 身份（07/14 号通知中心按人分域）——原实现
+		// 取自 query 且后端仅校验非空，任何登录用户可读任意用户的通知（IDOR）
+		userID, _ := r.Context().Value(middleware.UserIDKey).(string)
+		req := &pb.ListNotificationsRequest{UserId: userID}
 		if r.URL.Query().Get("unread_only") == "true" {
 			req.UnreadOnly = true
 		}
@@ -900,6 +974,26 @@ func (t *Transcoder) notifications(w http.ResponseWriter, r *http.Request, rest 
 			return client.ListNotifications(ctx, req)
 		})
 	case len(rest) == 2 && rest[1] == "read" && r.Method == http.MethodPost:
+		// ADR-212: 归属核验前置（零 proto 改动）——MarkNotificationRead 仅凭
+		// notification_id 且后端无从获知调用者，任何登录用户此前可标记任意用户
+		// 的通知已读（IDOR）。先 List 本人通知校验成员再标记。
+		userID, _ := r.Context().Value(middleware.UserIDKey).(string)
+		owned, lerr := client.ListNotifications(r.Context(), &pb.ListNotificationsRequest{UserId: userID})
+		if lerr != nil {
+			writeError(w, http.StatusBadGateway, "ownership check failed: "+lerr.Error())
+			return
+		}
+		ownedByID := false
+		for _, n := range owned.GetNotifications() {
+			if n.GetNotificationId() == rest[0] {
+				ownedByID = true
+				break
+			}
+		}
+		if !ownedByID {
+			writeError(w, http.StatusNotFound, "notification not found")
+			return
+		}
 		req := &pb.MarkNotificationReadRequest{NotificationId: rest[0]}
 		t.call(w, t.storageConn, "NotificationService/MarkNotificationRead", func(ctx context.Context) (proto.Message, error) {
 			return client.MarkNotificationRead(ctx, req)

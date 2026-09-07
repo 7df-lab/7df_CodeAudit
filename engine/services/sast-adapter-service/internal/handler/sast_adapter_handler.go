@@ -65,7 +65,7 @@ func loadToolCommands() map[string]toolCommand {
 type SASTAdapterHandler struct {
 	pb.UnimplementedSASTAdapterServiceServer
 
-	mu           sync.Mutex
+	mu           sync.RWMutex // ADR-212: findingsOf 读路径与 scanOneTool 写路径并发（此前无锁读=并发 map 读写 fatal）
 	store        map[string]*pb.UnifiedFinding // taskID-scoped finding id → entity
 	byTask       map[string]map[string]bool    // taskID → toolID → 已执行过扫描（进度按 task+tool 口径, ADR-133）
 	idempotency  sync.Map                      // request_id → cached response
@@ -96,6 +96,8 @@ func NewSASTAdapterHandler(resultAddr string) *SASTAdapterHandler {
 
 // findingsOf returns stored entities for ids (fusion 同进程直取复用).
 func (h *SASTAdapterHandler) findingsOf(ids []string) []*pb.UnifiedFinding {
+	h.mu.RLock() // ADR-212: 与 scanOneTool 的加锁写并发，无锁读=进程级 fatal
+	defer h.mu.RUnlock()
 	out := make([]*pb.UnifiedFinding, 0, len(ids))
 	for _, id := range ids {
 		if f, ok := h.store[id]; ok {

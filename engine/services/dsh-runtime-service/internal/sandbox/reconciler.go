@@ -14,6 +14,7 @@ package sandbox
 // 开关：env CODEAUDIT_SANDBOX_RECONCILE=off 关闭（main.go 接线处判定）。
 
 import (
+	neturl "net/url"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -42,8 +43,13 @@ type managerSandboxRef struct {
 	Labels map[string]string `json:"labels"`
 }
 
-// managedByLabel — 创建时打的归属标签（sandboxSpec），名字正则之外的第二重圈定。
-const managedByLabel = "codeaudit-dsh-runtime"
+// 归属标签键/值——创建时打的标签（sandboxSpec），名字正则之外的第二重圈定。
+// ADR-212: 此前把标签 VALUE 当 KEY 查（Labels["codeaudit-dsh-runtime"]），
+// 实际键是 openshell.io/managed-by——第二重圈定从未命中过（恒 false）。
+const (
+	managedByLabelKey   = "openshell.io/managed-by"
+	managedByLabelValue = "codeaudit-dsh-runtime"
+)
 
 // orphanNames — 纯函数：从 manager 列表投影中选出本服务孤儿（可测，无 IO）。
 // 判据：名字匹配本服务命名规约（或带归属标签）且不在活跃注册表。
@@ -53,7 +59,7 @@ func orphanNames(refs []managerSandboxRef, isActive func(string) bool) []string 
 		if ref.Name == "" || isActive(ref.Name) {
 			continue
 		}
-		if sandboxNameRe.MatchString(ref.Name) || ref.Labels[managedByLabel] == "codeaudit-dsh-runtime" {
+		if sandboxNameRe.MatchString(ref.Name) || ref.Labels[managedByLabelKey] == managedByLabelValue {
 			out = append(out, ref.Name)
 		}
 	}
@@ -160,7 +166,7 @@ func (c *SandboxReconciler) ReconcileOnce() int {
 	n := 0
 	for _, name := range orphans {
 		dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if _, derr := c.r.call(dctx, "DELETE", url+"/api/v1/sandboxes/"+name+"?workspace="+c.r.cfg.Workspace, token, nil); derr != nil {
+		if _, derr := c.r.call(dctx, "DELETE", url+"/api/v1/sandboxes/"+neturl.QueryEscape(name)+"?workspace="+neturl.QueryEscape(c.r.cfg.Workspace), token, nil); derr != nil { // ADR-212: name/workspace 转义
 			log.Printf("[sandbox-reconciler] delete orphan %s failed: %v", name, derr)
 		} else {
 			log.Printf("[sandbox-reconciler] orphan sandbox deleted: %s", name)

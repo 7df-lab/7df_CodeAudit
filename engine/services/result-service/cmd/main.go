@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/codeaudit/common-go/grpcrecover"
 	codeauditcfg "github.com/codeaudit/go-config"
 	pb "github.com/codeaudit/proto-gen"
 	"github.com/codeaudit/services/result-service/internal/repository"
@@ -131,7 +132,10 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	s := grpc.NewServer()
+	s := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(grpcrecover.UnaryServerInterceptor()), // ADR-212: panic 杀请求不杀进程
+		grpc.ChainStreamInterceptor(grpcrecover.StreamServerInterceptor()),
+	)
 	pb.RegisterResultServiceServer(s, resultService)
 	pb.RegisterReportServiceServer(s, reportService)
 

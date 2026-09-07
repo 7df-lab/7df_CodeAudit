@@ -11,7 +11,7 @@
    先弄清是谁的（U3，可能是并行会话），推完或等其收尾，不要强推。
 3. `bash .agent/session.sh claim codeaudit-sim "e2e回归"` —— 模拟栈整体互斥。
 4. 若 `deploy/env.sim` 不存在：按 `deploy/env.sim.example` 建（真实值 gitignored；
-   `OPENSHELL_MANAGER_TOKEN` 留空则用例 07 走"诚实降级"断言）。
+   `OPENSHELL_MANAGER_TOKEN` 留空则 AI 沙箱不可达，用例 07 走 RuleScan 降级断言）。
 
 ## 步骤
 
@@ -22,20 +22,26 @@ make test-sim          # e2e 九用例（deploy/tests/run.sh）
 ```
 
 - 单用例重跑：`bash deploy/tests/run.sh 08`（08=项目级上传→自动任务全链，GUI 用户
-  路径回归锚点；04=任务自带上传件的直连路径；09=可观测面）。
+  路径回归锚点；04=任务自带上传件的直连路径；09=可观测面；10=推理 provider/路由
+  管理面，manager df01928 升级后已入默认序列）。跨机跑：本机经
+  `CODEAUDIT_SIM_URL=http://gateway.internal:18080 CODEAUDIT_SIM_CONSOLE_URL=http://gateway.internal:18088` 指向。
 - **部署接线变更（compose env/卷/网络/档位）必须过 `python3 deploy/check-wiring.py`**
   （sandbox-deploy check 已自动带）——接线缺陷对单测/契约/e2e 幸运路径全部隐形
   （LESSONS #10）。
 - **GUI 人工全流程**（登录→上传→任务→AI 交互日志→终态核验）见
   [docs/manual-test-guide.md](../manual-test-guide.md)（模拟栈口径，2026-09-05 自 engine 迁入）。
-- 用例 07（AI 链路）依赖栈外 manager/沙箱镜像/LLM 出网——不可达时断言**诚实失败**（终态
-  FAILED/DEAD 且 error_message 非空）也算通过；这是设计口径，不是缺陷。
+- 用例 07（AI 链路，2026-09-07 起挂上传型项目）依赖栈外 manager/沙箱镜像/LLM 出网——
+  可达=COMPLETED 且 AI 交互日志非空；不可达=COMPLETED 走 RuleScan 兜底（NEEDS_MANUAL，
+  设计行为）；崩坏（挂死/空原因）=诚实失败终态才算通过。
 - 长任务模式 C/D/E 不在常规 e2e 内（10 号测试计划口径：里程碑级手动用例）。
 
 ## DoD（完成判据）
 
 - `tests/run.sh` 输出 9 用例全过（07 AI 链路按诚实失败口径过），**原始输出归档**
   `.agent/evidence/sim-e2e-<日期>.log`（本机，不入 git）。
+- 涉及流式链路（WS 推流/前端吸收/AI 日志）的交付：另跑 `deploy/tests/ui_check.py --task <RUNNING任务>`
+  （挂载模式对运行中任务采样，进度耦合判据断言面板跟随后端实质产出——终态断言抓不住流式回归；
+  全流程模式已内联同款判据，但挂载模式验证修复更快）。
 - 起栈失败或用例失败 = 未完成，进入失败出口。
 
 ## 失败出口

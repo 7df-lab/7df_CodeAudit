@@ -17,6 +17,7 @@ type ReportRepository interface {
 	ListTemplates(limit int) ([]*model.ReportTemplate, error)
 	GetTemplateByID(id string) (*model.ReportTemplate, error)
 	UpdateReport(report *model.Report) error // ADR-199: 归档 URL 回写
+	DeleteReport(id string) error            // ADR-212: FAILED 报告同键重试需先除旧行（03 §2 同键重试语义）
 }
 
 // 依据: 09 §1 PostgreSQL 双库：codeaudit_result
@@ -81,6 +82,13 @@ func (r *PostgresReportRepository) createTables() error {
 
 	log.Println("Report tables created/verified successfully")
 	return nil
+}
+
+// DeleteReport — ADR-212: FAILED 报告同键重试先除旧行，否则确定性 ID 对主键
+// 裸 INSERT 必冲突（ADR-135 允许失败报告重试的语义由此才真正可达）。
+func (r *PostgresReportRepository) DeleteReport(id string) error {
+	_, err := r.db.Exec(`DELETE FROM reports WHERE id = $1`, id)
+	return err
 }
 
 func (r *PostgresReportRepository) CreateReport(report *model.Report) error {
@@ -202,6 +210,10 @@ func (r *PostgresReportRepository) ListReports(lastID string, limit int, taskID 
 		}
 		reports = append(reports, r)
 	}
+	// ADR-212: 迭代中途网络错误此前被静默吞掉，截断页冒充完整页
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
 
 	nextCursor := ""
 	if len(reports) > limit {
@@ -237,6 +249,10 @@ func (r *PostgresReportRepository) ListTemplates(limit int) ([]*model.ReportTemp
 			return nil, err
 		}
 		templates = append(templates, t)
+	}
+	// ADR-212: 迭代中途网络错误此前被静默吞掉，截断页冒充完整页
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return templates, nil

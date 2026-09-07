@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -35,14 +36,20 @@ import (
 const (
 	// pollWatchInterval — 回退轮询节拍（ADR-188；流式在线时本间隔不生效）。
 	pollWatchInterval = 250 * time.Millisecond
-	wsFlushInterval   = 50 * time.Millisecond // 流式推帧合并窗口（防 token 流风暴逐帧刷）
-	wsWriteTimeout    = 5 * time.Second       // 单帧写超时（超时视为对端失联）
+	// pollMaxTransientTicks — ADR-213: 轮询路瞬时错误容忍拍数（约 2s）；超限才拆线
+	pollMaxTransientTicks = 8
+	wsFlushInterval       = 50 * time.Millisecond // 流式推帧合并窗口（防 token 流风暴逐帧刷）
+	wsWriteTimeout        = 5 * time.Second       // 单帧写超时（超时视为对端失联）
 	// wsPingEvery — 无条件保活 ping 周期（ADR-189 修复：此前仅在"静默期"ping，持续
 	// 推流期间反而不 ping → 客户端无 pong → 读限期 90s 必然拆线；改无条件周期 ping，
 	// 自动 pong 的对端（浏览器/python）以此证明存活并续期）。
 	wsPingEvery     = 20 * time.Second
 	wsReadIdleLimit = 90 * time.Second // 未收到任何客户端帧（含 pong）即拆线
-	wsMaxLifetime   = 30 * time.Minute // 连接硬上限：防半开连接泄漏，超限由前端重连续订
+	// 连接硬上限（防极端泄漏的最后防线）：读限 90s+无条件 ping/pong 已保证半开连接
+	// 必被拆除，前端对其他关闭路径自带 5s 重连续订。gw-f6a3523 实证：32.5 分钟的
+	// AI 审计撞上 30min 旧值 → 强制重连窗口与 30min access token TTL 竞态，长任务
+	// 观测页中途断流。上调至 6h（> 最长审计任务），仅作泄漏兜底而非活性机制。
+	wsMaxLifetime = 6 * time.Hour
 	// aiExpectGrace — ADR-189：任务终态后 AI 侧收束宽限窗（在途分帧的到达余量）。
 	// 该窗过后仍无任何 AI 字节 → 判定"该任务不会有 AI 交互日志"（终态前 AI 阶段
 	// 未产出任何内容，最终日志=空，complete=true 是如实陈述而非猜测）。
@@ -152,19 +159,27 @@ func (t *Transcoder) pushFrame(conn *websocket.Conn, cur *watchCursors) error {
 // 客户端断开/写失败/寿命上限）；false=流式不可用（调用方回退 pollWatch，cur 保留
 // 已吸收状态续跑，游标不重不漏）。
 func (t *Transcoder) streamWatch(ctx context.Context, conn *websocket.Conn, taskID string, cur *watchCursors, writeClose func(int, string)) bool {
-	tsc, err := pb.NewTaskServiceClient(t.taskConn).StreamTaskSnapshot(ctx, &pb.StreamTaskSnapshotRequest{
+	// ADR-213: 流生命周期挂独立 ctx——本函数任何退出路径（回退轮询/收束/客户端
+	// 断开）都撤泵，泵的 Recv 立即解锁退出。原实现流随 ctx 之外被弃置，
+	// Recv 挂死的泵 goroutine 与上游流逐次泄漏。
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+
+	tsc, err := pb.NewTaskServiceClient(t.taskConn).StreamTaskSnapshot(streamCtx, &pb.StreamTaskSnapshotRequest{
 		TaskId: taskID, LogsAfter: cur.logsAfter,
 	})
 	if err != nil {
+		cancelStream()
 		return false // 旧二进制（Unimplemented）或 task-service 不可达
 	}
 	var ais pb.DSHRuntimeService_StreamAIInteractionLogClient
 	if t.dshConn != nil {
-		if c, cerr := pb.NewDSHRuntimeServiceClient(t.dshConn).StreamAIInteractionLog(ctx, &pb.StreamAIInteractionLogRequest{
+		if c, cerr := pb.NewDSHRuntimeServiceClient(t.dshConn).StreamAIInteractionLog(streamCtx, &pb.StreamAIInteractionLogRequest{
 			TaskId: taskID, Cursor: cur.aiCursor,
 		}); cerr == nil {
 			ais = c
 		} else {
+			cancelStream()
 			return false // AI 流订阅失败：整路回退轮询（AI 收束判定依赖该流）
 		}
 	}
@@ -178,7 +193,11 @@ func (t *Transcoder) streamWatch(ctx context.Context, conn *websocket.Conn, task
 			if err != nil {
 				return
 			}
-			taskCh <- d
+			select {
+			case taskCh <- d:
+			case <-streamCtx.Done(): // ADR-213: 消费端退出后缓冲打满不再挂死泵
+				return
+			}
 		}
 	}()
 	go func() {
@@ -191,7 +210,11 @@ func (t *Transcoder) streamWatch(ctx context.Context, conn *websocket.Conn, task
 			if err != nil {
 				return
 			}
-			aiCh <- a
+			select {
+			case aiCh <- a:
+			case <-streamCtx.Done():
+				return
+			}
 		}
 	}()
 
@@ -326,6 +349,14 @@ func (t *Transcoder) streamWatch(ctx context.Context, conn *websocket.Conn, task
 						continue
 					}
 				}
+				// ADR-213: 回退前冲刷——游标已越过 pend 内容，轮询路取不到，不冲即丢
+				// （违反"游标不重不漏"；丢的恰是流断前一窗，多为最关键的报错行）
+				if dirty {
+					if !push() {
+						return true
+					}
+					dirty = false
+				}
 				return false // 断流未收束（含 AI 流断而未 complete）→ 轮询兜底续跑
 			}
 			if cur.pendAI == nil {
@@ -338,7 +369,14 @@ func (t *Transcoder) streamWatch(ctx context.Context, conn *websocket.Conn, task
 			writeClose(websocket.CloseNormalClosure, "task settled")
 			return true
 		}
-		if aiEnded && !sawAIComplete {
+		if ais != nil && aiEnded && !sawAIComplete { // ADR-213: ais==nil（无 DSH）不构成"AI 流断"——原条件恒真使 SAST-only 部署的流式路成死路径
+			// ADR-213: 回退前冲刷（同上——游标已越过，不冲即丢）
+			if dirty {
+				if !push() {
+					return true
+				}
+				dirty = false
+			}
 			return false // AI 流断而未 complete：任务侧流式虽好，收束判定交轮询兜底
 		}
 	}
@@ -351,6 +389,7 @@ func (t *Transcoder) pollWatch(ctx context.Context, conn *websocket.Conn, taskID
 	keepalive := time.NewTicker(wsPingEvery) // ADR-189：无条件周期 ping（对端 pong 续读限期）
 	defer keepalive.Stop()
 	var terminalFirst time.Time
+	transientTicks := 0 // ADR-213: 连续瞬时错误计数（成功一拍即清零）
 	for {
 		if ctx.Err() != nil {
 			return
@@ -364,9 +403,22 @@ func (t *Transcoder) pollWatch(ctx context.Context, conn *websocket.Conn, taskID
 		frame, terminal, aiDone, err := t.aggregateWatchFrame(tickCtx, taskID, cur)
 		tickCancel()
 		if err != nil {
-			// 任务不存在等确定性错误：如实告知后拆线（前端回退轮询呈错误终态）
-			writeClose(websocket.CloseInternalServerErr, status.Convert(err).Message())
-			return
+			// 确定性错误：如实告知后拆线（前端回退轮询呈错误终态）
+			switch status.Convert(err).Code() {
+			case codes.NotFound, codes.InvalidArgument, codes.PermissionDenied:
+				writeClose(websocket.CloseInternalServerErr, status.Convert(err).Message())
+				return
+			}
+			// ADR-213: 瞬时错误（后端重启/慢拍）容忍连续 N 拍——游标未动，下拍
+			// 幂等重拉；原实现任何错误即 1011，后端一次抖动=全员同时断线+重连风暴
+			transientTicks++
+			if transientTicks > pollMaxTransientTicks {
+				writeClose(websocket.CloseInternalServerErr, "watch unstable: "+status.Convert(err).Message())
+				return
+			}
+			frame, terminal, aiDone = nil, false, false
+		} else {
+			transientTicks = 0
 		}
 		// ADR-189 推断收束（与流式路同口径）：该任务不会有 AI 交互日志时不再等
 		// complete（纯 SAST 无 AI 阶段；终态后宽限窗仍零 AI 字节=最终日志为空）。

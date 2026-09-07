@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# tests/stubs/pct — 离线行为级测试的 pct 桩。
+# 记录 argv 到 $STUB_LOG 后真执行内层命令：
+#   pct exec <vmid> -- <cmd...>   → 剥前缀后 exec（stdin 透传，heredoc 补丁可走通）
+#   pct push <vmid> <src> <dst>   → cp（deploy.sh 的文件下发路径）
+set -u
+LOG="${STUB_LOG:?STUB_LOG required}"
+echo "pct $*" >> "$LOG"
+sub="${1:-}"
+case "$sub" in
+    exec) shift 3; exec "$@" ;;
+    push) shift 2; exec cp "$1" "$2" ;;
+esac
+exit 0

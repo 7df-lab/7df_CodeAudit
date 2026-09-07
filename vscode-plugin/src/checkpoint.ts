@@ -48,7 +48,16 @@ export class CheckpointStore {
 
   list(): string[] {
     if (!this.fsOps.existsSync(this.rootDir)) return [];
-    return this.fsOps.readdirSync(this.rootDir).filter((d) => d.startsWith('cp-')).sort().reverse();
+    // 按 (时间戳, 序号) 数值序倒序：id 含 `cp-<ts>-<seq>`，seq 跨位数（9→10）时字典序会
+    // 把 cp-…-10 排在 cp-…-9 之前，latest() 取错最近快照（低风险批量连修高危）
+    const parsed = this.fsOps.readdirSync(this.rootDir)
+      .filter((d) => d.startsWith('cp-'))
+      .map((d) => {
+        const m = /^cp-(\d+)-(\d+)$/.exec(d);
+        return m ? { id: d, ts: Number(m[1]), seq: Number(m[2]) } : { id: d, ts: -1, seq: -1 };
+      });
+    parsed.sort((a, b) => (b.ts - a.ts) || (b.seq - a.seq) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+    return parsed.map((p) => p.id);
   }
 
   latest(): string | null {

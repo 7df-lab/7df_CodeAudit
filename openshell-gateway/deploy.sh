@@ -22,7 +22,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-REMOTE="${REMOTE:-pct exec 107 --}"
+# `-` 而非 `:-`：REMOTE=""（空串）= 显式本机执行契约，与 gateway_lifecycle.sh
+# 同语义（README"同变量"口径 + 伞仓 production-deploy.sh 依赖；`:-` 会在空串时
+# 静默触发 pct 缺省、打错目标宿主——2026-09-05 同族回归见 gateway_lifecycle.sh）。
+REMOTE="${REMOTE-pct exec 107 --}"
 VMID="${VMID:-107}"
 DEPLOY_DIR="${DEPLOY_DIR:-/root/os-deploy/deploy/docker}"
 

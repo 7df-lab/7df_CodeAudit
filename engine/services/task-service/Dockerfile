@@ -15,7 +15,9 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /task-ser
 # Runtime stage
 FROM alpine:3.19
 
-RUN apk --no-cache add ca-certificates tzdata
+# git: 仓库拉取模式（ADR-163 repo_fetch.go 在本容器内 exec git clone）——缺二进制
+# 则该模式部署形态下恒 DEAD（R-29：'"git" executable file not found in $PATH'）
+RUN apk --no-cache add ca-certificates tzdata git
 
 COPY --from=builder /task-service /usr/local/bin/task-service
 

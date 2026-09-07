@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codeaudit/common-go/grpcrecover"
 	codeauditcfg "github.com/codeaudit/go-config"
 	v1 "github.com/codeaudit/proto-gen"
 	"github.com/codeaudit/services/storage-service/internal/handler"
@@ -103,7 +104,10 @@ func main() {
 		log.Fatalf("failed to listen on %s: %v", port, err)
 	}
 
-	s := grpc.NewServer()
+	s := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(grpcrecover.UnaryServerInterceptor()), // ADR-212: panic 杀请求不杀进程
+		grpc.ChainStreamInterceptor(grpcrecover.StreamServerInterceptor()),
+	)
 
 	// Register StorageService (6 RPCs, codeaudit_common.proto L1066-L1073)
 	v1.RegisterStorageServiceServer(s, storageHandler)

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 
+	"github.com/codeaudit/common-go/grpcrecover"
 	codeauditcfg "github.com/codeaudit/go-config"
 	pb "github.com/codeaudit/proto-gen"
 	"github.com/codeaudit/services/sast-adapter-service/internal/handler"
@@ -33,7 +34,10 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	s := grpc.NewServer()
+	s := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(grpcrecover.UnaryServerInterceptor()), // ADR-212: panic 杀请求不杀进程
+		grpc.ChainStreamInterceptor(grpcrecover.StreamServerInterceptor()),
+	)
 
 	// SASTAdapterService — 实体存储与 fusion 共享（同部署单元，01 §4.2）
 	// 依据: codeaudit_common.proto L1022-L1031 + L1047-L1059

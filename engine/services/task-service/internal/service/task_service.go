@@ -424,7 +424,10 @@ func (s *TaskServiceImpl) registerStagesLocked(task *pb.ScanTask) {
 	}
 	var stages []*pb.TaskStage
 	add := func(id string, typ pb.StageType) {
-		stages = append(stages, &pb.TaskStage{StageId: id, Type: typ, Status: pb.StageStatus_STAGE_STATUS_PENDING})
+		// ADR-212: Metadata 就地初始化——ReportStageComplete 会写 output_refs，
+		// 注册阶段不带 map 时对 nil map 赋值 panic（grpc-go 无内建 recover=杀进程）
+		stages = append(stages, &pb.TaskStage{StageId: id, Type: typ, Status: pb.StageStatus_STAGE_STATUS_PENDING,
+			Metadata: map[string]string{}})
 	}
 	switch task.GetScanMode() {
 	case pb.ScanMode_SCAN_MODE_SAST_ONLY: // 模式A（ADR-182）：纯SAST→去重合并→报告
@@ -1091,6 +1094,10 @@ func (s *TaskServiceImpl) UpdateTaskStatus(taskID string, newStatus pb.TaskStatu
 func findOrInsertStageLocked(task *pb.ScanTask, stageID string) *pb.TaskStage {
 	for _, st := range task.GetStages() {
 		if st.GetStageId() == stageID {
+			// ADR-212: 旧代码路径注册的阶段可能无 Metadata，防御式补齐
+			if st.Metadata == nil {
+				st.Metadata = map[string]string{}
+			}
 			return st
 		}
 	}

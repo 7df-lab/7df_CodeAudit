@@ -3038,6 +3038,36 @@ class DSHRuntimeServiceStub:
                 request_serializer=codeaudit__common__pb2.StreamAIInteractionLogRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.GetAIInteractionLogResponse.FromString,
                 _registered_method=True)
+        self.ListInferenceProviders = channel.unary_unary(
+                '/codeaudit.common.v1.DSHRuntimeService/ListInferenceProviders',
+                request_serializer=codeaudit__common__pb2.ListInferenceProvidersRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.ListInferenceProvidersResponse.FromString,
+                _registered_method=True)
+        self.GetInferenceProvider = channel.unary_unary(
+                '/codeaudit.common.v1.DSHRuntimeService/GetInferenceProvider',
+                request_serializer=codeaudit__common__pb2.GetInferenceProviderRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.InferenceProviderInfo.FromString,
+                _registered_method=True)
+        self.UpsertInferenceProvider = channel.unary_unary(
+                '/codeaudit.common.v1.DSHRuntimeService/UpsertInferenceProvider',
+                request_serializer=codeaudit__common__pb2.UpsertInferenceProviderRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.UpsertInferenceProviderResponse.FromString,
+                _registered_method=True)
+        self.DeleteInferenceProvider = channel.unary_unary(
+                '/codeaudit.common.v1.DSHRuntimeService/DeleteInferenceProvider',
+                request_serializer=codeaudit__common__pb2.DeleteInferenceProviderRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.DeleteInferenceProviderResponse.FromString,
+                _registered_method=True)
+        self.GetInferenceRoute = channel.unary_unary(
+                '/codeaudit.common.v1.DSHRuntimeService/GetInferenceRoute',
+                request_serializer=codeaudit__common__pb2.GetInferenceRouteRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.InferenceRouteInfo.FromString,
+                _registered_method=True)
+        self.SetInferenceRoute = channel.unary_unary(
+                '/codeaudit.common.v1.DSHRuntimeService/SetInferenceRoute',
+                request_serializer=codeaudit__common__pb2.SetInferenceRouteRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.SetInferenceRouteResponse.FromString,
+                _registered_method=True)
 
 
 class DSHRuntimeServiceServicer:
@@ -3131,6 +3161,46 @@ class DSHRuntimeServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListInferenceProviders(self, request, context):
+        """推理 provider/路由管理（ADR-217：经 openshell-manager 透传 OpenShell 网关，权威
+        存储在网关 gateway.db；本服务只做管道。workspace 由 dsh-runtime 从全局配置
+        dsh_runtime.sandbox.workspace 注入，不对外暴露；credentials 只进不出——透传
+        manager→网关加密存储，任何响应不回流）
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetInferenceProvider(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpsertInferenceProvider(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteInferenceProvider(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetInferenceRoute(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetInferenceRoute(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_DSHRuntimeServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -3193,6 +3263,36 @@ def add_DSHRuntimeServiceServicer_to_server(servicer, server):
                     servicer.StreamAIInteractionLog,
                     request_deserializer=codeaudit__common__pb2.StreamAIInteractionLogRequest.FromString,
                     response_serializer=codeaudit__common__pb2.GetAIInteractionLogResponse.SerializeToString,
+            ),
+            'ListInferenceProviders': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListInferenceProviders,
+                    request_deserializer=codeaudit__common__pb2.ListInferenceProvidersRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.ListInferenceProvidersResponse.SerializeToString,
+            ),
+            'GetInferenceProvider': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetInferenceProvider,
+                    request_deserializer=codeaudit__common__pb2.GetInferenceProviderRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.InferenceProviderInfo.SerializeToString,
+            ),
+            'UpsertInferenceProvider': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpsertInferenceProvider,
+                    request_deserializer=codeaudit__common__pb2.UpsertInferenceProviderRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.UpsertInferenceProviderResponse.SerializeToString,
+            ),
+            'DeleteInferenceProvider': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteInferenceProvider,
+                    request_deserializer=codeaudit__common__pb2.DeleteInferenceProviderRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.DeleteInferenceProviderResponse.SerializeToString,
+            ),
+            'GetInferenceRoute': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetInferenceRoute,
+                    request_deserializer=codeaudit__common__pb2.GetInferenceRouteRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.InferenceRouteInfo.SerializeToString,
+            ),
+            'SetInferenceRoute': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetInferenceRoute,
+                    request_deserializer=codeaudit__common__pb2.SetInferenceRouteRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.SetInferenceRouteResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -3524,6 +3624,168 @@ class DSHRuntimeService:
             '/codeaudit.common.v1.DSHRuntimeService/StreamAIInteractionLog',
             codeaudit__common__pb2.StreamAIInteractionLogRequest.SerializeToString,
             codeaudit__common__pb2.GetAIInteractionLogResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListInferenceProviders(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.DSHRuntimeService/ListInferenceProviders',
+            codeaudit__common__pb2.ListInferenceProvidersRequest.SerializeToString,
+            codeaudit__common__pb2.ListInferenceProvidersResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetInferenceProvider(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.DSHRuntimeService/GetInferenceProvider',
+            codeaudit__common__pb2.GetInferenceProviderRequest.SerializeToString,
+            codeaudit__common__pb2.InferenceProviderInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpsertInferenceProvider(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.DSHRuntimeService/UpsertInferenceProvider',
+            codeaudit__common__pb2.UpsertInferenceProviderRequest.SerializeToString,
+            codeaudit__common__pb2.UpsertInferenceProviderResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteInferenceProvider(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.DSHRuntimeService/DeleteInferenceProvider',
+            codeaudit__common__pb2.DeleteInferenceProviderRequest.SerializeToString,
+            codeaudit__common__pb2.DeleteInferenceProviderResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetInferenceRoute(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.DSHRuntimeService/GetInferenceRoute',
+            codeaudit__common__pb2.GetInferenceRouteRequest.SerializeToString,
+            codeaudit__common__pb2.InferenceRouteInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetInferenceRoute(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.DSHRuntimeService/SetInferenceRoute',
+            codeaudit__common__pb2.SetInferenceRouteRequest.SerializeToString,
+            codeaudit__common__pb2.SetInferenceRouteResponse.FromString,
             options,
             channel_credentials,
             insecure,

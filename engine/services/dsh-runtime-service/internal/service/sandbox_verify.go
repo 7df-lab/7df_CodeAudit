@@ -30,10 +30,22 @@ func newSandboxRunner(taskID string, emit TaskLogFunc) (*sandbox.ManagerRunner, 
 	if emit != nil {
 		cfg.EventFn = func(level, msg string) { emit(level, msg) } // source=sandbox 由 taskLogSink 标定
 	}
-	aiEntry := sharedAILogs.writer(taskID)
-	cfg.OnHumanLog = func(s string) { aiEntry.write([]byte(s)) }
-	cfg.OnRawLog = aiEntry.writeRaw
+	aiEntry := wireAILog(cfg, taskID)
 	return sandbox.NewManagerRunner(*cfg), aiEntry, nil
+}
+
+// wireAILog — ADR-215: 沙箱启用时建交互日志条目并接入 cfg 双流出口；禁用态
+// 不建（返回 nil，finish nil 安全）。回调必须在 NewManagerRunner 之前写入 cfg
+// ——runner 构造时拷贝 cfg，构造后补线即丢失（GUI 实测 AI 交互日志恒 0KB 的
+// 回归根因，ADR-215 补记）。
+func wireAILog(cfg *sandbox.Config, taskID string) *aiLogEntry {
+	if cfg.Mode != "openshell" {
+		return nil
+	}
+	e := sharedAILogs.writer(taskID)
+	cfg.OnHumanLog = func(s string) { e.write([]byte(s)) }
+	cfg.OnRawLog = e.writeRaw
+	return e
 }
 
 // sandboxRelPath — 发现里的文件路径 → 沙箱内项目相对路径（绝对路径落在项目目录下时取相对；
@@ -61,10 +73,10 @@ func verifyViaSandbox(ctx context.Context, taskID, projectPath string,
 	if err != nil {
 		return nil, err
 	}
-	defer aiEntry.finish()
 	if !r.Enabled() {
 		return nil, sandbox.ErrDisabled
 	}
+	defer aiEntry.finish() // nil 安全（ADR-215）
 
 	// ADR-186：进沙箱前同段去重——同文件同段只发一轮，跨工具重复不再重复进沙箱。
 	groups := groupSegments(findings)
@@ -126,10 +138,10 @@ func discoverViaSandbox(ctx context.Context, taskID, projectPath string,
 	if err != nil {
 		return nil, err
 	}
-	defer aiEntry.finish()
 	if !r.Enabled() {
 		return nil, sandbox.ErrDisabled
 	}
+	defer aiEntry.finish() // nil 安全（ADR-215）
 
 	finals, err := r.RunSession(ctx, sandbox.SessionTask{
 		TaskID:     taskID,

@@ -11,5 +11,5 @@
     "skipLibCheck": true
   },
   "include": ["test/**/*.ts", "src/**/*.ts"],
-  "exclude": ["node_modules", "out", "src/extension.ts", "src/workspaceZip.ts"]
+  "exclude": ["node_modules", "out"]
 }

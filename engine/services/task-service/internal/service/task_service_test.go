@@ -154,6 +154,11 @@ func TestRegisterStages_AIEnhancedSast(t *testing.T) {
 	got := make([]string, 0, len(task.GetStages()))
 	for _, st := range task.GetStages() {
 		got = append(got, st.GetStageId())
+		// ADR-212①: 注册阶段必须就地初始化 Metadata——ReportStageComplete 写
+		// output_refs 时 nil map 赋值 panic（变异自检 M2 锚点）
+		if st.GetMetadata() == nil {
+			t.Fatalf("stage %s registered without Metadata map (nil-map panic on output_refs)", st.GetStageId())
+		}
 	}
 	if len(got) != len(want) {
 		t.Fatalf("stages want %v, got %v", want, got)
@@ -625,5 +630,39 @@ func TestRunOrchestration_RecorderWired(t *testing.T) {
 	}
 	if analyze.GetStartedAt() == nil || analyze.GetStatus() == pb.StageStatus_STAGE_STATUS_SKIPPED {
 		t.Fatalf("analyze must have started via wired recorder, got %+v", analyze)
+	}
+}
+
+// ADR-212 回归：已注册阶段（StartTask 路径 registerStagesLocked）不带 Metadata 时，
+// ReportStageComplete 写 output_refs = "assignment to entry in nil map" panic
+// （grpc-go 无内建 recover=杀进程；既有 ThreeState 用例未 Start 任务，走的是
+// findOrInsert 的插入分支，从未覆盖本路径）。修复=注册即初始化+防御式补齐。
+func TestReportStageComplete_OutputRefsOnRegisteredStage(t *testing.T) {
+	s := newSvc(t)
+	s.mu.Lock()
+	task := &pb.ScanTask{TaskId: "t-reg-meta", Status: pb.TaskStatus_TASK_STATUS_CREATED,
+		ScanMode: pb.ScanMode_SCAN_MODE_AI_ONLY}
+	s.tasks[task.TaskId] = task
+	s.registerStagesLocked(task) // analyze/ai/report：与 StartTask 同一注册路径
+	s.mu.Unlock()
+
+	if _, err := s.ReportStageComplete(context.Background(),
+		&pb.ReportStageCompleteRequest{
+			Metadata: &pb.RequestMetadata{RequestId: "stg-reg-1"},
+			TaskId:   "t-reg-meta", StageId: "analyze",
+			OutputRefs: map[string]string{"cpg": "/tmp/cpg.json"},
+		}); err != nil {
+		t.Fatalf("report on registered stage must not fail (pre-fix: nil map panic): %v", err)
+	}
+	s.mu.RLock()
+	var meta map[string]string
+	for _, st := range task.GetStages() {
+		if st.GetStageId() == "analyze" {
+			meta = st.GetMetadata()
+		}
+	}
+	s.mu.RUnlock()
+	if meta["cpg"] != "/tmp/cpg.json" {
+		t.Fatalf("output_refs not persisted on registered stage: %v", meta)
 	}
 }

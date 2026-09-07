@@ -324,48 +324,69 @@ class GatewayFacade:
 
     # -- inference route / provider admin ------------------------------------
 
-    def _route_client(self):
+    def _inference_stub(self):
+        """Direct stub on the inference service (same channel as the SDK
+        SandboxClient). 直连而非 SDK InferenceRouteClient：SetInferenceRoute
+        的回执携带 validation_performed/validated_endpoints，SDK 客户端把这两
+        个字段丢弃了——连通性验证回执是对外契约（docs/api-external.md 3.16）。"""
         _ensure_sdk_path()
-        from openshell.sandbox import InferenceRouteClient
-        return InferenceRouteClient.from_sandbox_client(self._sdk())
+        from openshell._proto import inference_pb2_grpc
+        return inference_pb2_grpc.InferenceStub(self._sdk()._channel)
 
     def get_route(self, *, workspace: str) -> Dict[str, Any]:
-        cfg = self._route_client().get_route(workspace=workspace)
-        return {"provider": cfg.provider_name, "model": cfg.model_id,
-                "version": cfg.version}
+        _ensure_sdk_path()  # 测试缝会整体替换 _inference_stub，pb 导入前必须自备路径
+        stub = self._inference_stub()
+        from openshell._proto import inference_pb2 as ipb
+        resp = stub.GetInferenceRoute(
+            ipb.GetInferenceRouteRequest(workspace=workspace), timeout=30)
+        return {"provider": resp.provider_name, "model": resp.model_id,
+                "version": resp.version}
 
     def set_route(self, *, workspace: str, provider: str, model: str,
                   no_verify: bool = False) -> Dict[str, Any]:
-        cfg = self._route_client().set_route(
-            workspace=workspace, provider_name=provider, model_id=model,
-            no_verify=no_verify)
-        return {"provider": cfg.provider_name, "model": cfg.model_id,
-                "version": cfg.version}
+        _ensure_sdk_path()
+        stub = self._inference_stub()
+        from openshell._proto import inference_pb2 as ipb
+        resp = stub.SetInferenceRoute(
+            ipb.SetInferenceRouteRequest(
+                workspace=workspace, provider_name=provider, model_id=model,
+                no_verify=no_verify), timeout=30)
+        return {"provider": resp.provider_name, "model": resp.model_id,
+                "version": resp.version,
+                "validation_performed": bool(resp.validation_performed),
+                "validated_endpoints": [{"url": e.url, "protocol": e.protocol}
+                                        for e in resp.validated_endpoints]}
 
-    def list_providers(self, *, workspace: str) -> List[str]:
+    def list_providers(self, *, workspace: str) -> List[Dict[str, Any]]:
+        """Provider 概要清单（name/type/config），凭据按省略屏蔽——同
+        get_provider 的脱敏纪律，秘密只在网关加密存储。"""
         _ensure_sdk_path()
         client = self._sdk()
         from openshell._proto import openshell_pb2 as pb
         stub = pb_grpc_stub(client)
         providers = stub.ListProviders(
             pb.ListProvidersRequest(workspace=workspace), timeout=30)
-        return [p.metadata.name for p in providers.providers]
+        return [{"name": p.metadata.name, "type": p.type,
+                 "config": dict(p.config)} for p in providers.providers]
 
     def get_provider(self, *, workspace: str, name: str) -> Dict[str, Any]:
         """Provider detail WITHOUT credentials (secret masking by omission:
         credentials live only in the gateway's encrypted store)."""
+        for p in self.list_providers(workspace=workspace):
+            if p["name"] == name:
+                return p
+        raise LookupError(f"provider '{name}' not found in workspace "
+                          f"'{workspace}'")
+
+    def delete_provider(self, *, workspace: str, name: str) -> Dict[str, Any]:
         _ensure_sdk_path()
         client = self._sdk()
         from openshell._proto import openshell_pb2 as pb
         stub = pb_grpc_stub(client)
-        providers = stub.ListProviders(
-            pb.ListProvidersRequest(workspace=workspace), timeout=30)
-        for p in providers.providers:
-            if p.metadata.name == name:
-                return {"name": p.metadata.name, "type": p.type,
-                        "config": dict(p.config)}
-        raise LookupError(f"provider '{name}' not found in workspace "
-                          f"'{workspace}'")
+        resp = stub.DeleteProvider(
+            pb.DeleteProviderRequest(name=name, workspace=workspace),
+            timeout=30)
+        return {"name": name, "deleted": bool(resp.deleted)}
 
     def upsert_provider(self, *, workspace: str, name: str, type_: str,
                         credentials: Dict[str, str],

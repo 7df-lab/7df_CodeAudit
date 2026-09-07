@@ -6,6 +6,7 @@ package service
 
 import (
 	"bytes"
+	"container/list"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,8 +14,13 @@ import (
 )
 
 const (
-	aiLogMaxBytes   = 16 << 20 // 单任务交互日志内存/磁盘上限（16MB）
+	aiLogMaxBytes    = 16 << 20  // 单任务交互日志内存/磁盘上限（16MB）
 	aiLogReadDefault = 256 << 10 // GetAIInteractionLog 单次默认返回 256KB
+	// ADR-215: 进程级双上限——条目数与总字节。此前 map 只增不减（线性内存泄漏，
+	// 数百任务即 GB 级驻留）；磁盘 .ai.log/.sse.log 兜底使内存淘汰不丢数据
+	// （读路径 readDiskOnly 承接）。数值属实现细节，依据见 ADR-215。
+	aiLogMaxEntries    = 64
+	aiLogMaxTotalBytes = 256 << 20
 )
 
 // aiLogEntry — 单任务的交互日志留存（人性化流）。
@@ -26,33 +32,84 @@ type aiLogEntry struct {
 	humanPath string // 人性化流落盘路径（重启兜底；空=未配置落盘）
 	rawPath   string // 原始 SSE 帧落盘路径（机器调试留存，不经 RPC）
 	subs      map[chan struct{}]bool // ADR-189 流式订阅者（write/finish 即时唤醒）
+	taskID    string                 // ADR-215: 淘汰定位用
+	lruEl     any                    // ADR-215: *list.Element（store LRU 位）
 }
 
-// aiLogStore — 任务级交互日志注册表。
+// aiLogStore — 任务级交互日志注册表（ADR-215：LRU 有界，淘汰序=最久未触碰，
+// 优先淘汰已终态条目；进行中（未 finish）条目只在无终态条目可淘汰时才按
+// 内存上限硬性淘汰——磁盘副本兜底，数据不丢）。
 type aiLogStore struct {
 	mu   sync.Mutex
 	logs map[string]*aiLogEntry
-	dir  string // 落盘根目录（空=不落盘）
+	lru  *list.List // 前端=最近触碰；元素 *aiLogEntry
+	dir  string     // 落盘根目录（空=不落盘）
 }
 
 func newAILogStore(dir string) *aiLogStore {
-	return &aiLogStore{logs: map[string]*aiLogEntry{}, dir: dir}
+	return &aiLogStore{logs: map[string]*aiLogEntry{}, lru: list.New(), dir: dir}
 }
 
-// writer — 取（或惰性建）任务日志条目。
+// touchLocked — 刷新 LRU 位（调用方持 s.mu）。
+func (s *aiLogStore) touchLocked(e *aiLogEntry) {
+	if el, ok := e.lruEl.(*list.Element); ok {
+		s.lru.MoveToFront(el)
+	}
+}
+
+// evictLocked — 超上限时从尾部（最久未触碰）淘汰：先淘汰已终态条目；
+// 仍超限（极端：全部进行中）再按序硬淘汰，内存上限优先。
+func (s *aiLogStore) evictLocked() {
+	over := func() bool {
+		if len(s.logs) <= aiLogMaxEntries && s.totalBytesLocked() <= aiLogMaxTotalBytes {
+			return false
+		}
+		return len(s.logs) > 0
+	}
+	for pass := 0; pass < 2 && over(); pass++ {
+		for el := s.lru.Back(); el != nil && over(); {
+			prev := el.Prev()
+			cand := el.Value.(*aiLogEntry)
+			if pass == 0 && !cand.complete { // 第一轮只淘汰已终态
+				el = prev
+				continue
+			}
+			s.lru.Remove(el)
+			delete(s.logs, cand.taskID)
+			el = prev
+		}
+	}
+}
+
+// totalBytesLocked — 全条目内存占用合计（条目数 ≤ 上限，遍历廉价；调用方持 s.mu）。
+func (s *aiLogStore) totalBytesLocked() int64 {
+	var total int64
+	for _, e := range s.logs {
+		e.mu.Lock()
+		total += int64(e.buf.Len())
+		e.mu.Unlock()
+	}
+	return total
+}
+
+// writer — 取（或惰性建）任务日志条目；新建即触发 LRU 淘汰。
 func (s *aiLogStore) writer(taskID string) *aiLogEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.logs[taskID]
-	if !ok {
-		e = &aiLogEntry{subs: map[chan struct{}]bool{}}
-		if s.dir != "" {
-			e.humanPath = filepath.Join(s.dir, taskID+".ai.log")
-			e.rawPath = filepath.Join(s.dir, taskID+".sse.log")
-			_ = os.MkdirAll(s.dir, 0o755)
-		}
-		s.logs[taskID] = e
+	if ok {
+		s.touchLocked(e)
+		return e
 	}
+	e = &aiLogEntry{subs: map[chan struct{}]bool{}, taskID: taskID}
+	if s.dir != "" {
+		e.humanPath = filepath.Join(s.dir, taskID+".ai.log")
+		e.rawPath = filepath.Join(s.dir, taskID+".sse.log")
+		_ = os.MkdirAll(s.dir, 0o755)
+	}
+	s.logs[taskID] = e
+	e.lruEl = s.lru.PushFront(e)
+	s.evictLocked()
 	return e
 }
 
@@ -128,8 +185,12 @@ func (e *aiLogEntry) appendFile(path string, p []byte) {
 	_, _ = f.Write(p)
 }
 
-// finish — 标记终态（最终交互日志就此定格）。
+// finish — 标记终态（最终交互日志就此定格）。nil 安全：禁用态不建条目
+// （ADR-215），调用方的 defer finish() 无需判空。
 func (e *aiLogEntry) finish() {
+	if e == nil {
+		return
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.complete = true

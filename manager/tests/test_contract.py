@@ -24,7 +24,6 @@ import tempfile
 import threading
 import time
 import uvicorn
-from openshell_manager import api
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -35,6 +34,7 @@ from typing import Dict, Tuple
 SERVICE_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SERVICE_ROOT))
 
+from openshell_manager import api  # noqa: E402 — 须先挂 SERVICE_ROOT（直跑模式）
 from openshell_manager import config  # noqa: E402
 from openshell_manager import http_api  # noqa: E402
 import openshell_manager.gateway as gw  # noqa: E402
@@ -76,7 +76,11 @@ class FakeExecResult:
 
 
 class FakeInnerStub:
+    def __init__(self):
+        self.last_logs_request = None
+
     def GetSandboxLogs(self, request, timeout=None):
+        self.last_logs_request = request
         return SimpleNamespace(logs=[])
 
     def UpdateConfig(self, request, timeout=None):
@@ -88,6 +92,10 @@ class FakeSandboxClient:
     def __init__(self):
         self.calls = []
         self._stub = FakeInnerStub()
+        # 可编程失败注入（.part 清理路径等负向用例）
+        self.fail_exec_containing = None   # 子串：命中则该 exec 返回非零退出
+        self.missing_names = set()         # get() 对这些名字抛 LookupError
+        self.delete_result = True
 
     def health(self):
         return object()
@@ -98,6 +106,8 @@ class FakeSandboxClient:
 
     def get(self, name, workspace=None):
         self.calls.append(("get", name, workspace))
+        if name in self.missing_names:
+            raise LookupError(f"sandbox '{name}' not found")
         return FakeRef(name=name)
 
     def wait_ready(self, name, *, workspace, timeout_seconds=None):
@@ -108,46 +118,70 @@ class FakeSandboxClient:
              timeout_seconds=None):
         self.calls.append(("exec", sandbox_id, command, workdir, env, stdin,
                            timeout_seconds))
+        if self.fail_exec_containing and \
+                self.fail_exec_containing in " ".join(command):
+            return SimpleNamespace(exit_code=1, stdout=b"", stderr=b"boom")
         return FakeExecResult()
 
     def delete(self, name, workspace=None):
         self.calls.append(("delete", name, workspace))
-        return True
+        return self.delete_result
 
     def list_for_all_workspaces(self, limit=None):
         return [FakeRef(name="dsh-a"), FakeRef(name="dsh-b")]
 
 
-class FakeRouteClient:
+class FakeInferenceStub:
+    """inference.v1.Inference 直连替身（gateway._inference_stub 缝）。
+    SetInferenceRoute 回执带验证字段——回执透传是对外契约（3.16）。"""
+
+    SET_RESPONSE = SimpleNamespace(
+        provider_name="prov-x", model_id="model-y", version=5,
+        validation_performed=True,
+        validated_endpoints=[SimpleNamespace(url="https://gw/v1",
+                                             protocol="https")])
     ROUTE = SimpleNamespace(provider_name="prov-x", model_id="model-y",
                             version=4)
 
     def __init__(self):
         self.last = None
 
-    def get_route(self, *, workspace):
+    def GetInferenceRoute(self, request, timeout=None):
+        self.last_get = request.workspace
         return self.ROUTE
 
-    def set_route(self, *, workspace, provider_name, model_id, no_verify=False):
-        self.last = (workspace, provider_name, model_id, no_verify)
-        return self.ROUTE
+    def SetInferenceRoute(self, request, timeout=None):
+        self.last = (request.workspace, request.provider_name,
+                     request.model_id, request.no_verify)
+        return self.SET_RESPONSE
 
 
 class FakeAdminStub:
     # (workspace, sandbox, service) -> ServiceEndpointResponse-like
     SERVICES: Dict[Tuple[str, str, str], SimpleNamespace] = {}
+    # provider 名集合：让 upsert 的 Create/Update 双路径都可测
+    PROVIDERS: set = {"prov-x"}
 
     def ListProviders(self, request, timeout=None):
-        prov = SimpleNamespace(metadata=SimpleNamespace(name="prov-x"),
-                               type="openai",
-                               config={"OPENAI_BASE_URL": "http://x/v1"})
-        return SimpleNamespace(providers=[prov])
+        provs = [SimpleNamespace(metadata=SimpleNamespace(name=n),
+                                 type="openai",
+                                 config={"OPENAI_BASE_URL": "http://x/v1"})
+                 for n in sorted(self.PROVIDERS)]
+        return SimpleNamespace(providers=provs)
 
     def UpdateProvider(self, request, timeout=None):
+        assert request.provider.metadata.name in self.PROVIDERS, \
+            "provider missing; must Create, not Update"
         return SimpleNamespace()
 
     def CreateProvider(self, request, timeout=None):
-        raise AssertionError("provider exists; must Update, not Create")
+        self.PROVIDERS.add(request.provider.metadata.name)
+        return SimpleNamespace()
+
+    def DeleteProvider(self, request, timeout=None):
+        existed = request.name in self.PROVIDERS
+        self.PROVIDERS.discard(request.name)
+        return SimpleNamespace(deleted=existed)
 
     @staticmethod
     def _svc_response(workspace, sandbox, service, target_port, domain):
@@ -176,11 +210,20 @@ class FakeAdminStub:
 
 
 FAKE = FakeSandboxClient()
-ROUTES_FAKE = FakeRouteClient()
+INFERENCE_FAKE = FakeInferenceStub()
 
 
-def make_app(token_env):
-    """Fresh HTTP server + request helper bound to the fake SDK."""
+def make_app(token_env, client=None):
+    """Fresh HTTP server + request helper bound to the fake SDK.
+
+    ``client`` 可注入自定义假 SDK 客户端（缺省模块级 FAKE 单例）。
+    每次装配复位可编程状态，避免用例间串扰。
+    """
+    client = client or FAKE
+    client.fail_exec_containing = None
+    client.missing_names = set()
+    client.delete_result = True
+    FakeAdminStub.PROVIDERS = {"prov-x"}
     if token_env is None:
         os.environ.pop("OPENSHELL_MANAGER_TOKEN", None)
     else:
@@ -194,8 +237,8 @@ def make_app(token_env):
     os.environ["OPENSHELL_MANAGER_CONFIG"] = cfg.name
     config._config_cache = None
 
-    facade = GatewayFacade(client_factory=lambda: FAKE)
-    facade._route_client = lambda: ROUTES_FAKE  # test seam
+    facade = GatewayFacade(client_factory=lambda: client)
+    facade._inference_stub = lambda: INFERENCE_FAKE  # test seam
     gw.pb_grpc_stub = lambda client: FakeAdminStub()
     FakeAdminStub.SERVICES.clear()
     api.facade = facade  # ADR-174: FastAPI 架构（http_api 为旧实现参照）
@@ -258,7 +301,11 @@ def test_route_and_providers_auth_disabled():
                               {"workspace": "default", "provider": "prov-x",
                                "model": "model-y", "no_verify": True})
         assert status == 200 and payload["provider"] == "prov-x", payload
-        assert ROUTES_FAKE.last == ("default", "prov-x", "model-y", True)
+        # SetInferenceRoute 回执的验证字段必须透传（连通性验证回执契约）
+        assert payload["validation_performed"] is True, payload
+        assert payload["validated_endpoints"] == [
+            {"url": "https://gw/v1", "protocol": "https"}], payload
+        assert INFERENCE_FAKE.last == ("default", "prov-x", "model-y", True)
 
         status, payload = req("GET",
                               "/api/v1/inference/route?workspace=default")
@@ -267,7 +314,9 @@ def test_route_and_providers_auth_disabled():
 
         status, payload = req("GET",
                               "/api/v1/inference/providers?workspace=default")
-        assert status == 200 and payload["providers"] == ["prov-x"], payload
+        assert status == 200 and payload["providers"] == [
+            {"name": "prov-x", "type": "openai",
+             "config": {"OPENAI_BASE_URL": "http://x/v1"}}], payload
 
         status, payload = req("PUT", "/api/v1/inference/providers",
                               {"workspace": "default", "name": "prov-x",
@@ -858,6 +907,281 @@ def test_invalid_spec_and_policy_map_400():
                               {"workspace": "default",
                                "policy": {"no_such_field": 1}})
         assert status == 400 and "invalid policy" in payload["error"], payload
+    finally:
+        server.shutdown()
+
+
+def test_non_string_fields_map_400_not_502():
+    """R10 字符串字段族（修复前为 502）：非字符串字段曾透传进 SDK/proto 层，
+    proto 对 str 字段传非 str 抛 TypeError → 兜底 502（上游会按"网关不可达"
+    重试/降级）。README 红线：客户端格式错误一律 400。"""
+    server, req = make_app(token_env=None)
+    try:
+        cases = [
+            ("POST", "/api/v1/sandboxes",
+             {"workspace": 123}, "workspace"),
+            ("POST", "/api/v1/sandboxes",
+             {"workspace": "default", "name": 456}, "name"),
+            ("POST", "/api/v1/sandboxes/x/wait-ready",
+             {"workspace": 1}, "workspace"),
+            ("POST", "/api/v1/sandboxes/x/update-config",
+             {"workspace": 1, "policy": {"version": 1}}, "workspace"),
+            ("POST", "/api/v1/sandboxes/x/services",
+             {"workspace": 1, "service": "s", "target_port": 80}, "workspace"),
+            ("POST", "/api/v1/sandboxes/x/services",
+             {"workspace": "default", "service": 5, "target_port": 80}, "service"),
+            ("PUT", "/api/v1/inference/route",
+             {"workspace": "default", "provider": 7, "model": "m"}, "provider"),
+            ("PUT", "/api/v1/inference/route",
+             {"workspace": "default", "provider": "p", "model": 8}, "model"),
+            ("PUT", "/api/v1/inference/providers",
+             {"workspace": "default", "name": 9, "type": "openai"}, "name"),
+            ("PUT", "/api/v1/inference/providers",
+             {"workspace": "default", "name": "n", "type": 7}, "type"),
+        ]
+        for method, path, body, field in cases:
+            status, payload = req(method, path, body)
+            assert status == 400, (method, path, body, status, payload)
+            assert field in payload["error"], (method, path, body, payload)
+    finally:
+        server.shutdown()
+
+
+def test_exec_rejects_bad_env_workdir_and_timeout():
+    """R10 同族：exec 的 env/workdir/timeout_seconds 类型不校验时透传 SDK
+    （timeout 会进 gRPC 调用参数）→ 502 泄漏。必须 400 且不触达网关。"""
+    server, req = make_app(token_env=None)
+    try:
+        calls_base = len(FAKE.calls)
+        status, payload = req("POST", "/api/v1/sandboxes/exec",
+                              {"sandbox_id": "sb-1", "command": ["x"],
+                               "env": ["not-a-map"]})
+        assert status == 400 and "env" in payload["error"], payload
+        status, payload = req("POST", "/api/v1/sandboxes/exec",
+                              {"sandbox_id": "sb-1", "command": ["x"],
+                               "env": {"k": 1}})
+        assert status == 400 and "env" in payload["error"], payload
+        status, payload = req("POST", "/api/v1/sandboxes/exec",
+                              {"sandbox_id": "sb-1", "command": ["x"],
+                               "workdir": 17})
+        assert status == 400 and "workdir" in payload["error"], payload
+        status, payload = req("POST", "/api/v1/sandboxes/exec",
+                              {"sandbox_id": "sb-1", "command": ["x"],
+                               "timeout_seconds": "abc"})
+        assert status == 400 and "timeout_seconds" in payload["error"], payload
+        status, payload = req("POST", "/api/v1/sandboxes/exec",
+                              {"sandbox_id": ["not-str"], "command": ["x"]})
+        assert status == 400 and "sandbox_id" in payload["error"], payload
+        assert [c for c in FAKE.calls[calls_base:] if c[0] == "exec"] == [], \
+            "invalid exec input must never reach the gateway facade"
+    finally:
+        server.shutdown()
+
+
+def test_upload_to_missing_sandbox_maps_404():
+    """上传端点 name→UUID 解析失败（沙箱不存在）= 客户端寻址错误 → 404。"""
+    server, req = make_app(token_env=None)
+    try:
+        FAKE.missing_names.add("ghost")
+        body, ctype = multipart_body({"path": "/tmp/x"}, file_content=b"hi")
+        status, payload = req("POST", "/api/v1/sandboxes/ghost/files",
+                              raw=body, ctype=ctype)
+        assert status == 404 and "not found" in payload["error"], payload
+    finally:
+        server.shutdown()
+
+
+def test_upload_failure_cleans_part_and_maps_502():
+    """R1 族防线：chunk 写失败（远端非零退出）必须 rm -f .part 后上抛
+    502——防失败上传留下 .part 残片/半写文件回归。"""
+    server, req = make_app(token_env=None)
+    try:
+        FAKE.fail_exec_containing = "base64 -d"
+        calls_base = len(FAKE.calls)
+        body, ctype = multipart_body({"path": "/tmp/doomed/f.txt"},
+                                     file_content=b"hi")
+        status, payload = req("POST", "/api/v1/sandboxes/sb-1/files",
+                              raw=body, ctype=ctype)
+        assert status == 502 and "chunk write failed" in payload["error"], payload
+        execs = [c for c in FAKE.calls[calls_base:] if c[0] == "exec"]
+        assert execs[-1][2] == ["rm", "-f", "/tmp/doomed/f.txt.part"], execs[-1]
+    finally:
+        server.shutdown()
+
+
+def test_upload_without_boundary_maps_400():
+    """multipart Content-Type 缺 boundary 参数 = 客户端错误 → 400。"""
+    server, req = make_app(token_env=None)
+    try:
+        status, payload = req("POST", "/api/v1/sandboxes/sb-1/files",
+                              raw=b"--x\r\ny\r\n--x--\r\n",
+                              ctype="multipart/form-data")
+        assert status == 400 and "boundary" in payload["error"], payload
+    finally:
+        server.shutdown()
+
+
+def test_gateway_health_ok_false_when_sdk_answers_none():
+    """SDK health() 返回 None = 网关应答异常（仍在线）→ 200 + ok:false。"""
+    server, req = make_app(token_env=None, client=NoneHealthClient())
+    try:
+        status, payload = req("GET", "/api/v1/gateway/health")
+        assert status == 200 and payload["ok"] is False, payload
+    finally:
+        server.shutdown()
+
+
+class NoneHealthClient(FakeSandboxClient):
+    def health(self):
+        return None
+
+
+def test_sandbox_delete_false_propagates():
+    """网关返回删除失败必须如实透出 deleted:false（不许美化成 true）。"""
+    server, req = make_app(token_env=None)
+    try:
+        FAKE.delete_result = False
+        status, payload = req("DELETE",
+                              "/api/v1/sandboxes/dsh-fake?workspace=default")
+        assert status == 200 and payload["deleted"] is False, payload
+    finally:
+        server.shutdown()
+
+
+def test_services_list_all_workspaces():
+    """?all_workspaces=true 免 workspace 参数（跨工作区清单）。"""
+    server, req = make_app(token_env=None)
+    try:
+        status, payload = req("POST", "/api/v1/sandboxes/dsh-fake/services",
+                              {"workspace": "ws-a", "service": "demo",
+                               "target_port": 8123})
+        assert status == 200, payload
+        status, payload = req(
+            "GET", "/api/v1/sandboxes/dsh-fake/services?all_workspaces=true")
+        assert status == 200, payload
+        assert [s["name"] for s in payload["services"]] == ["demo"], payload
+        # 大写变体同样接受（解析先 lower）
+        status, payload = req(
+            "GET", "/api/v1/sandboxes/dsh-fake/services?all_workspaces=TRUE")
+        assert status == 200 and len(payload["services"]) == 1, payload
+    finally:
+        server.shutdown()
+
+
+def test_provider_upsert_create_path():
+    """upsert 不存在的 provider 必须走 CreateProvider（created:true）——
+    此前假 stub 无 Create 路径，该分支零覆盖。"""
+    server, req = make_app(token_env=None)
+    try:
+        status, payload = req("PUT", "/api/v1/inference/providers",
+                              {"workspace": "default", "name": "prov-new",
+                               "type": "anthropic",
+                               "credentials": {"API_KEY": "sk-x"},
+                               "config": {"BASE_URL": "http://y/v1"}})
+        assert status == 200 and payload == {"name": "prov-new",
+                                             "created": True}, payload
+        # 创建后可查详情，且凭据仍被屏蔽
+        status, payload = req("GET",
+                              "/api/v1/inference/providers/prov-new"
+                              "?workspace=default")
+        assert status == 200 and payload["name"] == "prov-new", payload
+        assert "credentials" not in payload, payload
+    finally:
+        server.shutdown()
+
+
+def test_provider_delete_roundtrip():
+    """DELETE provider：删已存在 → {name, deleted:true} 且清单/详情立即可证
+    消失；幂等口径与网关一致（不存在的名字 deleted:false）。"""
+    server, req = make_app(token_env=None)
+    try:
+        status, payload = req("PUT", "/api/v1/inference/providers",
+                              {"workspace": "default", "name": "prov-del",
+                               "type": "openai"})
+        assert status == 200 and payload["created"] is True, payload
+
+        status, payload = req("DELETE",
+                              "/api/v1/inference/providers/prov-del"
+                              "?workspace=default")
+        assert status == 200 and payload == {"name": "prov-del",
+                                             "deleted": True}, payload
+
+        status, payload = req("GET",
+                              "/api/v1/inference/providers?workspace=default")
+        assert status == 200 and "prov-del" not in \
+            [p["name"] for p in payload["providers"]], payload
+        status, _ = req("GET",
+                        "/api/v1/inference/providers/prov-del"
+                        "?workspace=default")
+        assert status == 404, "deleted provider must 404 on detail"
+
+        status, payload = req("DELETE",
+                              "/api/v1/inference/providers/prov-del"
+                              "?workspace=default")
+        assert status == 200 and payload["deleted"] is False, payload
+
+        # 缺 workspace → 400；无 name 段（整表删）方法不允许 → 405
+        status, payload = req("DELETE",
+                              "/api/v1/inference/providers/prov-x")
+        assert status == 400 and "workspace" in payload["error"], payload
+        status, _ = req("DELETE",
+                        "/api/v1/inference/providers?workspace=default")
+        assert status == 405, "collection-level DELETE must not be routed"
+    finally:
+        server.shutdown()
+
+
+def test_logs_request_params_passthrough():
+    """lines/since_ms 必须透传到 GetSandboxLogsRequest。"""
+    server, req = make_app(token_env=None)
+    try:
+        status, payload = req("GET",
+                              "/api/v1/sandboxes/dsh-fake/logs"
+                              "?workspace=default&lines=42&since_ms=77")
+        assert status == 200 and payload["logs"] == [], payload
+        sent = FAKE._stub.last_logs_request
+        assert (sent.lines, sent.since_ms, sent.workspace) == (42, 77, "default"), sent
+    finally:
+        server.shutdown()
+
+
+def test_method_not_allowed_error_contract():
+    """405 也是 {"error": …} 单键契约（不允许 FastAPI 默认 detail 形态泄漏）。"""
+    server, req = make_app(token_env=None)
+    try:
+        status, payload = req("DELETE", "/healthz")
+        assert status == 405 and set(payload) == {"error"}, payload
+    finally:
+        server.shutdown()
+
+
+def test_404_route_message_contract():
+    """未知路由文案锁定 `no route for METHOD /path`；尾斜杠归一。"""
+    server, req = make_app(token_env=None)
+    try:
+        status, payload = req("GET", "/api/v1/nope")
+        assert status == 404, payload
+        assert payload["error"] == "no route for GET /api/v1/nope", payload
+        status, payload = req("GET", "/api/v1/nope/")
+        assert status == 404 and \
+            payload["error"] == "no route for GET /api/v1/nope", payload
+    finally:
+        server.shutdown()
+
+
+def test_auth_rejects_lowercase_bearer_scheme():
+    """Bearer 前缀大小写敏感：小写 scheme 必须拒（严格前缀契约）。"""
+    server, req = make_app(token_env="secret-token")
+    try:
+        port = server.server_address[1]
+        r = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/v1/inference/route?workspace=default")
+        r.add_header("Authorization", "bearer secret-token")
+        try:
+            urllib.request.urlopen(r, timeout=5)
+            raise AssertionError("lowercase bearer must be rejected")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 401, exc.code
     finally:
         server.shutdown()
 

@@ -67,7 +67,28 @@ func FetchUploadArchive(ctx context.Context, storageAddr, fileID, dest string) (
 		return "", fmt.Errorf("压缩包解压失败: 压缩包内没有文件")
 	}
 	_ = os.Remove(archivePath) // 扫描只需要解包后的树，归档原件留在 storage
-	return unpacked, nil
+	return ResolveProjectRoot(unpacked), nil
+}
+
+// resolveRootDescentCap — 壳目录降入深度上限（防病态嵌套；正常压缩包一层即到根）。
+const resolveRootDescentCap = 3
+
+// ResolveProjectRoot — 解析真实项目根：解包目录内只有唯一子目录时逐层降入
+// （GitHub/常见发布压缩包带 "<repo>-<ver>/" 顶层壳，剥壳前后端/校验/沙箱三方
+// 才能共享同一相对路径口径——gw-f6a3523 实证：不剥壳时 fixpatch 校验、
+// source-file 解析、沙箱内模型视角三者根错位，7/7 补丁被误杀）。
+// 纯函数：非"唯一子目录"形态原样返回，不猜测；跨服务消费方（gateway
+// sourcefile.go 同名 helper）以本文件语义为口径基准。
+func ResolveProjectRoot(dir string) string {
+	cur := dir
+	for i := 0; i < resolveRootDescentCap; i++ {
+		entries, err := os.ReadDir(cur)
+		if err != nil || len(entries) != 1 || !entries[0].IsDir() {
+			return cur
+		}
+		cur = filepath.Join(cur, entries[0].Name())
+	}
+	return cur
 }
 
 // downloadArchive — DownloadFile 服务端流拉回原始压缩包落 scratch。

@@ -126,13 +126,13 @@ func createTables(db *sql.DB) error {
 
 func (r *PostgresFindingRepository) Create(finding *model.Finding) error {
 	query := `
-		INSERT INTO findings (id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		INSERT INTO findings (id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 	`
 	_, err := r.db.Exec(query,
 		finding.ID, finding.TaskID, finding.ToolName, finding.RuleID,
 		finding.Severity, finding.Message, finding.FilePath, finding.LineNumber,
-		finding.SourceRaw, finding.Verdict, finding.DedupGroup, finding.MatchedFindings, finding.IsUnique, finding.AiFixSuggestion, finding.DiffPatch, finding.CreatedAt, finding.UpdatedAt,
+		finding.SourceRaw, finding.Verdict, finding.Reasoning, finding.DedupGroup, finding.MatchedFindings, finding.IsUnique, finding.AiFixSuggestion, finding.DiffPatch, finding.CreatedAt, finding.UpdatedAt,
 		finding.RequestID,
 	)
 	return err
@@ -140,14 +140,14 @@ func (r *PostgresFindingRepository) Create(finding *model.Finding) error {
 
 func (r *PostgresFindingRepository) GetByID(id string) (*model.Finding, error) {
 	query := `
-		SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+		SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
 		FROM findings WHERE id = $1
 	`
 	finding := &model.Finding{}
 	err := r.db.QueryRow(query, id).Scan(
 		&finding.ID, &finding.TaskID, &finding.ToolName, &finding.RuleID,
 		&finding.Severity, &finding.Message, &finding.FilePath, &finding.LineNumber,
-		&finding.SourceRaw, &finding.Verdict, &finding.DedupGroup, &finding.MatchedFindings, &finding.IsUnique, &finding.AiFixSuggestion, &finding.DiffPatch, &finding.CreatedAt, &finding.UpdatedAt,
+		&finding.SourceRaw, &finding.Verdict, &finding.Reasoning, &finding.DedupGroup, &finding.MatchedFindings, &finding.IsUnique, &finding.AiFixSuggestion, &finding.DiffPatch, &finding.CreatedAt, &finding.UpdatedAt,
 		&finding.RequestID,
 	)
 	if err != nil {
@@ -160,7 +160,7 @@ func (r *PostgresFindingRepository) Update(finding *model.Finding) error {
 	query := `
 		UPDATE findings
 		SET task_id = $2, tool_name = $3, rule_id = $4, severity = $5, message = $6,
-		    file_path = $7, line_number = $8, source_raw = $9, verdict = $10,
+		    file_path = $7, line_number = $8, source_raw = $9, verdict = $10, reasoning = $18,
 		    dedup_group = $11, matched_findings = $12, is_unique = $13,
 		    ai_fix_suggestion = $16, diff_patch = $17,
 		    updated_at = $14, request_id = $15
@@ -170,7 +170,7 @@ func (r *PostgresFindingRepository) Update(finding *model.Finding) error {
 		finding.ID, finding.TaskID, finding.ToolName, finding.RuleID,
 		finding.Severity, finding.Message, finding.FilePath, finding.LineNumber,
 		finding.SourceRaw, finding.Verdict, finding.DedupGroup, finding.MatchedFindings, finding.IsUnique, finding.UpdatedAt, finding.RequestID,
-		finding.AiFixSuggestion, finding.DiffPatch,
+		finding.AiFixSuggestion, finding.DiffPatch, finding.Reasoning,
 	)
 	return err
 }
@@ -190,7 +190,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 		// First page
 		if taskID != "" && verdict != "" {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
 				FROM findings
 				WHERE task_id = $1 AND verdict = $2
 				ORDER BY id
@@ -199,7 +199,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 			args = []interface{}{taskID, verdict, limit + 1}
 		} else if taskID != "" {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
 				FROM findings
 				WHERE task_id = $1
 				ORDER BY id
@@ -208,7 +208,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 			args = []interface{}{taskID, limit + 1}
 		} else if verdict != "" {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
 				FROM findings
 				WHERE verdict = $1
 				ORDER BY id
@@ -217,7 +217,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 			args = []interface{}{verdict, limit + 1}
 		} else {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
 				FROM findings
 				ORDER BY id
 				LIMIT $1
@@ -228,7 +228,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 		// Subsequent pages
 		if taskID != "" && verdict != "" {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
 				FROM findings
 				WHERE id > $1 AND task_id = $2 AND verdict = $3
 				ORDER BY id
@@ -237,7 +237,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 			args = []interface{}{lastID, taskID, verdict, limit + 1}
 		} else if taskID != "" {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
 				FROM findings
 				WHERE id > $1 AND task_id = $2
 				ORDER BY id
@@ -246,7 +246,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 			args = []interface{}{lastID, taskID, limit + 1}
 		} else if verdict != "" {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
 				FROM findings
 				WHERE id > $1 AND verdict = $2
 				ORDER BY id
@@ -255,7 +255,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 			args = []interface{}{lastID, verdict, limit + 1}
 		} else {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
 				FROM findings
 				WHERE id > $1
 				ORDER BY id
@@ -277,13 +277,17 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 		err := rows.Scan(
 			&f.ID, &f.TaskID, &f.ToolName, &f.RuleID,
 			&f.Severity, &f.Message, &f.FilePath, &f.LineNumber,
-			&f.SourceRaw, &f.Verdict, &f.DedupGroup, &f.MatchedFindings, &f.IsUnique, &f.AiFixSuggestion, &f.DiffPatch, &f.CreatedAt, &f.UpdatedAt,
+			&f.SourceRaw, &f.Verdict, &f.Reasoning, &f.DedupGroup, &f.MatchedFindings, &f.IsUnique, &f.AiFixSuggestion, &f.DiffPatch, &f.CreatedAt, &f.UpdatedAt,
 			&f.RequestID,
 		)
 		if err != nil {
 			return nil, "", err
 		}
 		findings = append(findings, f)
+	}
+	// ADR-212: 迭代中途网络错误此前被静默吞掉，截断页冒充完整页
+	if err := rows.Err(); err != nil {
+		return nil, "", err
 	}
 
 	// Determine if there are more pages
@@ -303,7 +307,7 @@ func (r *PostgresFindingRepository) ListByVerdict(verdict string, lastID string,
 
 func (r *PostgresFindingRepository) GetByRequestIDAndFindingID(requestID string, findingID string) (*model.Finding, error) {
 	query := `
-		SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+		SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
 		FROM findings
 		WHERE request_id = $1 AND id = $2
 	`
@@ -311,7 +315,7 @@ func (r *PostgresFindingRepository) GetByRequestIDAndFindingID(requestID string,
 	err := r.db.QueryRow(query, requestID, findingID).Scan(
 		&finding.ID, &finding.TaskID, &finding.ToolName, &finding.RuleID,
 		&finding.Severity, &finding.Message, &finding.FilePath, &finding.LineNumber,
-		&finding.SourceRaw, &finding.Verdict, &finding.DedupGroup, &finding.MatchedFindings, &finding.IsUnique, &finding.AiFixSuggestion, &finding.DiffPatch, &finding.CreatedAt, &finding.UpdatedAt,
+		&finding.SourceRaw, &finding.Verdict, &finding.Reasoning, &finding.DedupGroup, &finding.MatchedFindings, &finding.IsUnique, &finding.AiFixSuggestion, &finding.DiffPatch, &finding.CreatedAt, &finding.UpdatedAt,
 		&finding.RequestID,
 	)
 	if err != nil {

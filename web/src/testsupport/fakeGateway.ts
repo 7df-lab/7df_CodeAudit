@@ -29,6 +29,7 @@ export interface GatewayRequestLog {
   url: string;
   query: string; // 原始 search 串（含 path=… 等）
   body: unknown;
+  config: InternalAxiosRequestConfig; // 完整请求配置（timeout/headers 等形状断言用）
 }
 
 export interface HandlerCtx {
@@ -102,7 +103,7 @@ export function useFakeGateway(routes: Record<string, RouteValue>): FakeGatewayH
     if (typeof body === 'string') {
       try { body = JSON.parse(body); } catch { /* 非 JSON，原样 */ }
     }
-    requests.push({ method, url: path, query: search.toString(), body });
+    requests.push({ method, url: path, query: search.toString(), body, config });
     const hit = matchRoute(routes, method, path);
     if (!hit) {
       throw new Error(

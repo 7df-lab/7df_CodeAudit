@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# tests/stubs/docker — 离线行为级测试的 docker 桩。
+# 按 argv 形状应答 gateway_lifecycle.sh 会发出的全部 docker 调用；
+# 每次调用的完整命令行追加记录到 $STUB_LOG；可变状态读 $STUB_CTRL（KEY=VAL 行）：
+#   container_id=abc123     compose ps -q 应答的容器 id（缺省空=容器缺失）
+#   supervisor_present=0    image inspect 对 supervisor 镜像应答缺失(exit 1)
+#   pull_local_fails=1      pull 对含 ":local" 的 ref 应答失败(模拟上游 404)
+set -u
+LOG="${STUB_LOG:?STUB_LOG required}"
+CTRL="${STUB_CTRL:-/dev/null}"
+echo "docker $*" >> "$LOG"
+
+ctrl() { grep -E "^$1=" "$CTRL" 2>/dev/null | tail -1 | cut -d= -f2-; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+    compose)
+        # 形如: --project-directory P -f F <sub> [args...]
+        sub=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --project-directory|-f) shift 2 ;;
+                *) sub="$1"; shift; break ;;
+            esac
+        done
+        case "${sub:-}" in
+            ps)   [ "${1:-}" = "-q" ] && ctrl container_id || echo "gateway  running" ;;
+            logs) echo "(stub gateway logs)" ;;
+            *)    : ;;
+        esac
+        exit 0 ;;
+    image)
+        # image inspect REF
+        if [ "${1:-}" = "inspect" ]; then
+            [ "$(ctrl supervisor_present)" = "0" ] && exit 1
+        fi
+        exit 0 ;;
+    pull)
+        # pull --quiet REF
+        ref="${2:-}"
+        if [[ "$ref" == *":local" && "$(ctrl pull_local_fails)" = "1" ]]; then exit 1; fi
+        exit 0 ;;
+    tag|run)
+        exit 0 ;;
+esac
+exit 0

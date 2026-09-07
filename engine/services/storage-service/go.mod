@@ -3,6 +3,7 @@ module github.com/codeaudit/services/storage-service
 go 1.22
 
 require (
+	github.com/codeaudit/common-go v0.0.0
 	github.com/codeaudit/go-config v0.0.0
 	github.com/codeaudit/proto-gen v1.0.0
 	github.com/minio/minio-go/v7 v7.0.74
@@ -33,5 +34,7 @@ require (
 )
 
 replace github.com/codeaudit/proto-gen => ../../libs/proto-gen/go
+
+replace github.com/codeaudit/common-go => ../../libs/common-go
 
 replace github.com/codeaudit/go-config => ../../libs/go-config

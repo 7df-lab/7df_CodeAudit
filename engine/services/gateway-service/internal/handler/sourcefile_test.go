@@ -271,3 +271,52 @@ func TestWriteTaskLink(t *testing.T) {
 	writeTaskLink("", up1) // 空 task_id 防御
 	writeTaskLink("t-a", "")
 }
+
+// TestSourceFile_UploadsUnpackedFlow — ①b 流回归（gw-f6a3523 实证锁）：ADR-200 起
+// storage 拉包流把任务源落在 <repos_dir>/uploads-<task_id>/unpacked，压缩包顶层壳
+// 目录（GitHub 式 <repo>-<ver>/）需在读取侧剥掉——旧四流对该布局全部落空 →
+// 发现详情"源码全文不可用 + Sink 链路不可用"。剥壳语义与 task-service
+// ResolveProjectRoot 同口径（跨 module 复制件，两处必须同步改）。
+func TestSourceFile_UploadsUnpackedFlow(t *testing.T) {
+	root := t.TempDir()
+	uploads := filepath.Join(root, "uploads")
+	repos := filepath.Join(root, "repos")
+	unpacked := filepath.Join(repos, "uploads-gw-newtask", "unpacked")
+	shell := filepath.Join(unpacked, "mica-mqtt-master") // 压缩包顶层壳
+	for _, f := range []struct{ dir, name, body string }{
+		{shell, "pom.xml", "<project/>\n"},
+		{shell, "src/main/java/org/demo/Server.java", "package org.demo;\nclass Server { int p; }\n"},
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(f.dir, f.name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(f.dir, f.name), []byte(f.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := startSrcBackend(t)
+	tr := newSrcTranscoder(t, b)
+	setSourceDirs(t, uploads, repos)
+	srv := httptest.NewServer(tr.Handler())
+	defer srv.Close()
+
+	// 发现里的 file_path 相对真实项目根（无壳）——经壳内 suffix 匹配命中全文
+	code, m := getJSON(t, srv, "/v1/tasks/gw-newtask/source-file?path=src/main/java/org/demo/Server.java")
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %v", code, m)
+	}
+	if m["root_via"] != "uploads_unpacked" {
+		t.Fatalf("root_via = %v, want uploads_unpacked", m["root_via"])
+	}
+	if m["path"] != "src/main/java/org/demo/Server.java" {
+		t.Fatalf("resolved path = %v（壳已剥，路径应相对真实项目根）", m["path"])
+	}
+	if m["total_lines"] != float64(3) {
+		t.Fatalf("total_lines = %v, want 3", m["total_lines"])
+	}
+	// 壳已剥：裸文件名回退同样可达
+	code, m = getJSON(t, srv, "/v1/tasks/gw-newtask/source-file?path=Server.java")
+	if code != http.StatusOK || m["root_via"] != "uploads_unpacked" {
+		t.Fatalf("bare-name via shell-stripped root: code=%d m=%v", code, m)
+	}
+}

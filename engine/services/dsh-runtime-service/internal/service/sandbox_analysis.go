@@ -96,14 +96,13 @@ func analyzeViaSandbox(ctx context.Context, taskID, projectPath, assignment stri
 	// AI 交互日志（ADR-168 补遗）：人性化流→内存（GetAIInteractionLog 面向用户）+ .ai.log
 	// 落盘；原始 SSE 帧→仅 .sse.log 落盘（机器调试留存，不经 RPC）。终态定格。落盘失败
 	// 静默——留存通道不得影响分析主链路（07 §10 降级纪律同源）。
-	aiEntry := sharedAILogs.writer(taskID)
-	cfg.OnHumanLog = func(s string) { aiEntry.write([]byte(s)) }
-	cfg.OnRawLog = aiEntry.writeRaw
-	defer aiEntry.finish()
+	// ADR-215: 条目创建与回调接线统一走 wireAILog（回调必须先于 runner 构造）
+	aiEntry := wireAILog(cfg, taskID)
 	r := sandbox.NewManagerRunner(*cfg)
-	if !r.Enabled() {
+	if aiEntry == nil {
 		return nil, sandbox.ErrDisabled
 	}
+	defer aiEntry.finish()
 	res, err := r.Run(ctx, sandbox.Task{
 		TaskID:       taskID,
 		WorkspaceDir: projectPath,
@@ -234,7 +233,7 @@ func sandboxErrHint(err error) string {
 
 // sandboxReview — 模式D 沙箱逐条审核：一次沙箱运行完成全部交叉验证。
 // 返回 (reviews, opinionCount, err)；ErrDisabled/失败由调用方回退降级链。
-func sandboxReview(ctx context.Context, taskID string, findings []*pb.UnifiedFinding, emit TaskLogFunc) (
+func sandboxReview(ctx context.Context, taskID, projectPath string, findings []*pb.UnifiedFinding, emit TaskLogFunc) (
 	[]*pb.FindingReview, map[string]int32, error) {
 	if len(findings) == 0 {
 		return nil, nil, fmt.Errorf("no findings to review")
@@ -248,7 +247,12 @@ func sandboxReview(ctx context.Context, taskID string, findings []*pb.UnifiedFin
 		})
 	}
 	raw, _ := json.Marshal(list)
-	res, err := analyzeViaSandbox(ctx, taskID, os.Getenv("CODEAUDIT_PROJECT_REPO_PATH"),
+	// ADR-212: project_path 由请求贯通（同包 SearchMissedVulns 在 ADR-165 已判
+	// "无人设置的环境变量"为断线缺陷）——env 仅作旧口径兼容回落
+	if projectPath == "" {
+		projectPath = os.Getenv("CODEAUDIT_PROJECT_REPO_PATH")
+	}
+	res, err := analyzeViaSandbox(ctx, taskID, projectPath,
 		sandboxAssignmentReview(string(raw)), emit)
 	if err != nil {
 		return nil, nil, err

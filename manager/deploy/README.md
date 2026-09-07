@@ -5,7 +5,7 @@ OpenShell 网关管理微服务的部署事实源：服务源码即本仓根
 **LXC 107 的 docker**，为 codeaudit（以及未来接入的引擎）提供
 openshell-gateway 的统一访问服务。
 
-调用链：`codeaudit → manager(:18800) → gateway.internal:8080 → 沙箱`
+调用链：`codeaudit → manager(:18800) → 网关 gRPC(缺省 host.docker.internal:<发布口>) → 沙箱`
 
 > 2026-09-05 仓库重构注：本目录收编自原 `CD/openshell-manager/`
 > 部署 overlay（CD 已析出归档），源码仓与部署配置自此同居一仓。

@@ -12,7 +12,6 @@
 # docker-compose service through start/stop/restart.
 #
 # Current deployment (discovered 2026-08-31):
-#   LXC 107 (PVE guest "docker", gateway.internal = gateway.internal)
 #     /root/os-deploy/deploy/docker/{docker-compose.yml,gateway.toml}
 #     container: docker-gateway-1  (image ghcr.io/nvidia/openshell/gateway)
 #     ports: 8080 gRPC, 8081 health  -> published on the LXC
@@ -29,9 +28,9 @@
 #   REMOTE           command prefix reaching the LXC   (default: "pct exec 107 --")
 #   DEPLOY_DIR       compose dir inside the LXC        (default: /root/os-deploy/deploy/docker)
 #   SERVICE          compose service name              (default: gateway)
-#   ROUTING_DOMAIN   enforced service routing domain   (default: openshell.internal)
 #   LIVENESS_HOST/_PORT  TCP liveness probe target     (default: 127.0.0.1 / 8080)
 #   LIVENESS_TIMEOUT_SECS                                (default: 60)
+#   ROUTING_DOMAIN   enforced service routing domain   (default: sandbox.codeaudit.internal)
 #
 # WARNING on `recreate`: the compose file currently sets `command: []` while the
 # running container still carries the image default CMD (--bind-address 0.0.0.0
@@ -46,10 +45,11 @@ set -euo pipefail
 REMOTE="${REMOTE-pct exec 107 --}"
 DEPLOY_DIR="${DEPLOY_DIR:-/root/os-deploy/deploy/docker}"
 SERVICE="${SERVICE:-gateway}"
-ROUTING_DOMAIN="${ROUTING_DOMAIN:-openshell.internal}"
+ROUTING_DOMAIN="${ROUTING_DOMAIN:-sandbox.codeaudit.internal}"
 LIVENESS_HOST="${LIVENESS_HOST:-127.0.0.1}"
 LIVENESS_PORT="${LIVENESS_PORT:-8080}"
 LIVENESS_TIMEOUT_SECS="${LIVENESS_TIMEOUT_SECS:-60}"
+#   ROUTING_DOMAIN   enforced service routing domain   (default: sandbox.codeaudit.internal)
 # JWT 签名密钥目录（gateway.toml gateway_jwt 段指向的同一路径）；镜像与
 # compose 保持同源（IMAGE_TAG 变更时两处同步）。
 JWT_DIR="${JWT_DIR:-/var/lib/openshell/tls/jwt}"
@@ -111,11 +111,13 @@ tcp_ok() {
 
 wait_liveness() {
     local deadline=$(( $(date +%s) + LIVENESS_TIMEOUT_SECS ))
+#   ROUTING_DOMAIN   enforced service routing domain   (default: sandbox.codeaudit.internal)
     while [ "$(date +%s)" -lt "$deadline" ]; do
         if tcp_ok; then echo "gateway liveness OK ($LIVENESS_HOST:$LIVENESS_PORT)"; return 0; fi
         sleep 2
     done
     die "gateway not accepting connections on $LIVENESS_HOST:$LIVENESS_PORT within ${LIVENESS_TIMEOUT_SECS}s; check: $0 logs"
+#   ROUTING_DOMAIN   enforced service routing domain   (default: sandbox.codeaudit.internal)
 }
 
 # -- subcommands ---------------------------------------------------------------

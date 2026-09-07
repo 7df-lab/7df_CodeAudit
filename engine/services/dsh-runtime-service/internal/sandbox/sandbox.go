@@ -357,9 +357,10 @@ func LastToolCallArgs(calls []ToolCall, name string) (string, bool) {
 
 // parseAuditResult — 结果源选择：submit_findings 工具参数优先（模型 function-calling
 // 原生产出，无散文转义负担），```json 围栏降级（工具未调用/参数损坏时兜底）。
-// ADR-194：分批提交合并——发现较多时模型被要求每批 ≤4 条连续多次调用
-// submit_findings（单批巨型参数=数万 token 长流，实测连续断流），此处合并全部
-// 批次并按 title+file+line 去重（模型自纠重试可能重发同批）。
+// ADR-194/ADR-211：分批提交合并——模型被要求按补丁体量分层分批（无补丁 ≤4 条/
+// 含补丁 ≤2 条/大补丁单条）连续多次调用 submit_findings（单批巨型参数=数万 token
+// 长流，实测连续断流），此处合并全部批次并按 title+file+line 去重（模型自纠重试
+// 可能重发同批）。
 // 空列表陷阱（gw-5a96f1f7 实证修复）：submit_findings 提交 {"findings":[]} 是合法
 // 产出（模型完整审计后判定无漏洞）——判定依据须是"至少一批参数解析成功"，而不是
 // len(merged)>0；后者把干净零发现误判为"两代通道皆空"→ "no JSON in DSH output"
@@ -900,7 +901,7 @@ func sandboxSpec(name, taskID, image string) map[string]any {
 		"template": map[string]any{
 			"image": image,
 			"labels": map[string]string{
-				"openshell.io/managed-by":   "codeaudit-dsh-runtime",
+				managedByLabelKey:   managedByLabelValue, // ADR-212: 与对账器同源常量
 				"openshell.io/sandbox-name": name,
 			},
 		},
@@ -979,10 +980,14 @@ const assignmentTemplate = `# CodeAudit 代码安全分析任务
 分析完成后，调用 submit_findings 工具提交全部发现（字段与该工具参数 schema 一致：
 title/description/severity/cwe_id/file_path/start_line/confidence/reasoning/
 fix_suggestion/diff_patch）。正文只写简短结论摘要，不要在正文里另写 JSON。
-**发现较多时分批提交（ADR-194）**：每批最多 4 条——单次提交生成过长的参数流
-（12 条+补丁需数万 token）会显著增加推理流中断风险（gw-7f06fe5d 实证：单批
-巨型提交连续 4 次断流）。分批时逐批连续调用 submit_findings（服务端自动合并
-去重），全部批次提交完成后再写最终摘要。
+**分批提交（强制，ADR-194/ADR-211）**：单次提交的参数流越长，推理流中断风险越高
+（gw-7f06fe5d 实证：单批巨型提交连续 4 次断流；分批上线后大补丁单批仍断流——
+按补丁体量分层控制每批条数：
+- 不含 diff_patch（补丁为空字符串）的发现：每批最多 4 条；
+- 含 diff_patch 的发现：每批最多 2 条；补丁涉及多个文件或超过约 40 行时，该批只提交这 1 条；
+- diff_patch 的上下文行在改动块上方/下方各最多 3 行（消费端按内容锚定，大段上下文
+  只会拉长参数流、徒增断流风险）。
+分批时逐批连续调用 submit_findings（服务端自动合并去重），全部批次提交完成后再写最终摘要。
 没有发现时调用 submit_findings 提交 {"findings": []}。
 仅当工具不可用时才降级：把最终结论作为一个 JSON 代码块（` + "```json ... ```" + `）
 输出为最后一条消息，schema:

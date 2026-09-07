@@ -16,3 +16,7 @@ sp/
 .zcode/
 sp.tgz
 deploy/env
+
+# 人类指令 2026-09-08: .agent 过程文档(账本/证据等)禁上传 GitLab——仅 *.sh 工具脚本随仓
+.agent/*
+!.agent/*.sh

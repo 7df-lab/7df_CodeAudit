@@ -120,11 +120,12 @@ func (rl *rateLimiter) cleanup() {
 // 之后（CODEAUDIT_TRUST_PROXY=true）才信任 XFF；默认取 RemoteAddr（ADR-132）。
 func getClientIP(r *http.Request, trustXFF bool) string {
 	if trustXFF {
-		// X-Forwarded-For can contain multiple IPs, use the first one
+		// X-Forwarded-For 是"追加"语义：最左是客户端可任意伪造的值，最右才是
+		// 可信代理追加的真实来源（ADR-212：原取最左=伪造换桶+可投毒他人桶）
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")
 			if len(parts) > 0 {
-				ip := strings.TrimSpace(parts[0])
+				ip := strings.TrimSpace(parts[len(parts)-1])
 				if ip != "" {
 					return ip
 				}
@@ -147,11 +148,16 @@ func RateLimitMiddleware(trustXFF bool, perMinute int, next http.Handler) http.H
 	limiter := newRateLimiter(perMinute)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 限流键=单用户（07 §7 口径）：优先按 Bearer 令牌（每登录会话一桶）。
-		// 全部浏览器流量经反向代理后 RemoteAddr 同为代理地址，按 IP 计数会让
-		// 所有用户/标签页共抢一个桶（ADR-170 实测：详情页轮询被无关标签页打死）。
-		key := "user:" + r.Header.Get("Authorization")
-		if key == "user:" {
+		// 限流键=单用户（07 §7 口径）：保护链上本中间件位于 JWT 之后，已认证
+		// 请求按 JWT sub 计数（每用户一桶，浏览器全走代理也能各自成桶——
+		// ADR-170）；未认证请求（/v1/auth/* 免 JWT 链）按客户端 IP。
+		// ADR-212：原键=原始 Authorization 头且位于 JWT 之外——任意垃圾头每
+		// 请求换新桶，限流对最该限的对象完全失效且桶无界增长。
+		key := ""
+		if sub, ok := r.Context().Value(UserIDKey).(string); ok && sub != "" {
+			key = "user:" + sub
+		}
+		if key == "" {
 			key = getClientIP(r, trustXFF)
 		}
 		bucket := limiter.getBucket(key)

@@ -31,6 +31,8 @@ provider 存储、沙箱端口暴露（服务路由域）。
 | `gateway.toml` | 网关全部配置：bind、compute_drivers（docker）、`server_sans`（服务路由域）、JWT、auth；容器内挂载于 `/etc/openshell/gateway.toml`（只读） |
 | `deploy.sh` | 本仓 → LXC 同步（md5 比对、仅推变化文件、远端留 `.bak.<时间戳>`）+ `gateway_lifecycle.sh ensure` 生效 |
 | `gateway_lifecycle.sh` | 生命周期：ensure / verify / status / start / stop / restart / recreate / logs |
+| `docs/` | 接口事实文档：`external-interfaces.md`（外部接口输入/输出）、`internal-interfaces.md`（工件间 7 条内部接口）、`data-flows.md`（跨仓链路/宿主资产/网络拓扑） |
+| `tests/` | 离线测试套（见下"测试与防回归"）：`run.sh`、`stubs/`（docker/pct 桩）、`githooks/pre-commit`、`REGRESSIONS.md`（回归档案与机制） |
 | `Dockerfile.gateway` / `Dockerfile.supervisor` | 从上游源码重建镜像用（staging 路径属上游仓，本仓无二进制；**日常部署用 ghcr 预构建镜像，不参与**） |
 
 ## 端口与可达性（2026-09-05 实测）
@@ -101,6 +103,28 @@ LXC 107 上 8080/8081 归本网关占用（CodeAudit API 网关因此改发布 8
 - **客户端解析**：`gateway.internal` 与 `*.openshell.internal` →
   gateway.internal（hosts / 内网 DNS，公共 DNS 不可用）。
 - LXC 运行副本被覆盖前自动留 `*.bak.<时间戳>`。
+
+## 测试与防回归
+
+本仓"无源码"不等于"无测试"——测的就是配方与脚本本身（66 项离线用例 +
+10 项变异注入自检，无需 docker/LXC）：
+
+```bash
+bash tests/run.sh --fast          # 静态层：TOML/compose parse + 全键口径 + REMOTE 契约（秒级）
+bash tests/run.sh                 # 全量离线：+ ensure/push/patch 行为级（stub docker/pct）
+bash tests/run.sh --selfcheck     # 变异自检：注入 10 个历史缺陷，证明测试必然拦截
+bash tests/run.sh --with-runtime  # + 真 LXC 只读门禁（check/verify/status）
+```
+
+- **门禁顺序**：commit 前 `--fast`（pre-commit 钩子自动：`git config core.hooksPath tests/githooks`）；
+  改 compose/TOML/脚本后加跑全量 `bash tests/run.sh`；部署前仍走
+  `./deploy.sh --check` + `./gateway_lifecycle.sh verify`（或 `--with-runtime`）。
+- **防回归机制**（`tests/REGRESSIONS.md`）：每个历史缺陷类别（R1 REMOTE 空串契约、
+  R2 command:[]、R3 ensure 自足三连、R4 server_sans 单行、R5 parse 重键、
+  R6 端口同号三角、R7 挂载只读、R8 文档失真）→ 静态+行为守卫用例 → 变异注入
+  证明。**新缺陷修复必须一次补齐：修复 + 守卫用例 + 注入 + 档案加行**，缺一不算收口。
+- 2026-09-07 起 deploy.sh 的 REMOTE 与 gateway_lifecycle.sh 对齐为空串=本机执行
+  契约（`${REMOTE-…}`），T-B1/T-D4/M-4/M-5 守住。
 
 ## 镜像重建（非日常路径）
 

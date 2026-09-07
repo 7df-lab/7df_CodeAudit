@@ -2,7 +2,10 @@
 // 刷新单飞防止并发请求引发刷新风暴）
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { API_ERROR_EVENT, API_OK_EVENT } from './apiEvents';
-import type { ListProjectsResponse, Project, ToolInfo } from './types';
+import type {
+  InferenceProvider, InferenceRoute, ListProjectsResponse, Project,
+  SetInferenceRouteResponse, ToolInfo, UpsertInferenceProviderResponse,
+} from './types';
 
 export const TOKEN_KEY = 'codeaudit.refresh_token';
 
@@ -220,6 +223,58 @@ export async function bootRefresh(): Promise<string | null> {
   } catch {
     clearSession();
     return null;
+  }
+}
+
+// ===== 推理 provider/路由管理（ADR-217；engine gateway /v1/inference/*，admin 面）=====
+// 凭据只进不出：credentials 仅出现在 upsert/update 请求体；读端点类型无该字段。
+
+export async function getInferenceProviders(): Promise<{ providers: InferenceProvider[] }> {
+  return (await api.get('/v1/inference/providers')).data;
+}
+
+export async function getInferenceProvider(name: string): Promise<InferenceProvider> {
+  return (await api.get(`/v1/inference/providers/${encodeURIComponent(name)}`)).data;
+}
+
+export interface InferenceProviderPayload {
+  type: string;
+  credentials: Record<string, string>;
+  config: Record<string, string>;
+}
+
+// POST（upsert 语义，created 标识走 Create 还是 Update——manager 判存在性）
+export async function createInferenceProvider(
+  name: string, payload: InferenceProviderPayload,
+): Promise<UpsertInferenceProviderResponse> {
+  return (await api.post('/v1/inference/providers', { name, ...payload })).data;
+}
+
+// PUT /providers/{name}：路径名权威（engine transcode 用路径覆盖 body 同名字段）
+export async function updateInferenceProvider(
+  name: string, payload: InferenceProviderPayload,
+): Promise<UpsertInferenceProviderResponse> {
+  return (await api.put(`/v1/inference/providers/${encodeURIComponent(name)}`, payload)).data;
+}
+
+export async function deleteInferenceProvider(name: string): Promise<{ deleted: boolean }> {
+  return (await api.delete(`/v1/inference/providers/${encodeURIComponent(name)}`)).data;
+}
+
+export async function getInferenceRoute(): Promise<InferenceRoute> {
+  return (await api.get('/v1/inference/route')).data;
+}
+
+// 切路由：no_verify 缺省 false = 网关连通性验证，回执带 validated_endpoints。
+// 验证失败的服务端 {error} 详情比 axios 通用文案可读（连通性诊断直出），同 getSourceFile 口径。
+export async function setInferenceRoute(
+  payload: { provider: string; model: string; no_verify?: boolean },
+): Promise<SetInferenceRouteResponse> {
+  try {
+    return (await api.put('/v1/inference/route', payload)).data;
+  } catch (e) {
+    const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+    throw new Error(detail || (e as Error).message);
   }
 }
 

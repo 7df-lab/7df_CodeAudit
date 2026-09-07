@@ -97,3 +97,71 @@ describe('TaskDetailPage（发现/融合内嵌）', () => {
     expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/tasks/t-1/report')).toBe(true);
   });
 });
+
+// gw-f6a3523 实证回归锁①：AI 交互日志必须随 WS 帧增量到达逐步渲染（而非收束一次性）。
+// 吸收链 = absorbSnapshot 的 next_cursor 单调 + chunk 追加——任何回归（如只在 complete
+// 时吸收、游标比较颠倒）当场红。
+describe('TaskDetailPage（AI 日志流式增量）', () => {
+  it('WS AI 帧逐帧到达 → 面板文本逐步增长', async () => {
+    const b64 = (s: string) => Buffer.from(s, 'utf-8').toString('base64');
+    const frame = (chunk: string, cursor: number, total: number) => JSON.stringify({
+      type: 'snapshot',
+      task: { task_id: 't-1', project_id: 'p1', scan_mode: 'SCAN_MODE_PARALLEL',
+        sast_tools: [], status: 'TASK_STATUS_RUNNING', stages: [], retry_count: 0 },
+      progress: { task_id: 't-1', status: 'TASK_STATUS_RUNNING', overall_percent: 40, stages: [] },
+      logs: { logs: [] },
+      ai: { chunk: b64(chunk), next_cursor: String(cursor), total_bytes: String(total) },
+    });
+    const created: { onmessage: ((ev: { data: string }) => void) | null; onopen: (() => void) | null }[] = [];
+    class FakeWS {
+      onopen: (() => void) | null = null;
+      onmessage: ((ev: { data: string }) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(_url: string) { created.push(this); }
+      close() { this.onclose?.(); }
+    }
+    (globalThis as { WebSocket?: unknown }).WebSocket = FakeWS;
+    try {
+      renderPage();
+      await waitFor(() => expect(created[0]).toBeTruthy());
+      created[0].onopen?.();
+      const box = () => screen.getByTestId('ai-interaction-log-box').textContent ?? '';
+      created[0].onmessage?.({ data: frame('第一段思考', 12, 30) });
+      await waitFor(() => expect(box()).toContain('第一段思考'));
+      created[0].onmessage?.({ data: frame('第二段思考', 24, 30) });
+      await waitFor(() => expect(box()).toContain('第二段思考'));
+      expect(box()).toContain('第一段思考'); // 增量不覆盖既有内容
+      created[0].onmessage?.({ data: frame('', 24, 30) }); // 空块帧（total 更新）不炸不重复
+      expect(box()).toContain('第二段思考');
+    } finally {
+      delete (globalThis as { WebSocket?: unknown }).WebSocket;
+    }
+  });
+
+  // gw-f6a3523 实证回归锁②：非收束断线必须立即回填快照（服务端游标已越过 pend 内容，
+  // 只能经快照补齐）——断线期间显示空白直到任务结束的回归在此当场红。
+  it('WS 非收束断线 → 立即补拉快照（不等重连/轮询拍）', async () => {
+    const created: { onopen: (() => void) | null; onclose: (() => void) | null }[] = [];
+    class FakeWS {
+      onopen: (() => void) | null = null;
+      onmessage: ((ev: { data: string }) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(_url: string) { created.push(this); }
+      close() { this.onclose?.(); }
+    }
+    (globalThis as { WebSocket?: unknown }).WebSocket = FakeWS;
+    try {
+      renderPage();
+      const snapshotGets = () => gateway.requests.filter((r) => r.method === 'GET' && r.url === '/v1/tasks/t-1/snapshot').length;
+      await waitFor(() => expect(created[0]).toBeTruthy());
+      created[0].onopen?.();
+      const before = snapshotGets();
+      created[0].onclose?.(); // 模拟服务端 watch lifetime close（任务仍 RUNNING）
+      await waitFor(() => expect(snapshotGets()).toBeGreaterThan(before));
+    } finally {
+      delete (globalThis as { WebSocket?: unknown }).WebSocket;
+    }
+  });
+});

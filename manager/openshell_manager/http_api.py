@@ -156,6 +156,11 @@ def h_providers_upsert(_a, _q, body) -> Dict[str, Any]:
                                   conf=body.get("config") or {})
 
 
+def h_provider_delete(a, q, _b) -> Dict[str, Any]:
+    return facade.delete_provider(name=a["name"],
+                                  workspace=_one(q, "workspace"))
+
+
 ROUTES: list[Tuple[str, re.Pattern, Callable]] = [
     ("GET", re.compile(r"^/api/v1/gateway/health$"), h_gateway_health),
     ("POST", re.compile(r"^/api/v1/sandboxes$"), h_sandbox_create),
@@ -185,6 +190,8 @@ ROUTES: list[Tuple[str, re.Pattern, Callable]] = [
     ("GET", re.compile(
         r"^/api/v1/inference/providers/(?P<name>[^/]+)$"), h_provider_get),
     ("PUT", re.compile(r"^/api/v1/inference/providers$"), h_providers_upsert),
+    ("DELETE", re.compile(
+        r"^/api/v1/inference/providers/(?P<name>[^/]+)$"), h_provider_delete),
 ]
 
 

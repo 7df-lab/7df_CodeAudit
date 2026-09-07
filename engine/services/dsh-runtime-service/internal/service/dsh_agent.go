@@ -48,6 +48,13 @@ func fingerprintAIAnalysis(req *pb.RunAIAnalysisRequest) string {
 	return fmt.Sprintf("%s|%s|%d|%v", req.GetTaskId(), req.GetProjectPath(), req.GetScanMode(), req.GetSastFindingIds())
 }
 
+// StartSessionJanitor — ADR-212: session.Manager.StartJanitor（ADR-134）此前
+// 零调用方，expired 会话只增不减（内存泄漏的"纸面修复"从未生效）。随进程
+// 生命周期常驻，与 StartSandboxReconciler（ADR-210）同口径。
+func (s *DSHRuntimeServiceImpl) StartSessionJanitor() {
+	s.sessions.StartJanitor(make(chan struct{}))
+}
+
 // NewDSHRuntimeService creates a new DSHRuntimeServiceImpl.
 func NewDSHRuntimeService() *DSHRuntimeServiceImpl {
 	return &DSHRuntimeServiceImpl{
@@ -253,7 +260,7 @@ func (s *DSHRuntimeServiceImpl) ReviewSASTResults(ctx context.Context, req *pb.R
 	findings := fetchFindingsByIDs(req.GetSastFindingIds())
 
 	// ADR-140/166: 沙箱可用时优先逐条 LLM 交叉验证（04 §3.4 步骤2 真实语义审核）
-	if reviews2, opinions2, err := sandboxReview(ctx, req.GetTaskId(), findings, taskLogSink(req.GetTaskId(), "sandbox")); err == nil {
+	if reviews2, opinions2, err := sandboxReview(ctx, req.GetTaskId(), req.GetProjectPath(), findings, taskLogSink(req.GetTaskId(), "sandbox")); err == nil {
 		total := int32(len(findings))
 		confirm := 0
 		for _, r := range reviews2 {

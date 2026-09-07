@@ -42,16 +42,22 @@ func (s *ConfidenceFusionStage) Execute(ctx context.Context, input *FusionContex
 
 		// Calculate fused confidence: weighted average
 		// 依据: 04 §3.2 阶段5 置信度融合算法
+		// ADR-214: 组员置信度同样必须从全量输入取——dedup 后 FusedFindings 只剩
+		// primary，原实现 count 恒 1 → boost 恒 1.0（多源确认加权从未生效）。
+		members := make(map[string]*pb.UnifiedFinding, len(input.FilteredSAST)+len(input.FilteredAI))
+		for _, f := range input.FilteredSAST {
+			members[f.GetFindingId()] = f
+		}
+		for _, f := range input.FilteredAI {
+			members[f.GetFindingId()] = f
+		}
 		totalConfidence := float32(0)
 		count := int32(0)
 
 		for _, fid := range group.GetMergedFindingIds() {
-			for _, f := range input.FusedFindings {
-				if f.GetFindingId() == fid {
-					totalConfidence += f.GetConfidence()
-					count++
-					break
-				}
+			if f, ok := members[fid]; ok {
+				totalConfidence += f.GetConfidence()
+				count++
 			}
 		}
 

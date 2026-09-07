@@ -35,7 +35,11 @@ token，否则拒绝启动（`config.py validate()`）；`/api/*` 全部 Bearer 
 | `openshell_manager/upload.py` | 手写流式 multipart 解析器：720 KiB 分块（3 字节对齐 base64，编码后 960KiB < 网关 gRPC 实测 1 MiB 收包上限）经 exec stdin 写入沙箱，先建父目录再写 `.part` 后原子 mv，失败自清理 |
 | `openshell_manager/config.py` | 配置解析（env > config.json > 内置默认）+ `validate()` 绑定纪律 |
 | `openshell_manager/http_api.py` | 旧 stdlib 实现，**不再接线**，保留作行为参照 |
-| `tests/test_contract.py` | 26 条契约测试（假 SDK 门面 + 真 HTTP 层，离线无需网关） |
+| `tests/test_contract.py` | 47 条契约测试（假 SDK 门面 + 真 HTTP 层，离线无需网关）；可 pytest 或直跑 |
+| `tests/test_guardrails.py` | 守门测试：鉴权全覆盖/路由快照/README 文档实测化/分块上限/常量时间比较/SDK 在库/档案完整 |
+| `REGRESSIONS.md` | 缺陷档案：R1…R12 每条缺陷绑定具名锁定测试 + 修复流程纪律（先红后修再记档） |
+| `.agent/verify.sh` | 交付门禁：pytest 全量 + 直跑模式双绿才可交付 |
+| `docs/` | 接口文档三件套：`api-external.md`（外部 HTTP 契约）/`api-internal.md`（内部模块契约）/`data-flows.md`（数据流转与部署链） |
 | `libs/OpenShell/python` | vendored openshell SDK（供应商树；整树 7.2G 几乎全是 Rust 构建产物，仅 python 子树 <1M 入镜像）。**python 子树 2026-09-05 起纳管入库**（Dockerfile COPY 输入，gitignored 会让 fresh clone 构建必败）；`libs/OpenShell` 本体是嵌套上游仓（NVIDIA/OpenShell），仅存于开发机本地 |
 | `config.json` | 全局配置——与引擎共享的 SSOT（引擎 `openshell_manager_client.py` 读同一份 `url`/`token`/`tokenFile`，两端不会漂移） |
 | `run.sh` | 宿主机开发态启动（127.0.0.1:18800） |
@@ -48,8 +52,9 @@ token，否则拒绝启动（`config.py validate()`）；`/api/*` 全部 Bearer 
 # 开发态（宿主机；免 token 仅限环回）：
 ./run.sh                          # = python3 -m openshell_manager，127.0.0.1:18800
 
-# 契约测试（离线，26 条）：
-python3 -m pytest tests/ -q       # 或 python3 tests/test_contract.py
+# 契约+守门测试（离线，47 条；交付门禁）：
+bash .agent/verify.sh            # = pytest tests/ 全量 + 直跑模式双检
+python3 -m pytest tests/ -q      # 或 python3 tests/test_contract.py
 
 # 生产（LXC 107 docker，容器 openshell-manager，镜像 openshell-manager:2.0.0）：
 deploy/deploy.sh deploy           # 同步源码+产物+.env → compose build+up → healthz → 网关可达性
@@ -130,21 +135,25 @@ pct exec 107 -- bash -c 'mkdir -p /root/om-build && tar -xzf /tmp/om_ctx.tgz -C 
 | `GET /api/v1/sandboxes/{name}/services` | 该沙箱暴露服务清单（`?all_workspaces=true` 免 workspace；`limit`/`offset` 分页） |
 | `DELETE /api/v1/sandboxes/{name}/services/{service}?workspace=` | 删除暴露；不存在也返回 `{deleted:false}` |
 | `GET /api/v1/inference/route?workspace=` | 读推理路由 |
-| `PUT /api/v1/inference/route` | 切路由 `{workspace, provider, model, no_verify?=false}` |
-| `GET /api/v1/inference/providers?workspace=` | provider 清单 |
+| `PUT /api/v1/inference/route` | 切路由 `{workspace, provider, model, no_verify?=false}`，回执含 `validation_performed/validated_endpoints`（网关连通性验证结果透传） |
+| `GET /api/v1/inference/providers?workspace=` | provider 清单（对象数组 `[{name,type,config}]`，凭据按省略屏蔽） |
 | `GET /api/v1/inference/providers/{name}?workspace=` | 单个 provider |
 | `PUT /api/v1/inference/providers` | 创建/更新 `{workspace, name, type, credentials?, config?}` |
+| `DELETE /api/v1/inference/providers/{name}?workspace=` | 删除 provider → `{name, deleted}` |
 
 通用约定：
 
 - **寻址双轨**：REST 路径参数一律用沙箱名（接口层内部解析 UUID，ADR-173）；
   唯 `/exec` 的 `sandbox_id` 走 UUID。
 - **错误契约**统一 `{"error": msg}`：400（缺字段/坏 JSON/非对象 body/非法数值参数/
-  command 非字符串列表/stdin_b64 非法/spec·policy 未知字段）、
-  401、404（含 `no route for METHOD /path`）、411（上传缺 Content-Length）、
-  413（JSON > 8 MiB 或超 `maxUploadBytes`）、415（上传非 multipart）、
+  **字符串字段收非字符串**/env 非"字符串到字符串"映射/command 非字符串列表/
+  stdin_b64 非法/spec·policy 未知字段）、
+  401、404（含 `no route for METHOD /path`）、405（也是 `{"error":…}` 形态）、
+  411（上传缺 Content-Length）、413（JSON > 8 MiB 或超 `maxUploadBytes`）、
+  415（上传非 multipart）、
   502（南向异常/未捕获兜底）。客户端格式错误一律 400，绝不泄漏成 502
-  （502 会被上游按"网关不可达"重试/降级）。
+  （502 会被上游按"网关不可达"重试/降级）——该红线由
+  `tests/test_guardrails.py` 结构守门 + `REGRESSIONS.md` R6/R11 档案锁定。
 - 上传先写 `.part` 全部落盘后原子改名，失败自动清理。
 
 ## 网关生命周期（兄弟仓）

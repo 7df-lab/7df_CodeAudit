@@ -1578,7 +1578,7 @@ func (x GetPresignedUrlRequest_UrlOp) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use GetPresignedUrlRequest_UrlOp.Descriptor instead.
 func (GetPresignedUrlRequest_UrlOp) EnumDescriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{203, 0}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{216, 0}
 }
 
 type LocationInfo struct {
@@ -11858,6 +11858,707 @@ func (x *CancelAnalysisRequest) GetTaskId() string {
 	return ""
 }
 
+// --- 推理 provider/路由管理（ADR-217；结构依据 manager /api/v1/inference/* 契约）---
+type InferenceProviderInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Type          string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
+	Config        map[string]string      `protobuf:"bytes,3,rep,name=config,proto3" json:"config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // 凭据永不回流（manager 侧按省略脱敏）
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InferenceProviderInfo) Reset() {
+	*x = InferenceProviderInfo{}
+	mi := &file_codeaudit_common_proto_msgTypes[160]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InferenceProviderInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InferenceProviderInfo) ProtoMessage() {}
+
+func (x *InferenceProviderInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_codeaudit_common_proto_msgTypes[160]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InferenceProviderInfo.ProtoReflect.Descriptor instead.
+func (*InferenceProviderInfo) Descriptor() ([]byte, []int) {
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{160}
+}
+
+func (x *InferenceProviderInfo) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *InferenceProviderInfo) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *InferenceProviderInfo) GetConfig() map[string]string {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+type ListInferenceProvidersRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListInferenceProvidersRequest) Reset() {
+	*x = ListInferenceProvidersRequest{}
+	mi := &file_codeaudit_common_proto_msgTypes[161]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListInferenceProvidersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListInferenceProvidersRequest) ProtoMessage() {}
+
+func (x *ListInferenceProvidersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_codeaudit_common_proto_msgTypes[161]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListInferenceProvidersRequest.ProtoReflect.Descriptor instead.
+func (*ListInferenceProvidersRequest) Descriptor() ([]byte, []int) {
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{161}
+}
+
+type ListInferenceProvidersResponse struct {
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	Providers     []*InferenceProviderInfo `protobuf:"bytes,1,rep,name=providers,proto3" json:"providers,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListInferenceProvidersResponse) Reset() {
+	*x = ListInferenceProvidersResponse{}
+	mi := &file_codeaudit_common_proto_msgTypes[162]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListInferenceProvidersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListInferenceProvidersResponse) ProtoMessage() {}
+
+func (x *ListInferenceProvidersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_codeaudit_common_proto_msgTypes[162]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListInferenceProvidersResponse.ProtoReflect.Descriptor instead.
+func (*ListInferenceProvidersResponse) Descriptor() ([]byte, []int) {
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{162}
+}
+
+func (x *ListInferenceProvidersResponse) GetProviders() []*InferenceProviderInfo {
+	if x != nil {
+		return x.Providers
+	}
+	return nil
+}
+
+type GetInferenceProviderRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetInferenceProviderRequest) Reset() {
+	*x = GetInferenceProviderRequest{}
+	mi := &file_codeaudit_common_proto_msgTypes[163]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInferenceProviderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInferenceProviderRequest) ProtoMessage() {}
+
+func (x *GetInferenceProviderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_codeaudit_common_proto_msgTypes[163]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInferenceProviderRequest.ProtoReflect.Descriptor instead.
+func (*GetInferenceProviderRequest) Descriptor() ([]byte, []int) {
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{163}
+}
+
+func (x *GetInferenceProviderRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+type UpsertInferenceProviderRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Metadata      *RequestMetadata       `protobuf:"bytes,1,opt,name=metadata,proto3" json:"metadata,omitempty"` // 幂等键（R4；网关为 REST 写操作生成注入；upsert 天然幂等）
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Type          string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
+	Credentials   map[string]string      `protobuf:"bytes,4,rep,name=credentials,proto3" json:"credentials,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // 只进不出：网关加密存储，响应永不回流
+	Config        map[string]string      `protobuf:"bytes,5,rep,name=config,proto3" json:"config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpsertInferenceProviderRequest) Reset() {
+	*x = UpsertInferenceProviderRequest{}
+	mi := &file_codeaudit_common_proto_msgTypes[164]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertInferenceProviderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertInferenceProviderRequest) ProtoMessage() {}
+
+func (x *UpsertInferenceProviderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_codeaudit_common_proto_msgTypes[164]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertInferenceProviderRequest.ProtoReflect.Descriptor instead.
+func (*UpsertInferenceProviderRequest) Descriptor() ([]byte, []int) {
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{164}
+}
+
+func (x *UpsertInferenceProviderRequest) GetMetadata() *RequestMetadata {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *UpsertInferenceProviderRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *UpsertInferenceProviderRequest) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *UpsertInferenceProviderRequest) GetCredentials() map[string]string {
+	if x != nil {
+		return x.Credentials
+	}
+	return nil
+}
+
+func (x *UpsertInferenceProviderRequest) GetConfig() map[string]string {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+type UpsertInferenceProviderResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Created       bool                   `protobuf:"varint,2,opt,name=created,proto3" json:"created,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpsertInferenceProviderResponse) Reset() {
+	*x = UpsertInferenceProviderResponse{}
+	mi := &file_codeaudit_common_proto_msgTypes[165]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertInferenceProviderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertInferenceProviderResponse) ProtoMessage() {}
+
+func (x *UpsertInferenceProviderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_codeaudit_common_proto_msgTypes[165]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertInferenceProviderResponse.ProtoReflect.Descriptor instead.
+func (*UpsertInferenceProviderResponse) Descriptor() ([]byte, []int) {
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{165}
+}
+
+func (x *UpsertInferenceProviderResponse) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *UpsertInferenceProviderResponse) GetCreated() bool {
+	if x != nil {
+		return x.Created
+	}
+	return false
+}
+
+type DeleteInferenceProviderRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Metadata      *RequestMetadata       `protobuf:"bytes,1,opt,name=metadata,proto3" json:"metadata,omitempty"` // 幂等键（R4；删除天然幂等）
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteInferenceProviderRequest) Reset() {
+	*x = DeleteInferenceProviderRequest{}
+	mi := &file_codeaudit_common_proto_msgTypes[166]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteInferenceProviderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteInferenceProviderRequest) ProtoMessage() {}
+
+func (x *DeleteInferenceProviderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_codeaudit_common_proto_msgTypes[166]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteInferenceProviderRequest.ProtoReflect.Descriptor instead.
+func (*DeleteInferenceProviderRequest) Descriptor() ([]byte, []int) {
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{166}
+}
+
+func (x *DeleteInferenceProviderRequest) GetMetadata() *RequestMetadata {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *DeleteInferenceProviderRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+type DeleteInferenceProviderResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Deleted       bool                   `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteInferenceProviderResponse) Reset() {
+	*x = DeleteInferenceProviderResponse{}
+	mi := &file_codeaudit_common_proto_msgTypes[167]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteInferenceProviderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteInferenceProviderResponse) ProtoMessage() {}
+
+func (x *DeleteInferenceProviderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_codeaudit_common_proto_msgTypes[167]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteInferenceProviderResponse.ProtoReflect.Descriptor instead.
+func (*DeleteInferenceProviderResponse) Descriptor() ([]byte, []int) {
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{167}
+}
+
+func (x *DeleteInferenceProviderResponse) GetDeleted() bool {
+	if x != nil {
+		return x.Deleted
+	}
+	return false
+}
+
+type GetInferenceRouteRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetInferenceRouteRequest) Reset() {
+	*x = GetInferenceRouteRequest{}
+	mi := &file_codeaudit_common_proto_msgTypes[168]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInferenceRouteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInferenceRouteRequest) ProtoMessage() {}
+
+func (x *GetInferenceRouteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_codeaudit_common_proto_msgTypes[168]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInferenceRouteRequest.ProtoReflect.Descriptor instead.
+func (*GetInferenceRouteRequest) Descriptor() ([]byte, []int) {
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{168}
+}
+
+type InferenceRouteInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Provider      string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"` // 未设置路由时为空串
+	Model         string                 `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
+	Version       uint64                 `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"` // protojson 序列化为 string
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InferenceRouteInfo) Reset() {
+	*x = InferenceRouteInfo{}
+	mi := &file_codeaudit_common_proto_msgTypes[169]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InferenceRouteInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InferenceRouteInfo) ProtoMessage() {}
+
+func (x *InferenceRouteInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_codeaudit_common_proto_msgTypes[169]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InferenceRouteInfo.ProtoReflect.Descriptor instead.
+func (*InferenceRouteInfo) Descriptor() ([]byte, []int) {
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{169}
+}
+
+func (x *InferenceRouteInfo) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *InferenceRouteInfo) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *InferenceRouteInfo) GetVersion() uint64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+type SetInferenceRouteRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Metadata      *RequestMetadata       `protobuf:"bytes,1,opt,name=metadata,proto3" json:"metadata,omitempty"` // 幂等键（R4）
+	Provider      string                 `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
+	Model         string                 `protobuf:"bytes,3,opt,name=model,proto3" json:"model,omitempty"`
+	NoVerify      bool                   `protobuf:"varint,4,opt,name=no_verify,json=noVerify,proto3" json:"no_verify,omitempty"` // true=跳过网关连通性验证（默认验证，回执带 validated_endpoints）
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetInferenceRouteRequest) Reset() {
+	*x = SetInferenceRouteRequest{}
+	mi := &file_codeaudit_common_proto_msgTypes[170]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetInferenceRouteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetInferenceRouteRequest) ProtoMessage() {}
+
+func (x *SetInferenceRouteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_codeaudit_common_proto_msgTypes[170]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetInferenceRouteRequest.ProtoReflect.Descriptor instead.
+func (*SetInferenceRouteRequest) Descriptor() ([]byte, []int) {
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{170}
+}
+
+func (x *SetInferenceRouteRequest) GetMetadata() *RequestMetadata {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *SetInferenceRouteRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *SetInferenceRouteRequest) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *SetInferenceRouteRequest) GetNoVerify() bool {
+	if x != nil {
+		return x.NoVerify
+	}
+	return false
+}
+
+type ValidatedEndpoint struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	Protocol      string                 `protobuf:"bytes,2,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ValidatedEndpoint) Reset() {
+	*x = ValidatedEndpoint{}
+	mi := &file_codeaudit_common_proto_msgTypes[171]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ValidatedEndpoint) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ValidatedEndpoint) ProtoMessage() {}
+
+func (x *ValidatedEndpoint) ProtoReflect() protoreflect.Message {
+	mi := &file_codeaudit_common_proto_msgTypes[171]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ValidatedEndpoint.ProtoReflect.Descriptor instead.
+func (*ValidatedEndpoint) Descriptor() ([]byte, []int) {
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{171}
+}
+
+func (x *ValidatedEndpoint) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *ValidatedEndpoint) GetProtocol() string {
+	if x != nil {
+		return x.Protocol
+	}
+	return ""
+}
+
+type SetInferenceRouteResponse struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Provider            string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
+	Model               string                 `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
+	Version             uint64                 `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
+	ValidationPerformed bool                   `protobuf:"varint,4,opt,name=validation_performed,json=validationPerformed,proto3" json:"validation_performed,omitempty"`
+	ValidatedEndpoints  []*ValidatedEndpoint   `protobuf:"bytes,5,rep,name=validated_endpoints,json=validatedEndpoints,proto3" json:"validated_endpoints,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *SetInferenceRouteResponse) Reset() {
+	*x = SetInferenceRouteResponse{}
+	mi := &file_codeaudit_common_proto_msgTypes[172]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetInferenceRouteResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetInferenceRouteResponse) ProtoMessage() {}
+
+func (x *SetInferenceRouteResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_codeaudit_common_proto_msgTypes[172]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetInferenceRouteResponse.ProtoReflect.Descriptor instead.
+func (*SetInferenceRouteResponse) Descriptor() ([]byte, []int) {
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{172}
+}
+
+func (x *SetInferenceRouteResponse) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *SetInferenceRouteResponse) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *SetInferenceRouteResponse) GetVersion() uint64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *SetInferenceRouteResponse) GetValidationPerformed() bool {
+	if x != nil {
+		return x.ValidationPerformed
+	}
+	return false
+}
+
+func (x *SetInferenceRouteResponse) GetValidatedEndpoints() []*ValidatedEndpoint {
+	if x != nil {
+		return x.ValidatedEndpoints
+	}
+	return nil
+}
+
 // --- AI 交互日志（ADR-168；补遗②人性化渲染）---
 // 沙箱内 DSH 经 bridge（JSON-RPC⇄SSE）的交互流：任务运行中增量可读（GUI 实时回显），
 // 任务终态后即最终交互日志。chunk 为按 event type 人性化渲染的 utf-8 文本（中文行 +
@@ -11874,7 +12575,7 @@ type GetAIInteractionLogRequest struct {
 
 func (x *GetAIInteractionLogRequest) Reset() {
 	*x = GetAIInteractionLogRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[160]
+	mi := &file_codeaudit_common_proto_msgTypes[173]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11886,7 +12587,7 @@ func (x *GetAIInteractionLogRequest) String() string {
 func (*GetAIInteractionLogRequest) ProtoMessage() {}
 
 func (x *GetAIInteractionLogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[160]
+	mi := &file_codeaudit_common_proto_msgTypes[173]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11899,7 +12600,7 @@ func (x *GetAIInteractionLogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAIInteractionLogRequest.ProtoReflect.Descriptor instead.
 func (*GetAIInteractionLogRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{160}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{173}
 }
 
 func (x *GetAIInteractionLogRequest) GetTaskId() string {
@@ -11935,7 +12636,7 @@ type GetAIInteractionLogResponse struct {
 
 func (x *GetAIInteractionLogResponse) Reset() {
 	*x = GetAIInteractionLogResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[161]
+	mi := &file_codeaudit_common_proto_msgTypes[174]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11947,7 +12648,7 @@ func (x *GetAIInteractionLogResponse) String() string {
 func (*GetAIInteractionLogResponse) ProtoMessage() {}
 
 func (x *GetAIInteractionLogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[161]
+	mi := &file_codeaudit_common_proto_msgTypes[174]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11960,7 +12661,7 @@ func (x *GetAIInteractionLogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAIInteractionLogResponse.ProtoReflect.Descriptor instead.
 func (*GetAIInteractionLogResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{161}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{174}
 }
 
 func (x *GetAIInteractionLogResponse) GetChunk() []byte {
@@ -12003,7 +12704,7 @@ type StreamAIInteractionLogRequest struct {
 
 func (x *StreamAIInteractionLogRequest) Reset() {
 	*x = StreamAIInteractionLogRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[162]
+	mi := &file_codeaudit_common_proto_msgTypes[175]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12015,7 +12716,7 @@ func (x *StreamAIInteractionLogRequest) String() string {
 func (*StreamAIInteractionLogRequest) ProtoMessage() {}
 
 func (x *StreamAIInteractionLogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[162]
+	mi := &file_codeaudit_common_proto_msgTypes[175]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12028,7 +12729,7 @@ func (x *StreamAIInteractionLogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamAIInteractionLogRequest.ProtoReflect.Descriptor instead.
 func (*StreamAIInteractionLogRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{162}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{175}
 }
 
 func (x *StreamAIInteractionLogRequest) GetTaskId() string {
@@ -12064,7 +12765,7 @@ type AnalyzeCodeRequest struct {
 
 func (x *AnalyzeCodeRequest) Reset() {
 	*x = AnalyzeCodeRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[163]
+	mi := &file_codeaudit_common_proto_msgTypes[176]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12076,7 +12777,7 @@ func (x *AnalyzeCodeRequest) String() string {
 func (*AnalyzeCodeRequest) ProtoMessage() {}
 
 func (x *AnalyzeCodeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[163]
+	mi := &file_codeaudit_common_proto_msgTypes[176]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12089,7 +12790,7 @@ func (x *AnalyzeCodeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AnalyzeCodeRequest.ProtoReflect.Descriptor instead.
 func (*AnalyzeCodeRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{163}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{176}
 }
 
 func (x *AnalyzeCodeRequest) GetMetadata() *RequestMetadata {
@@ -12129,7 +12830,7 @@ type AnalyzeCodeResponse struct {
 
 func (x *AnalyzeCodeResponse) Reset() {
 	*x = AnalyzeCodeResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[164]
+	mi := &file_codeaudit_common_proto_msgTypes[177]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12141,7 +12842,7 @@ func (x *AnalyzeCodeResponse) String() string {
 func (*AnalyzeCodeResponse) ProtoMessage() {}
 
 func (x *AnalyzeCodeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[164]
+	mi := &file_codeaudit_common_proto_msgTypes[177]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12154,7 +12855,7 @@ func (x *AnalyzeCodeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AnalyzeCodeResponse.ProtoReflect.Descriptor instead.
 func (*AnalyzeCodeResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{164}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{177}
 }
 
 func (x *AnalyzeCodeResponse) GetResult() *CodeAnalysisResult {
@@ -12174,7 +12875,7 @@ type QueryCPGRequest struct {
 
 func (x *QueryCPGRequest) Reset() {
 	*x = QueryCPGRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[165]
+	mi := &file_codeaudit_common_proto_msgTypes[178]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12186,7 +12887,7 @@ func (x *QueryCPGRequest) String() string {
 func (*QueryCPGRequest) ProtoMessage() {}
 
 func (x *QueryCPGRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[165]
+	mi := &file_codeaudit_common_proto_msgTypes[178]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12199,7 +12900,7 @@ func (x *QueryCPGRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryCPGRequest.ProtoReflect.Descriptor instead.
 func (*QueryCPGRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{165}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{178}
 }
 
 func (x *QueryCPGRequest) GetCpgStoragePath() string {
@@ -12225,7 +12926,7 @@ type QueryCPGResponse struct {
 
 func (x *QueryCPGResponse) Reset() {
 	*x = QueryCPGResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[166]
+	mi := &file_codeaudit_common_proto_msgTypes[179]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12237,7 +12938,7 @@ func (x *QueryCPGResponse) String() string {
 func (*QueryCPGResponse) ProtoMessage() {}
 
 func (x *QueryCPGResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[166]
+	mi := &file_codeaudit_common_proto_msgTypes[179]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12250,7 +12951,7 @@ func (x *QueryCPGResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryCPGResponse.ProtoReflect.Descriptor instead.
 func (*QueryCPGResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{166}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{179}
 }
 
 func (x *QueryCPGResponse) GetResultJson() string {
@@ -12270,7 +12971,7 @@ type GetCallGraphRequest struct {
 
 func (x *GetCallGraphRequest) Reset() {
 	*x = GetCallGraphRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[167]
+	mi := &file_codeaudit_common_proto_msgTypes[180]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12282,7 +12983,7 @@ func (x *GetCallGraphRequest) String() string {
 func (*GetCallGraphRequest) ProtoMessage() {}
 
 func (x *GetCallGraphRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[167]
+	mi := &file_codeaudit_common_proto_msgTypes[180]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12295,7 +12996,7 @@ func (x *GetCallGraphRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCallGraphRequest.ProtoReflect.Descriptor instead.
 func (*GetCallGraphRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{167}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{180}
 }
 
 func (x *GetCallGraphRequest) GetCpgStoragePath() string {
@@ -12321,7 +13022,7 @@ type CallGraph struct {
 
 func (x *CallGraph) Reset() {
 	*x = CallGraph{}
-	mi := &file_codeaudit_common_proto_msgTypes[168]
+	mi := &file_codeaudit_common_proto_msgTypes[181]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12333,7 +13034,7 @@ func (x *CallGraph) String() string {
 func (*CallGraph) ProtoMessage() {}
 
 func (x *CallGraph) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[168]
+	mi := &file_codeaudit_common_proto_msgTypes[181]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12346,7 +13047,7 @@ func (x *CallGraph) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CallGraph.ProtoReflect.Descriptor instead.
 func (*CallGraph) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{168}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{181}
 }
 
 func (x *CallGraph) GetGraphJson() string {
@@ -12366,7 +13067,7 @@ type GetDataFlowRequest struct {
 
 func (x *GetDataFlowRequest) Reset() {
 	*x = GetDataFlowRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[169]
+	mi := &file_codeaudit_common_proto_msgTypes[182]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12378,7 +13079,7 @@ func (x *GetDataFlowRequest) String() string {
 func (*GetDataFlowRequest) ProtoMessage() {}
 
 func (x *GetDataFlowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[169]
+	mi := &file_codeaudit_common_proto_msgTypes[182]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12391,7 +13092,7 @@ func (x *GetDataFlowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDataFlowRequest.ProtoReflect.Descriptor instead.
 func (*GetDataFlowRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{169}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{182}
 }
 
 func (x *GetDataFlowRequest) GetCpgStoragePath() string {
@@ -12417,7 +13118,7 @@ type DataFlowGraph struct {
 
 func (x *DataFlowGraph) Reset() {
 	*x = DataFlowGraph{}
-	mi := &file_codeaudit_common_proto_msgTypes[170]
+	mi := &file_codeaudit_common_proto_msgTypes[183]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12429,7 +13130,7 @@ func (x *DataFlowGraph) String() string {
 func (*DataFlowGraph) ProtoMessage() {}
 
 func (x *DataFlowGraph) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[170]
+	mi := &file_codeaudit_common_proto_msgTypes[183]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12442,7 +13143,7 @@ func (x *DataFlowGraph) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DataFlowGraph.ProtoReflect.Descriptor instead.
 func (*DataFlowGraph) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{170}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{183}
 }
 
 func (x *DataFlowGraph) GetGraphJson() string {
@@ -12463,7 +13164,7 @@ type CodeAnalysisProgress struct {
 
 func (x *CodeAnalysisProgress) Reset() {
 	*x = CodeAnalysisProgress{}
-	mi := &file_codeaudit_common_proto_msgTypes[171]
+	mi := &file_codeaudit_common_proto_msgTypes[184]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12475,7 +13176,7 @@ func (x *CodeAnalysisProgress) String() string {
 func (*CodeAnalysisProgress) ProtoMessage() {}
 
 func (x *CodeAnalysisProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[171]
+	mi := &file_codeaudit_common_proto_msgTypes[184]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12488,7 +13189,7 @@ func (x *CodeAnalysisProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CodeAnalysisProgress.ProtoReflect.Descriptor instead.
 func (*CodeAnalysisProgress) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{171}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{184}
 }
 
 func (x *CodeAnalysisProgress) GetTaskId() string {
@@ -12527,7 +13228,7 @@ type RunSASTScanRequest struct {
 
 func (x *RunSASTScanRequest) Reset() {
 	*x = RunSASTScanRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[172]
+	mi := &file_codeaudit_common_proto_msgTypes[185]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12539,7 +13240,7 @@ func (x *RunSASTScanRequest) String() string {
 func (*RunSASTScanRequest) ProtoMessage() {}
 
 func (x *RunSASTScanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[172]
+	mi := &file_codeaudit_common_proto_msgTypes[185]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12552,7 +13253,7 @@ func (x *RunSASTScanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunSASTScanRequest.ProtoReflect.Descriptor instead.
 func (*RunSASTScanRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{172}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{185}
 }
 
 func (x *RunSASTScanRequest) GetMetadata() *RequestMetadata {
@@ -12606,7 +13307,7 @@ type RunSASTScanResponse struct {
 
 func (x *RunSASTScanResponse) Reset() {
 	*x = RunSASTScanResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[173]
+	mi := &file_codeaudit_common_proto_msgTypes[186]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12618,7 +13319,7 @@ func (x *RunSASTScanResponse) String() string {
 func (*RunSASTScanResponse) ProtoMessage() {}
 
 func (x *RunSASTScanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[173]
+	mi := &file_codeaudit_common_proto_msgTypes[186]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12631,7 +13332,7 @@ func (x *RunSASTScanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunSASTScanResponse.ProtoReflect.Descriptor instead.
 func (*RunSASTScanResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{173}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{186}
 }
 
 func (x *RunSASTScanResponse) GetResult() *ToolScanResult {
@@ -12653,7 +13354,7 @@ type RunMultipleScansRequest struct {
 
 func (x *RunMultipleScansRequest) Reset() {
 	*x = RunMultipleScansRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[174]
+	mi := &file_codeaudit_common_proto_msgTypes[187]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12665,7 +13366,7 @@ func (x *RunMultipleScansRequest) String() string {
 func (*RunMultipleScansRequest) ProtoMessage() {}
 
 func (x *RunMultipleScansRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[174]
+	mi := &file_codeaudit_common_proto_msgTypes[187]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12678,7 +13379,7 @@ func (x *RunMultipleScansRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunMultipleScansRequest.ProtoReflect.Descriptor instead.
 func (*RunMultipleScansRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{174}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{187}
 }
 
 func (x *RunMultipleScansRequest) GetMetadata() *RequestMetadata {
@@ -12718,7 +13419,7 @@ type RunMultipleScansResponse struct {
 
 func (x *RunMultipleScansResponse) Reset() {
 	*x = RunMultipleScansResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[175]
+	mi := &file_codeaudit_common_proto_msgTypes[188]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12730,7 +13431,7 @@ func (x *RunMultipleScansResponse) String() string {
 func (*RunMultipleScansResponse) ProtoMessage() {}
 
 func (x *RunMultipleScansResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[175]
+	mi := &file_codeaudit_common_proto_msgTypes[188]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12743,7 +13444,7 @@ func (x *RunMultipleScansResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunMultipleScansResponse.ProtoReflect.Descriptor instead.
 func (*RunMultipleScansResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{175}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{188}
 }
 
 func (x *RunMultipleScansResponse) GetResult() *SASTScanResult {
@@ -12761,7 +13462,7 @@ type ListAvailableToolsRequest struct {
 
 func (x *ListAvailableToolsRequest) Reset() {
 	*x = ListAvailableToolsRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[176]
+	mi := &file_codeaudit_common_proto_msgTypes[189]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12773,7 +13474,7 @@ func (x *ListAvailableToolsRequest) String() string {
 func (*ListAvailableToolsRequest) ProtoMessage() {}
 
 func (x *ListAvailableToolsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[176]
+	mi := &file_codeaudit_common_proto_msgTypes[189]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12786,7 +13487,7 @@ func (x *ListAvailableToolsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAvailableToolsRequest.ProtoReflect.Descriptor instead.
 func (*ListAvailableToolsRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{176}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{189}
 }
 
 type ListAvailableToolsResponse struct {
@@ -12798,7 +13499,7 @@ type ListAvailableToolsResponse struct {
 
 func (x *ListAvailableToolsResponse) Reset() {
 	*x = ListAvailableToolsResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[177]
+	mi := &file_codeaudit_common_proto_msgTypes[190]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12810,7 +13511,7 @@ func (x *ListAvailableToolsResponse) String() string {
 func (*ListAvailableToolsResponse) ProtoMessage() {}
 
 func (x *ListAvailableToolsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[177]
+	mi := &file_codeaudit_common_proto_msgTypes[190]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12823,7 +13524,7 @@ func (x *ListAvailableToolsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAvailableToolsResponse.ProtoReflect.Descriptor instead.
 func (*ListAvailableToolsResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{177}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{190}
 }
 
 func (x *ListAvailableToolsResponse) GetTools() []*SASTToolInfo {
@@ -12842,7 +13543,7 @@ type GetToolInfoRequest struct {
 
 func (x *GetToolInfoRequest) Reset() {
 	*x = GetToolInfoRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[178]
+	mi := &file_codeaudit_common_proto_msgTypes[191]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12854,7 +13555,7 @@ func (x *GetToolInfoRequest) String() string {
 func (*GetToolInfoRequest) ProtoMessage() {}
 
 func (x *GetToolInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[178]
+	mi := &file_codeaudit_common_proto_msgTypes[191]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12867,7 +13568,7 @@ func (x *GetToolInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetToolInfoRequest.ProtoReflect.Descriptor instead.
 func (*GetToolInfoRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{178}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{191}
 }
 
 func (x *GetToolInfoRequest) GetToolId() string {
@@ -12889,7 +13590,7 @@ type SASTToolInfo struct {
 
 func (x *SASTToolInfo) Reset() {
 	*x = SASTToolInfo{}
-	mi := &file_codeaudit_common_proto_msgTypes[179]
+	mi := &file_codeaudit_common_proto_msgTypes[192]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12901,7 +13602,7 @@ func (x *SASTToolInfo) String() string {
 func (*SASTToolInfo) ProtoMessage() {}
 
 func (x *SASTToolInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[179]
+	mi := &file_codeaudit_common_proto_msgTypes[192]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12914,7 +13615,7 @@ func (x *SASTToolInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SASTToolInfo.ProtoReflect.Descriptor instead.
 func (*SASTToolInfo) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{179}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{192}
 }
 
 func (x *SASTToolInfo) GetToolId() string {
@@ -12955,7 +13656,7 @@ type ValidateToolConfigRequest struct {
 
 func (x *ValidateToolConfigRequest) Reset() {
 	*x = ValidateToolConfigRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[180]
+	mi := &file_codeaudit_common_proto_msgTypes[193]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12967,7 +13668,7 @@ func (x *ValidateToolConfigRequest) String() string {
 func (*ValidateToolConfigRequest) ProtoMessage() {}
 
 func (x *ValidateToolConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[180]
+	mi := &file_codeaudit_common_proto_msgTypes[193]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12980,7 +13681,7 @@ func (x *ValidateToolConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateToolConfigRequest.ProtoReflect.Descriptor instead.
 func (*ValidateToolConfigRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{180}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{193}
 }
 
 func (x *ValidateToolConfigRequest) GetToolId() string {
@@ -13007,7 +13708,7 @@ type ValidateToolConfigResponse struct {
 
 func (x *ValidateToolConfigResponse) Reset() {
 	*x = ValidateToolConfigResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[181]
+	mi := &file_codeaudit_common_proto_msgTypes[194]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13019,7 +13720,7 @@ func (x *ValidateToolConfigResponse) String() string {
 func (*ValidateToolConfigResponse) ProtoMessage() {}
 
 func (x *ValidateToolConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[181]
+	mi := &file_codeaudit_common_proto_msgTypes[194]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13032,7 +13733,7 @@ func (x *ValidateToolConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateToolConfigResponse.ProtoReflect.Descriptor instead.
 func (*ValidateToolConfigResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{181}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{194}
 }
 
 func (x *ValidateToolConfigResponse) GetValid() bool {
@@ -13059,7 +13760,7 @@ type GetScanProgressRequest struct {
 
 func (x *GetScanProgressRequest) Reset() {
 	*x = GetScanProgressRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[182]
+	mi := &file_codeaudit_common_proto_msgTypes[195]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13071,7 +13772,7 @@ func (x *GetScanProgressRequest) String() string {
 func (*GetScanProgressRequest) ProtoMessage() {}
 
 func (x *GetScanProgressRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[182]
+	mi := &file_codeaudit_common_proto_msgTypes[195]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13084,7 +13785,7 @@ func (x *GetScanProgressRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetScanProgressRequest.ProtoReflect.Descriptor instead.
 func (*GetScanProgressRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{182}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{195}
 }
 
 func (x *GetScanProgressRequest) GetTaskId() string {
@@ -13113,7 +13814,7 @@ type ScanProgress struct {
 
 func (x *ScanProgress) Reset() {
 	*x = ScanProgress{}
-	mi := &file_codeaudit_common_proto_msgTypes[183]
+	mi := &file_codeaudit_common_proto_msgTypes[196]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13125,7 +13826,7 @@ func (x *ScanProgress) String() string {
 func (*ScanProgress) ProtoMessage() {}
 
 func (x *ScanProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[183]
+	mi := &file_codeaudit_common_proto_msgTypes[196]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13138,7 +13839,7 @@ func (x *ScanProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScanProgress.ProtoReflect.Descriptor instead.
 func (*ScanProgress) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{183}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{196}
 }
 
 func (x *ScanProgress) GetTaskId() string {
@@ -13181,7 +13882,7 @@ type FuseResultsRequest struct {
 
 func (x *FuseResultsRequest) Reset() {
 	*x = FuseResultsRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[184]
+	mi := &file_codeaudit_common_proto_msgTypes[197]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13193,7 +13894,7 @@ func (x *FuseResultsRequest) String() string {
 func (*FuseResultsRequest) ProtoMessage() {}
 
 func (x *FuseResultsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[184]
+	mi := &file_codeaudit_common_proto_msgTypes[197]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13206,7 +13907,7 @@ func (x *FuseResultsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FuseResultsRequest.ProtoReflect.Descriptor instead.
 func (*FuseResultsRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{184}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{197}
 }
 
 func (x *FuseResultsRequest) GetMetadata() *RequestMetadata {
@@ -13246,7 +13947,7 @@ type FuseResultsResponse struct {
 
 func (x *FuseResultsResponse) Reset() {
 	*x = FuseResultsResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[185]
+	mi := &file_codeaudit_common_proto_msgTypes[198]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13258,7 +13959,7 @@ func (x *FuseResultsResponse) String() string {
 func (*FuseResultsResponse) ProtoMessage() {}
 
 func (x *FuseResultsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[185]
+	mi := &file_codeaudit_common_proto_msgTypes[198]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13271,7 +13972,7 @@ func (x *FuseResultsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FuseResultsResponse.ProtoReflect.Descriptor instead.
 func (*FuseResultsResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{185}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{198}
 }
 
 func (x *FuseResultsResponse) GetResult() *FusionResult {
@@ -13290,7 +13991,7 @@ type AlignLocationsRequest struct {
 
 func (x *AlignLocationsRequest) Reset() {
 	*x = AlignLocationsRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[186]
+	mi := &file_codeaudit_common_proto_msgTypes[199]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13302,7 +14003,7 @@ func (x *AlignLocationsRequest) String() string {
 func (*AlignLocationsRequest) ProtoMessage() {}
 
 func (x *AlignLocationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[186]
+	mi := &file_codeaudit_common_proto_msgTypes[199]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13315,7 +14016,7 @@ func (x *AlignLocationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AlignLocationsRequest.ProtoReflect.Descriptor instead.
 func (*AlignLocationsRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{186}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{199}
 }
 
 func (x *AlignLocationsRequest) GetFindingIds() []string {
@@ -13334,7 +14035,7 @@ type AlignLocationsResponse struct {
 
 func (x *AlignLocationsResponse) Reset() {
 	*x = AlignLocationsResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[187]
+	mi := &file_codeaudit_common_proto_msgTypes[200]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13346,7 +14047,7 @@ func (x *AlignLocationsResponse) String() string {
 func (*AlignLocationsResponse) ProtoMessage() {}
 
 func (x *AlignLocationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[187]
+	mi := &file_codeaudit_common_proto_msgTypes[200]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13359,7 +14060,7 @@ func (x *AlignLocationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AlignLocationsResponse.ProtoReflect.Descriptor instead.
 func (*AlignLocationsResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{187}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{200}
 }
 
 func (x *AlignLocationsResponse) GetAlignedGroups() []*MergeGroup {
@@ -13379,7 +14080,7 @@ type ClusterFindingsRequest struct {
 
 func (x *ClusterFindingsRequest) Reset() {
 	*x = ClusterFindingsRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[188]
+	mi := &file_codeaudit_common_proto_msgTypes[201]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13391,7 +14092,7 @@ func (x *ClusterFindingsRequest) String() string {
 func (*ClusterFindingsRequest) ProtoMessage() {}
 
 func (x *ClusterFindingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[188]
+	mi := &file_codeaudit_common_proto_msgTypes[201]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13404,7 +14105,7 @@ func (x *ClusterFindingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterFindingsRequest.ProtoReflect.Descriptor instead.
 func (*ClusterFindingsRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{188}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{201}
 }
 
 func (x *ClusterFindingsRequest) GetFindingIds() []string {
@@ -13430,7 +14131,7 @@ type ClusterFindingsResponse struct {
 
 func (x *ClusterFindingsResponse) Reset() {
 	*x = ClusterFindingsResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[189]
+	mi := &file_codeaudit_common_proto_msgTypes[202]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13442,7 +14143,7 @@ func (x *ClusterFindingsResponse) String() string {
 func (*ClusterFindingsResponse) ProtoMessage() {}
 
 func (x *ClusterFindingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[189]
+	mi := &file_codeaudit_common_proto_msgTypes[202]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13455,7 +14156,7 @@ func (x *ClusterFindingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterFindingsResponse.ProtoReflect.Descriptor instead.
 func (*ClusterFindingsResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{189}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{202}
 }
 
 func (x *ClusterFindingsResponse) GetClusters() []*MergeGroup {
@@ -13474,7 +14175,7 @@ type ResolveConflictsRequest struct {
 
 func (x *ResolveConflictsRequest) Reset() {
 	*x = ResolveConflictsRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[190]
+	mi := &file_codeaudit_common_proto_msgTypes[203]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13486,7 +14187,7 @@ func (x *ResolveConflictsRequest) String() string {
 func (*ResolveConflictsRequest) ProtoMessage() {}
 
 func (x *ResolveConflictsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[190]
+	mi := &file_codeaudit_common_proto_msgTypes[203]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13499,7 +14200,7 @@ func (x *ResolveConflictsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveConflictsRequest.ProtoReflect.Descriptor instead.
 func (*ResolveConflictsRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{190}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{203}
 }
 
 func (x *ResolveConflictsRequest) GetFindingIds() []string {
@@ -13518,7 +14219,7 @@ type ResolveConflictsResponse struct {
 
 func (x *ResolveConflictsResponse) Reset() {
 	*x = ResolveConflictsResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[191]
+	mi := &file_codeaudit_common_proto_msgTypes[204]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13530,7 +14231,7 @@ func (x *ResolveConflictsResponse) String() string {
 func (*ResolveConflictsResponse) ProtoMessage() {}
 
 func (x *ResolveConflictsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[191]
+	mi := &file_codeaudit_common_proto_msgTypes[204]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13543,7 +14244,7 @@ func (x *ResolveConflictsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveConflictsResponse.ProtoReflect.Descriptor instead.
 func (*ResolveConflictsResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{191}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{204}
 }
 
 func (x *ResolveConflictsResponse) GetResolved() []*ConflictItem {
@@ -13562,7 +14263,7 @@ type FusionConfig struct {
 
 func (x *FusionConfig) Reset() {
 	*x = FusionConfig{}
-	mi := &file_codeaudit_common_proto_msgTypes[192]
+	mi := &file_codeaudit_common_proto_msgTypes[205]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13574,7 +14275,7 @@ func (x *FusionConfig) String() string {
 func (*FusionConfig) ProtoMessage() {}
 
 func (x *FusionConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[192]
+	mi := &file_codeaudit_common_proto_msgTypes[205]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13587,7 +14288,7 @@ func (x *FusionConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FusionConfig.ProtoReflect.Descriptor instead.
 func (*FusionConfig) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{192}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{205}
 }
 
 func (x *FusionConfig) GetConfig() map[string]string {
@@ -13605,7 +14306,7 @@ type GetFusionConfigRequest struct {
 
 func (x *GetFusionConfigRequest) Reset() {
 	*x = GetFusionConfigRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[193]
+	mi := &file_codeaudit_common_proto_msgTypes[206]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13617,7 +14318,7 @@ func (x *GetFusionConfigRequest) String() string {
 func (*GetFusionConfigRequest) ProtoMessage() {}
 
 func (x *GetFusionConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[193]
+	mi := &file_codeaudit_common_proto_msgTypes[206]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13630,7 +14331,7 @@ func (x *GetFusionConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFusionConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetFusionConfigRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{193}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{206}
 }
 
 type UpdateFusionConfigRequest struct {
@@ -13642,7 +14343,7 @@ type UpdateFusionConfigRequest struct {
 
 func (x *UpdateFusionConfigRequest) Reset() {
 	*x = UpdateFusionConfigRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[194]
+	mi := &file_codeaudit_common_proto_msgTypes[207]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13654,7 +14355,7 @@ func (x *UpdateFusionConfigRequest) String() string {
 func (*UpdateFusionConfigRequest) ProtoMessage() {}
 
 func (x *UpdateFusionConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[194]
+	mi := &file_codeaudit_common_proto_msgTypes[207]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13667,7 +14368,7 @@ func (x *UpdateFusionConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateFusionConfigRequest.ProtoReflect.Descriptor instead.
 func (*UpdateFusionConfigRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{194}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{207}
 }
 
 func (x *UpdateFusionConfigRequest) GetConfig() *FusionConfig {
@@ -13688,7 +14389,7 @@ type CompareResultsRequest struct {
 
 func (x *CompareResultsRequest) Reset() {
 	*x = CompareResultsRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[195]
+	mi := &file_codeaudit_common_proto_msgTypes[208]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13700,7 +14401,7 @@ func (x *CompareResultsRequest) String() string {
 func (*CompareResultsRequest) ProtoMessage() {}
 
 func (x *CompareResultsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[195]
+	mi := &file_codeaudit_common_proto_msgTypes[208]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13713,7 +14414,7 @@ func (x *CompareResultsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompareResultsRequest.ProtoReflect.Descriptor instead.
 func (*CompareResultsRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{195}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{208}
 }
 
 func (x *CompareResultsRequest) GetTaskId() string {
@@ -13746,7 +14447,7 @@ type CompareResultsResponse struct {
 
 func (x *CompareResultsResponse) Reset() {
 	*x = CompareResultsResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[196]
+	mi := &file_codeaudit_common_proto_msgTypes[209]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13758,7 +14459,7 @@ func (x *CompareResultsResponse) String() string {
 func (*CompareResultsResponse) ProtoMessage() {}
 
 func (x *CompareResultsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[196]
+	mi := &file_codeaudit_common_proto_msgTypes[209]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13771,7 +14472,7 @@ func (x *CompareResultsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompareResultsResponse.ProtoReflect.Descriptor instead.
 func (*CompareResultsResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{196}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{209}
 }
 
 func (x *CompareResultsResponse) GetSummary() *ComparisonSummary {
@@ -13790,7 +14491,7 @@ type CalculateMetricsRequest struct {
 
 func (x *CalculateMetricsRequest) Reset() {
 	*x = CalculateMetricsRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[197]
+	mi := &file_codeaudit_common_proto_msgTypes[210]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13802,7 +14503,7 @@ func (x *CalculateMetricsRequest) String() string {
 func (*CalculateMetricsRequest) ProtoMessage() {}
 
 func (x *CalculateMetricsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[197]
+	mi := &file_codeaudit_common_proto_msgTypes[210]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13815,7 +14516,7 @@ func (x *CalculateMetricsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CalculateMetricsRequest.ProtoReflect.Descriptor instead.
 func (*CalculateMetricsRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{197}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{210}
 }
 
 func (x *CalculateMetricsRequest) GetTaskId() string {
@@ -13835,7 +14536,7 @@ type GenerateComparisonReportRequest struct {
 
 func (x *GenerateComparisonReportRequest) Reset() {
 	*x = GenerateComparisonReportRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[198]
+	mi := &file_codeaudit_common_proto_msgTypes[211]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13847,7 +14548,7 @@ func (x *GenerateComparisonReportRequest) String() string {
 func (*GenerateComparisonReportRequest) ProtoMessage() {}
 
 func (x *GenerateComparisonReportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[198]
+	mi := &file_codeaudit_common_proto_msgTypes[211]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13860,7 +14561,7 @@ func (x *GenerateComparisonReportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateComparisonReportRequest.ProtoReflect.Descriptor instead.
 func (*GenerateComparisonReportRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{198}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{211}
 }
 
 func (x *GenerateComparisonReportRequest) GetTaskId() string {
@@ -13888,7 +14589,7 @@ type ComparisonReport struct {
 
 func (x *ComparisonReport) Reset() {
 	*x = ComparisonReport{}
-	mi := &file_codeaudit_common_proto_msgTypes[199]
+	mi := &file_codeaudit_common_proto_msgTypes[212]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13900,7 +14601,7 @@ func (x *ComparisonReport) String() string {
 func (*ComparisonReport) ProtoMessage() {}
 
 func (x *ComparisonReport) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[199]
+	mi := &file_codeaudit_common_proto_msgTypes[212]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13913,7 +14614,7 @@ func (x *ComparisonReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ComparisonReport.ProtoReflect.Descriptor instead.
 func (*ComparisonReport) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{199}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{212}
 }
 
 func (x *ComparisonReport) GetReportId() string {
@@ -13950,7 +14651,7 @@ type UploadFileChunk struct {
 
 func (x *UploadFileChunk) Reset() {
 	*x = UploadFileChunk{}
-	mi := &file_codeaudit_common_proto_msgTypes[200]
+	mi := &file_codeaudit_common_proto_msgTypes[213]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13962,7 +14663,7 @@ func (x *UploadFileChunk) String() string {
 func (*UploadFileChunk) ProtoMessage() {}
 
 func (x *UploadFileChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[200]
+	mi := &file_codeaudit_common_proto_msgTypes[213]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13975,7 +14676,7 @@ func (x *UploadFileChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadFileChunk.ProtoReflect.Descriptor instead.
 func (*UploadFileChunk) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{200}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{213}
 }
 
 func (x *UploadFileChunk) GetData() []byte {
@@ -14015,7 +14716,7 @@ type DownloadFileRequest struct {
 
 func (x *DownloadFileRequest) Reset() {
 	*x = DownloadFileRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[201]
+	mi := &file_codeaudit_common_proto_msgTypes[214]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14027,7 +14728,7 @@ func (x *DownloadFileRequest) String() string {
 func (*DownloadFileRequest) ProtoMessage() {}
 
 func (x *DownloadFileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[201]
+	mi := &file_codeaudit_common_proto_msgTypes[214]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14040,7 +14741,7 @@ func (x *DownloadFileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DownloadFileRequest.ProtoReflect.Descriptor instead.
 func (*DownloadFileRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{201}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{214}
 }
 
 func (x *DownloadFileRequest) GetFileId() string {
@@ -14059,7 +14760,7 @@ type DownloadFileChunk struct {
 
 func (x *DownloadFileChunk) Reset() {
 	*x = DownloadFileChunk{}
-	mi := &file_codeaudit_common_proto_msgTypes[202]
+	mi := &file_codeaudit_common_proto_msgTypes[215]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14071,7 +14772,7 @@ func (x *DownloadFileChunk) String() string {
 func (*DownloadFileChunk) ProtoMessage() {}
 
 func (x *DownloadFileChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[202]
+	mi := &file_codeaudit_common_proto_msgTypes[215]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14084,7 +14785,7 @@ func (x *DownloadFileChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DownloadFileChunk.ProtoReflect.Descriptor instead.
 func (*DownloadFileChunk) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{202}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{215}
 }
 
 func (x *DownloadFileChunk) GetData() []byte {
@@ -14105,7 +14806,7 @@ type GetPresignedUrlRequest struct {
 
 func (x *GetPresignedUrlRequest) Reset() {
 	*x = GetPresignedUrlRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[203]
+	mi := &file_codeaudit_common_proto_msgTypes[216]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14117,7 +14818,7 @@ func (x *GetPresignedUrlRequest) String() string {
 func (*GetPresignedUrlRequest) ProtoMessage() {}
 
 func (x *GetPresignedUrlRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[203]
+	mi := &file_codeaudit_common_proto_msgTypes[216]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14130,7 +14831,7 @@ func (x *GetPresignedUrlRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPresignedUrlRequest.ProtoReflect.Descriptor instead.
 func (*GetPresignedUrlRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{203}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{216}
 }
 
 func (x *GetPresignedUrlRequest) GetFilePath() string {
@@ -14164,7 +14865,7 @@ type GetPresignedUrlResponse struct {
 
 func (x *GetPresignedUrlResponse) Reset() {
 	*x = GetPresignedUrlResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[204]
+	mi := &file_codeaudit_common_proto_msgTypes[217]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14176,7 +14877,7 @@ func (x *GetPresignedUrlResponse) String() string {
 func (*GetPresignedUrlResponse) ProtoMessage() {}
 
 func (x *GetPresignedUrlResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[204]
+	mi := &file_codeaudit_common_proto_msgTypes[217]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14189,7 +14890,7 @@ func (x *GetPresignedUrlResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPresignedUrlResponse.ProtoReflect.Descriptor instead.
 func (*GetPresignedUrlResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{204}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{217}
 }
 
 func (x *GetPresignedUrlResponse) GetUrl() string {
@@ -14215,7 +14916,7 @@ type GetFileInfoRequest struct {
 
 func (x *GetFileInfoRequest) Reset() {
 	*x = GetFileInfoRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[205]
+	mi := &file_codeaudit_common_proto_msgTypes[218]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14227,7 +14928,7 @@ func (x *GetFileInfoRequest) String() string {
 func (*GetFileInfoRequest) ProtoMessage() {}
 
 func (x *GetFileInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[205]
+	mi := &file_codeaudit_common_proto_msgTypes[218]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14240,7 +14941,7 @@ func (x *GetFileInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFileInfoRequest.ProtoReflect.Descriptor instead.
 func (*GetFileInfoRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{205}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{218}
 }
 
 func (x *GetFileInfoRequest) GetFileId() string {
@@ -14259,7 +14960,7 @@ type DeleteFileRequest struct {
 
 func (x *DeleteFileRequest) Reset() {
 	*x = DeleteFileRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[206]
+	mi := &file_codeaudit_common_proto_msgTypes[219]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14271,7 +14972,7 @@ func (x *DeleteFileRequest) String() string {
 func (*DeleteFileRequest) ProtoMessage() {}
 
 func (x *DeleteFileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[206]
+	mi := &file_codeaudit_common_proto_msgTypes[219]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14284,7 +14985,7 @@ func (x *DeleteFileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteFileRequest.ProtoReflect.Descriptor instead.
 func (*DeleteFileRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{206}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{219}
 }
 
 func (x *DeleteFileRequest) GetFileId() string {
@@ -14304,7 +15005,7 @@ type ListFilesRequest struct {
 
 func (x *ListFilesRequest) Reset() {
 	*x = ListFilesRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[207]
+	mi := &file_codeaudit_common_proto_msgTypes[220]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14316,7 +15017,7 @@ func (x *ListFilesRequest) String() string {
 func (*ListFilesRequest) ProtoMessage() {}
 
 func (x *ListFilesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[207]
+	mi := &file_codeaudit_common_proto_msgTypes[220]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14329,7 +15030,7 @@ func (x *ListFilesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFilesRequest.ProtoReflect.Descriptor instead.
 func (*ListFilesRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{207}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{220}
 }
 
 func (x *ListFilesRequest) GetPrefix() string {
@@ -14356,7 +15057,7 @@ type ListFilesResponse struct {
 
 func (x *ListFilesResponse) Reset() {
 	*x = ListFilesResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[208]
+	mi := &file_codeaudit_common_proto_msgTypes[221]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14368,7 +15069,7 @@ func (x *ListFilesResponse) String() string {
 func (*ListFilesResponse) ProtoMessage() {}
 
 func (x *ListFilesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[208]
+	mi := &file_codeaudit_common_proto_msgTypes[221]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14381,7 +15082,7 @@ func (x *ListFilesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFilesResponse.ProtoReflect.Descriptor instead.
 func (*ListFilesResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{208}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{221}
 }
 
 func (x *ListFilesResponse) GetFiles() []*StoredFile {
@@ -14408,7 +15109,7 @@ type SendNotificationRequest struct {
 
 func (x *SendNotificationRequest) Reset() {
 	*x = SendNotificationRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[209]
+	mi := &file_codeaudit_common_proto_msgTypes[222]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14420,7 +15121,7 @@ func (x *SendNotificationRequest) String() string {
 func (*SendNotificationRequest) ProtoMessage() {}
 
 func (x *SendNotificationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[209]
+	mi := &file_codeaudit_common_proto_msgTypes[222]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14433,7 +15134,7 @@ func (x *SendNotificationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendNotificationRequest.ProtoReflect.Descriptor instead.
 func (*SendNotificationRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{209}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{222}
 }
 
 func (x *SendNotificationRequest) GetMetadata() *RequestMetadata {
@@ -14460,7 +15161,7 @@ type SendBatchNotificationRequest struct {
 
 func (x *SendBatchNotificationRequest) Reset() {
 	*x = SendBatchNotificationRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[210]
+	mi := &file_codeaudit_common_proto_msgTypes[223]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14472,7 +15173,7 @@ func (x *SendBatchNotificationRequest) String() string {
 func (*SendBatchNotificationRequest) ProtoMessage() {}
 
 func (x *SendBatchNotificationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[210]
+	mi := &file_codeaudit_common_proto_msgTypes[223]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14485,7 +15186,7 @@ func (x *SendBatchNotificationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendBatchNotificationRequest.ProtoReflect.Descriptor instead.
 func (*SendBatchNotificationRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{210}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{223}
 }
 
 func (x *SendBatchNotificationRequest) GetMetadata() *RequestMetadata {
@@ -14511,7 +15212,7 @@ type PauseTaskRequest struct {
 
 func (x *PauseTaskRequest) Reset() {
 	*x = PauseTaskRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[211]
+	mi := &file_codeaudit_common_proto_msgTypes[224]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14523,7 +15224,7 @@ func (x *PauseTaskRequest) String() string {
 func (*PauseTaskRequest) ProtoMessage() {}
 
 func (x *PauseTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[211]
+	mi := &file_codeaudit_common_proto_msgTypes[224]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14536,7 +15237,7 @@ func (x *PauseTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseTaskRequest.ProtoReflect.Descriptor instead.
 func (*PauseTaskRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{211}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{224}
 }
 
 func (x *PauseTaskRequest) GetTaskId() string {
@@ -14555,7 +15256,7 @@ type ResumeTaskRequest struct {
 
 func (x *ResumeTaskRequest) Reset() {
 	*x = ResumeTaskRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[212]
+	mi := &file_codeaudit_common_proto_msgTypes[225]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14567,7 +15268,7 @@ func (x *ResumeTaskRequest) String() string {
 func (*ResumeTaskRequest) ProtoMessage() {}
 
 func (x *ResumeTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[212]
+	mi := &file_codeaudit_common_proto_msgTypes[225]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14580,7 +15281,7 @@ func (x *ResumeTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeTaskRequest.ProtoReflect.Descriptor instead.
 func (*ResumeTaskRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{212}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{225}
 }
 
 func (x *ResumeTaskRequest) GetTaskId() string {
@@ -14599,7 +15300,7 @@ type PauseAnalysisRequest struct {
 
 func (x *PauseAnalysisRequest) Reset() {
 	*x = PauseAnalysisRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[213]
+	mi := &file_codeaudit_common_proto_msgTypes[226]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14611,7 +15312,7 @@ func (x *PauseAnalysisRequest) String() string {
 func (*PauseAnalysisRequest) ProtoMessage() {}
 
 func (x *PauseAnalysisRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[213]
+	mi := &file_codeaudit_common_proto_msgTypes[226]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14624,7 +15325,7 @@ func (x *PauseAnalysisRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseAnalysisRequest.ProtoReflect.Descriptor instead.
 func (*PauseAnalysisRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{213}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{226}
 }
 
 func (x *PauseAnalysisRequest) GetTaskId() string {
@@ -14643,7 +15344,7 @@ type ResumeAnalysisRequest struct {
 
 func (x *ResumeAnalysisRequest) Reset() {
 	*x = ResumeAnalysisRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[214]
+	mi := &file_codeaudit_common_proto_msgTypes[227]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14655,7 +15356,7 @@ func (x *ResumeAnalysisRequest) String() string {
 func (*ResumeAnalysisRequest) ProtoMessage() {}
 
 func (x *ResumeAnalysisRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[214]
+	mi := &file_codeaudit_common_proto_msgTypes[227]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14668,7 +15369,7 @@ func (x *ResumeAnalysisRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeAnalysisRequest.ProtoReflect.Descriptor instead.
 func (*ResumeAnalysisRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{214}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{227}
 }
 
 func (x *ResumeAnalysisRequest) GetTaskId() string {
@@ -14689,7 +15390,7 @@ type ListNotificationsRequest struct {
 
 func (x *ListNotificationsRequest) Reset() {
 	*x = ListNotificationsRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[215]
+	mi := &file_codeaudit_common_proto_msgTypes[228]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14701,7 +15402,7 @@ func (x *ListNotificationsRequest) String() string {
 func (*ListNotificationsRequest) ProtoMessage() {}
 
 func (x *ListNotificationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[215]
+	mi := &file_codeaudit_common_proto_msgTypes[228]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14714,7 +15415,7 @@ func (x *ListNotificationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNotificationsRequest.ProtoReflect.Descriptor instead.
 func (*ListNotificationsRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{215}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{228}
 }
 
 func (x *ListNotificationsRequest) GetUserId() string {
@@ -14748,7 +15449,7 @@ type ListNotificationsResponse struct {
 
 func (x *ListNotificationsResponse) Reset() {
 	*x = ListNotificationsResponse{}
-	mi := &file_codeaudit_common_proto_msgTypes[216]
+	mi := &file_codeaudit_common_proto_msgTypes[229]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14760,7 +15461,7 @@ func (x *ListNotificationsResponse) String() string {
 func (*ListNotificationsResponse) ProtoMessage() {}
 
 func (x *ListNotificationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[216]
+	mi := &file_codeaudit_common_proto_msgTypes[229]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14773,7 +15474,7 @@ func (x *ListNotificationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNotificationsResponse.ProtoReflect.Descriptor instead.
 func (*ListNotificationsResponse) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{216}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{229}
 }
 
 func (x *ListNotificationsResponse) GetNotifications() []*Notification {
@@ -14799,7 +15500,7 @@ type MarkNotificationReadRequest struct {
 
 func (x *MarkNotificationReadRequest) Reset() {
 	*x = MarkNotificationReadRequest{}
-	mi := &file_codeaudit_common_proto_msgTypes[217]
+	mi := &file_codeaudit_common_proto_msgTypes[230]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14811,7 +15512,7 @@ func (x *MarkNotificationReadRequest) String() string {
 func (*MarkNotificationReadRequest) ProtoMessage() {}
 
 func (x *MarkNotificationReadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_codeaudit_common_proto_msgTypes[217]
+	mi := &file_codeaudit_common_proto_msgTypes[230]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14824,7 +15525,7 @@ func (x *MarkNotificationReadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkNotificationReadRequest.ProtoReflect.Descriptor instead.
 func (*MarkNotificationReadRequest) Descriptor() ([]byte, []int) {
-	return file_codeaudit_common_proto_rawDescGZIP(), []int{217}
+	return file_codeaudit_common_proto_rawDescGZIP(), []int{230}
 }
 
 func (x *MarkNotificationReadRequest) GetNotificationId() string {
@@ -15789,7 +16490,58 @@ const file_codeaudit_common_proto_rawDesc = "" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12)\n" +
 	"\x10active_sandboxes\x18\x03 \x01(\x03R\x0factiveSandboxes\"0\n" +
 	"\x15CancelAnalysisRequest\x12\x17\n" +
-	"\atask_id\x18\x01 \x01(\tR\x06taskId\"j\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\"\xca\x01\n" +
+	"\x15InferenceProviderInfo\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04type\x18\x02 \x01(\tR\x04type\x12N\n" +
+	"\x06config\x18\x03 \x03(\v26.codeaudit.common.v1.InferenceProviderInfo.ConfigEntryR\x06config\x1a9\n" +
+	"\vConfigEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x1f\n" +
+	"\x1dListInferenceProvidersRequest\"j\n" +
+	"\x1eListInferenceProvidersResponse\x12H\n" +
+	"\tproviders\x18\x01 \x03(\v2*.codeaudit.common.v1.InferenceProviderInfoR\tproviders\"1\n" +
+	"\x1bGetInferenceProviderRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"\xc6\x03\n" +
+	"\x1eUpsertInferenceProviderRequest\x12@\n" +
+	"\bmetadata\x18\x01 \x01(\v2$.codeaudit.common.v1.RequestMetadataR\bmetadata\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
+	"\x04type\x18\x03 \x01(\tR\x04type\x12f\n" +
+	"\vcredentials\x18\x04 \x03(\v2D.codeaudit.common.v1.UpsertInferenceProviderRequest.CredentialsEntryR\vcredentials\x12W\n" +
+	"\x06config\x18\x05 \x03(\v2?.codeaudit.common.v1.UpsertInferenceProviderRequest.ConfigEntryR\x06config\x1a>\n" +
+	"\x10CredentialsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a9\n" +
+	"\vConfigEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"O\n" +
+	"\x1fUpsertInferenceProviderResponse\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
+	"\acreated\x18\x02 \x01(\bR\acreated\"v\n" +
+	"\x1eDeleteInferenceProviderRequest\x12@\n" +
+	"\bmetadata\x18\x01 \x01(\v2$.codeaudit.common.v1.RequestMetadataR\bmetadata\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\";\n" +
+	"\x1fDeleteInferenceProviderResponse\x12\x18\n" +
+	"\adeleted\x18\x01 \x01(\bR\adeleted\"\x1a\n" +
+	"\x18GetInferenceRouteRequest\"`\n" +
+	"\x12InferenceRouteInfo\x12\x1a\n" +
+	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\x04R\aversion\"\xab\x01\n" +
+	"\x18SetInferenceRouteRequest\x12@\n" +
+	"\bmetadata\x18\x01 \x01(\v2$.codeaudit.common.v1.RequestMetadataR\bmetadata\x12\x1a\n" +
+	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
+	"\x05model\x18\x03 \x01(\tR\x05model\x12\x1b\n" +
+	"\tno_verify\x18\x04 \x01(\bR\bnoVerify\"A\n" +
+	"\x11ValidatedEndpoint\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12\x1a\n" +
+	"\bprotocol\x18\x02 \x01(\tR\bprotocol\"\xf3\x01\n" +
+	"\x19SetInferenceRouteResponse\x12\x1a\n" +
+	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\x04R\aversion\x121\n" +
+	"\x14validation_performed\x18\x04 \x01(\bR\x13validationPerformed\x12W\n" +
+	"\x13validated_endpoints\x18\x05 \x03(\v2&.codeaudit.common.v1.ValidatedEndpointR\x12validatedEndpoints\"j\n" +
 	"\x1aGetAIInteractionLogRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x16\n" +
 	"\x06cursor\x18\x02 \x01(\x03R\x06cursor\x12\x1b\n" +
@@ -16221,8 +16973,7 @@ const file_codeaudit_common_proto_rawDesc = "" +
 	"\vListReports\x12'.codeaudit.common.v1.ListReportsRequest\x1a(.codeaudit.common.v1.ListReportsResponse\x12f\n" +
 	"\rListTemplates\x12).codeaudit.common.v1.ListTemplatesRequest\x1a*.codeaudit.common.v1.ListTemplatesResponse\x12[\n" +
 	"\vGetTemplate\x12'.codeaudit.common.v1.GetTemplateRequest\x1a#.codeaudit.common.v1.ReportTemplate\x12`\n" +
-	"\x0eDownloadReport\x12*.codeaudit.common.v1.DownloadReportRequest\x1a .codeaudit.common.v1.ReportChunk0\x012\xa3\n" +
-	"\n" +
+	"\x0eDownloadReport\x12*.codeaudit.common.v1.DownloadReportRequest\x1a .codeaudit.common.v1.ReportChunk0\x012\x8c\x10\n" +
 	"\x11DSHRuntimeService\x12f\n" +
 	"\rRunAIAnalysis\x12).codeaudit.common.v1.RunAIAnalysisRequest\x1a*.codeaudit.common.v1.RunAIAnalysisResponse\x12r\n" +
 	"\x11VerifySASTResults\x12-.codeaudit.common.v1.VerifySASTResultsRequest\x1a..codeaudit.common.v1.VerifySASTResultsResponse\x12r\n" +
@@ -16235,7 +16986,13 @@ const file_codeaudit_common_proto_rawDesc = "" +
 	"\rPauseAnalysis\x12).codeaudit.common.v1.PauseAnalysisRequest\x1a\x16.google.protobuf.Empty\x12T\n" +
 	"\x0eResumeAnalysis\x12*.codeaudit.common.v1.ResumeAnalysisRequest\x1a\x16.google.protobuf.Empty\x12x\n" +
 	"\x13GetAIInteractionLog\x12/.codeaudit.common.v1.GetAIInteractionLogRequest\x1a0.codeaudit.common.v1.GetAIInteractionLogResponse\x12\x80\x01\n" +
-	"\x16StreamAIInteractionLog\x122.codeaudit.common.v1.StreamAIInteractionLogRequest\x1a0.codeaudit.common.v1.GetAIInteractionLogResponse0\x012\xf9\x03\n" +
+	"\x16StreamAIInteractionLog\x122.codeaudit.common.v1.StreamAIInteractionLogRequest\x1a0.codeaudit.common.v1.GetAIInteractionLogResponse0\x01\x12\x81\x01\n" +
+	"\x16ListInferenceProviders\x122.codeaudit.common.v1.ListInferenceProvidersRequest\x1a3.codeaudit.common.v1.ListInferenceProvidersResponse\x12t\n" +
+	"\x14GetInferenceProvider\x120.codeaudit.common.v1.GetInferenceProviderRequest\x1a*.codeaudit.common.v1.InferenceProviderInfo\x12\x84\x01\n" +
+	"\x17UpsertInferenceProvider\x123.codeaudit.common.v1.UpsertInferenceProviderRequest\x1a4.codeaudit.common.v1.UpsertInferenceProviderResponse\x12\x84\x01\n" +
+	"\x17DeleteInferenceProvider\x123.codeaudit.common.v1.DeleteInferenceProviderRequest\x1a4.codeaudit.common.v1.DeleteInferenceProviderResponse\x12k\n" +
+	"\x11GetInferenceRoute\x12-.codeaudit.common.v1.GetInferenceRouteRequest\x1a'.codeaudit.common.v1.InferenceRouteInfo\x12r\n" +
+	"\x11SetInferenceRoute\x12-.codeaudit.common.v1.SetInferenceRouteRequest\x1a..codeaudit.common.v1.SetInferenceRouteResponse2\xf9\x03\n" +
 	"\x13CodeAnalysisService\x12`\n" +
 	"\vAnalyzeCode\x12'.codeaudit.common.v1.AnalyzeCodeRequest\x1a(.codeaudit.common.v1.AnalyzeCodeResponse\x12W\n" +
 	"\bQueryCPG\x12$.codeaudit.common.v1.QueryCPGRequest\x1a%.codeaudit.common.v1.QueryCPGResponse\x12X\n" +
@@ -16288,7 +17045,7 @@ func file_codeaudit_common_proto_rawDescGZIP() []byte {
 }
 
 var file_codeaudit_common_proto_enumTypes = make([]protoimpl.EnumInfo, 27)
-var file_codeaudit_common_proto_msgTypes = make([]protoimpl.MessageInfo, 238)
+var file_codeaudit_common_proto_msgTypes = make([]protoimpl.MessageInfo, 254)
 var file_codeaudit_common_proto_goTypes = []any{
 	(Severity)(0),                        // 0: codeaudit.common.v1.Severity
 	(AIVerdict)(0),                       // 1: codeaudit.common.v1.AIVerdict
@@ -16477,86 +17234,102 @@ var file_codeaudit_common_proto_goTypes = []any{
 	(*GetSessionStatusRequest)(nil),                // 184: codeaudit.common.v1.GetSessionStatusRequest
 	(*SessionStatus)(nil),                          // 185: codeaudit.common.v1.SessionStatus
 	(*CancelAnalysisRequest)(nil),                  // 186: codeaudit.common.v1.CancelAnalysisRequest
-	(*GetAIInteractionLogRequest)(nil),             // 187: codeaudit.common.v1.GetAIInteractionLogRequest
-	(*GetAIInteractionLogResponse)(nil),            // 188: codeaudit.common.v1.GetAIInteractionLogResponse
-	(*StreamAIInteractionLogRequest)(nil),          // 189: codeaudit.common.v1.StreamAIInteractionLogRequest
-	(*AnalyzeCodeRequest)(nil),                     // 190: codeaudit.common.v1.AnalyzeCodeRequest
-	(*AnalyzeCodeResponse)(nil),                    // 191: codeaudit.common.v1.AnalyzeCodeResponse
-	(*QueryCPGRequest)(nil),                        // 192: codeaudit.common.v1.QueryCPGRequest
-	(*QueryCPGResponse)(nil),                       // 193: codeaudit.common.v1.QueryCPGResponse
-	(*GetCallGraphRequest)(nil),                    // 194: codeaudit.common.v1.GetCallGraphRequest
-	(*CallGraph)(nil),                              // 195: codeaudit.common.v1.CallGraph
-	(*GetDataFlowRequest)(nil),                     // 196: codeaudit.common.v1.GetDataFlowRequest
-	(*DataFlowGraph)(nil),                          // 197: codeaudit.common.v1.DataFlowGraph
-	(*CodeAnalysisProgress)(nil),                   // 198: codeaudit.common.v1.CodeAnalysisProgress
-	(*RunSASTScanRequest)(nil),                     // 199: codeaudit.common.v1.RunSASTScanRequest
-	(*RunSASTScanResponse)(nil),                    // 200: codeaudit.common.v1.RunSASTScanResponse
-	(*RunMultipleScansRequest)(nil),                // 201: codeaudit.common.v1.RunMultipleScansRequest
-	(*RunMultipleScansResponse)(nil),               // 202: codeaudit.common.v1.RunMultipleScansResponse
-	(*ListAvailableToolsRequest)(nil),              // 203: codeaudit.common.v1.ListAvailableToolsRequest
-	(*ListAvailableToolsResponse)(nil),             // 204: codeaudit.common.v1.ListAvailableToolsResponse
-	(*GetToolInfoRequest)(nil),                     // 205: codeaudit.common.v1.GetToolInfoRequest
-	(*SASTToolInfo)(nil),                           // 206: codeaudit.common.v1.SASTToolInfo
-	(*ValidateToolConfigRequest)(nil),              // 207: codeaudit.common.v1.ValidateToolConfigRequest
-	(*ValidateToolConfigResponse)(nil),             // 208: codeaudit.common.v1.ValidateToolConfigResponse
-	(*GetScanProgressRequest)(nil),                 // 209: codeaudit.common.v1.GetScanProgressRequest
-	(*ScanProgress)(nil),                           // 210: codeaudit.common.v1.ScanProgress
-	(*FuseResultsRequest)(nil),                     // 211: codeaudit.common.v1.FuseResultsRequest
-	(*FuseResultsResponse)(nil),                    // 212: codeaudit.common.v1.FuseResultsResponse
-	(*AlignLocationsRequest)(nil),                  // 213: codeaudit.common.v1.AlignLocationsRequest
-	(*AlignLocationsResponse)(nil),                 // 214: codeaudit.common.v1.AlignLocationsResponse
-	(*ClusterFindingsRequest)(nil),                 // 215: codeaudit.common.v1.ClusterFindingsRequest
-	(*ClusterFindingsResponse)(nil),                // 216: codeaudit.common.v1.ClusterFindingsResponse
-	(*ResolveConflictsRequest)(nil),                // 217: codeaudit.common.v1.ResolveConflictsRequest
-	(*ResolveConflictsResponse)(nil),               // 218: codeaudit.common.v1.ResolveConflictsResponse
-	(*FusionConfig)(nil),                           // 219: codeaudit.common.v1.FusionConfig
-	(*GetFusionConfigRequest)(nil),                 // 220: codeaudit.common.v1.GetFusionConfigRequest
-	(*UpdateFusionConfigRequest)(nil),              // 221: codeaudit.common.v1.UpdateFusionConfigRequest
-	(*CompareResultsRequest)(nil),                  // 222: codeaudit.common.v1.CompareResultsRequest
-	(*CompareResultsResponse)(nil),                 // 223: codeaudit.common.v1.CompareResultsResponse
-	(*CalculateMetricsRequest)(nil),                // 224: codeaudit.common.v1.CalculateMetricsRequest
-	(*GenerateComparisonReportRequest)(nil),        // 225: codeaudit.common.v1.GenerateComparisonReportRequest
-	(*ComparisonReport)(nil),                       // 226: codeaudit.common.v1.ComparisonReport
-	(*UploadFileChunk)(nil),                        // 227: codeaudit.common.v1.UploadFileChunk
-	(*DownloadFileRequest)(nil),                    // 228: codeaudit.common.v1.DownloadFileRequest
-	(*DownloadFileChunk)(nil),                      // 229: codeaudit.common.v1.DownloadFileChunk
-	(*GetPresignedUrlRequest)(nil),                 // 230: codeaudit.common.v1.GetPresignedUrlRequest
-	(*GetPresignedUrlResponse)(nil),                // 231: codeaudit.common.v1.GetPresignedUrlResponse
-	(*GetFileInfoRequest)(nil),                     // 232: codeaudit.common.v1.GetFileInfoRequest
-	(*DeleteFileRequest)(nil),                      // 233: codeaudit.common.v1.DeleteFileRequest
-	(*ListFilesRequest)(nil),                       // 234: codeaudit.common.v1.ListFilesRequest
-	(*ListFilesResponse)(nil),                      // 235: codeaudit.common.v1.ListFilesResponse
-	(*SendNotificationRequest)(nil),                // 236: codeaudit.common.v1.SendNotificationRequest
-	(*SendBatchNotificationRequest)(nil),           // 237: codeaudit.common.v1.SendBatchNotificationRequest
-	(*PauseTaskRequest)(nil),                       // 238: codeaudit.common.v1.PauseTaskRequest
-	(*ResumeTaskRequest)(nil),                      // 239: codeaudit.common.v1.ResumeTaskRequest
-	(*PauseAnalysisRequest)(nil),                   // 240: codeaudit.common.v1.PauseAnalysisRequest
-	(*ResumeAnalysisRequest)(nil),                  // 241: codeaudit.common.v1.ResumeAnalysisRequest
-	(*ListNotificationsRequest)(nil),               // 242: codeaudit.common.v1.ListNotificationsRequest
-	(*ListNotificationsResponse)(nil),              // 243: codeaudit.common.v1.ListNotificationsResponse
-	(*MarkNotificationReadRequest)(nil),            // 244: codeaudit.common.v1.MarkNotificationReadRequest
-	nil,                                            // 245: codeaudit.common.v1.LanguageStats.LanguagesEntry
-	nil,                                            // 246: codeaudit.common.v1.SASTScanResult.ResultsEntry
-	nil,                                            // 247: codeaudit.common.v1.ScanMetrics.FindingsBySeverityEntry
-	nil,                                            // 248: codeaudit.common.v1.ReportSummary.BySeverityEntry
-	nil,                                            // 249: codeaudit.common.v1.ReportSummary.ByCweEntry
-	nil,                                            // 250: codeaudit.common.v1.ReportSummary.ByStatusEntry
-	nil,                                            // 251: codeaudit.common.v1.TaskStage.MetadataEntry
-	nil,                                            // 252: codeaudit.common.v1.ReviewStats.ByOpinionEntry
-	nil,                                            // 253: codeaudit.common.v1.Notification.PayloadEntry
-	nil,                                            // 254: codeaudit.common.v1.CreateScanTaskRequest.ConfigEntry
-	nil,                                            // 255: codeaudit.common.v1.ReportStageCompleteRequest.OutputRefsEntry
-	nil,                                            // 256: codeaudit.common.v1.ScanTask.ConfigEntry
-	nil,                                            // 257: codeaudit.common.v1.ProjectConfig.ConfigEntry
-	nil,                                            // 258: codeaudit.common.v1.BatchUpdateFindingsRequest.PatchJsonEntry
-	nil,                                            // 259: codeaudit.common.v1.ResultStats.BySeverityEntry
-	nil,                                            // 260: codeaudit.common.v1.ResultStats.ByCweEntry
-	nil,                                            // 261: codeaudit.common.v1.ResultStats.ByVerdictEntry
-	nil,                                            // 262: codeaudit.common.v1.RunSASTScanRequest.ToolConfigEntry
-	nil,                                            // 263: codeaudit.common.v1.ValidateToolConfigRequest.ToolConfigEntry
-	nil,                                            // 264: codeaudit.common.v1.FusionConfig.ConfigEntry
-	(*timestamppb.Timestamp)(nil),                  // 265: google.protobuf.Timestamp
-	(*emptypb.Empty)(nil),                          // 266: google.protobuf.Empty
+	(*InferenceProviderInfo)(nil),                  // 187: codeaudit.common.v1.InferenceProviderInfo
+	(*ListInferenceProvidersRequest)(nil),          // 188: codeaudit.common.v1.ListInferenceProvidersRequest
+	(*ListInferenceProvidersResponse)(nil),         // 189: codeaudit.common.v1.ListInferenceProvidersResponse
+	(*GetInferenceProviderRequest)(nil),            // 190: codeaudit.common.v1.GetInferenceProviderRequest
+	(*UpsertInferenceProviderRequest)(nil),         // 191: codeaudit.common.v1.UpsertInferenceProviderRequest
+	(*UpsertInferenceProviderResponse)(nil),        // 192: codeaudit.common.v1.UpsertInferenceProviderResponse
+	(*DeleteInferenceProviderRequest)(nil),         // 193: codeaudit.common.v1.DeleteInferenceProviderRequest
+	(*DeleteInferenceProviderResponse)(nil),        // 194: codeaudit.common.v1.DeleteInferenceProviderResponse
+	(*GetInferenceRouteRequest)(nil),               // 195: codeaudit.common.v1.GetInferenceRouteRequest
+	(*InferenceRouteInfo)(nil),                     // 196: codeaudit.common.v1.InferenceRouteInfo
+	(*SetInferenceRouteRequest)(nil),               // 197: codeaudit.common.v1.SetInferenceRouteRequest
+	(*ValidatedEndpoint)(nil),                      // 198: codeaudit.common.v1.ValidatedEndpoint
+	(*SetInferenceRouteResponse)(nil),              // 199: codeaudit.common.v1.SetInferenceRouteResponse
+	(*GetAIInteractionLogRequest)(nil),             // 200: codeaudit.common.v1.GetAIInteractionLogRequest
+	(*GetAIInteractionLogResponse)(nil),            // 201: codeaudit.common.v1.GetAIInteractionLogResponse
+	(*StreamAIInteractionLogRequest)(nil),          // 202: codeaudit.common.v1.StreamAIInteractionLogRequest
+	(*AnalyzeCodeRequest)(nil),                     // 203: codeaudit.common.v1.AnalyzeCodeRequest
+	(*AnalyzeCodeResponse)(nil),                    // 204: codeaudit.common.v1.AnalyzeCodeResponse
+	(*QueryCPGRequest)(nil),                        // 205: codeaudit.common.v1.QueryCPGRequest
+	(*QueryCPGResponse)(nil),                       // 206: codeaudit.common.v1.QueryCPGResponse
+	(*GetCallGraphRequest)(nil),                    // 207: codeaudit.common.v1.GetCallGraphRequest
+	(*CallGraph)(nil),                              // 208: codeaudit.common.v1.CallGraph
+	(*GetDataFlowRequest)(nil),                     // 209: codeaudit.common.v1.GetDataFlowRequest
+	(*DataFlowGraph)(nil),                          // 210: codeaudit.common.v1.DataFlowGraph
+	(*CodeAnalysisProgress)(nil),                   // 211: codeaudit.common.v1.CodeAnalysisProgress
+	(*RunSASTScanRequest)(nil),                     // 212: codeaudit.common.v1.RunSASTScanRequest
+	(*RunSASTScanResponse)(nil),                    // 213: codeaudit.common.v1.RunSASTScanResponse
+	(*RunMultipleScansRequest)(nil),                // 214: codeaudit.common.v1.RunMultipleScansRequest
+	(*RunMultipleScansResponse)(nil),               // 215: codeaudit.common.v1.RunMultipleScansResponse
+	(*ListAvailableToolsRequest)(nil),              // 216: codeaudit.common.v1.ListAvailableToolsRequest
+	(*ListAvailableToolsResponse)(nil),             // 217: codeaudit.common.v1.ListAvailableToolsResponse
+	(*GetToolInfoRequest)(nil),                     // 218: codeaudit.common.v1.GetToolInfoRequest
+	(*SASTToolInfo)(nil),                           // 219: codeaudit.common.v1.SASTToolInfo
+	(*ValidateToolConfigRequest)(nil),              // 220: codeaudit.common.v1.ValidateToolConfigRequest
+	(*ValidateToolConfigResponse)(nil),             // 221: codeaudit.common.v1.ValidateToolConfigResponse
+	(*GetScanProgressRequest)(nil),                 // 222: codeaudit.common.v1.GetScanProgressRequest
+	(*ScanProgress)(nil),                           // 223: codeaudit.common.v1.ScanProgress
+	(*FuseResultsRequest)(nil),                     // 224: codeaudit.common.v1.FuseResultsRequest
+	(*FuseResultsResponse)(nil),                    // 225: codeaudit.common.v1.FuseResultsResponse
+	(*AlignLocationsRequest)(nil),                  // 226: codeaudit.common.v1.AlignLocationsRequest
+	(*AlignLocationsResponse)(nil),                 // 227: codeaudit.common.v1.AlignLocationsResponse
+	(*ClusterFindingsRequest)(nil),                 // 228: codeaudit.common.v1.ClusterFindingsRequest
+	(*ClusterFindingsResponse)(nil),                // 229: codeaudit.common.v1.ClusterFindingsResponse
+	(*ResolveConflictsRequest)(nil),                // 230: codeaudit.common.v1.ResolveConflictsRequest
+	(*ResolveConflictsResponse)(nil),               // 231: codeaudit.common.v1.ResolveConflictsResponse
+	(*FusionConfig)(nil),                           // 232: codeaudit.common.v1.FusionConfig
+	(*GetFusionConfigRequest)(nil),                 // 233: codeaudit.common.v1.GetFusionConfigRequest
+	(*UpdateFusionConfigRequest)(nil),              // 234: codeaudit.common.v1.UpdateFusionConfigRequest
+	(*CompareResultsRequest)(nil),                  // 235: codeaudit.common.v1.CompareResultsRequest
+	(*CompareResultsResponse)(nil),                 // 236: codeaudit.common.v1.CompareResultsResponse
+	(*CalculateMetricsRequest)(nil),                // 237: codeaudit.common.v1.CalculateMetricsRequest
+	(*GenerateComparisonReportRequest)(nil),        // 238: codeaudit.common.v1.GenerateComparisonReportRequest
+	(*ComparisonReport)(nil),                       // 239: codeaudit.common.v1.ComparisonReport
+	(*UploadFileChunk)(nil),                        // 240: codeaudit.common.v1.UploadFileChunk
+	(*DownloadFileRequest)(nil),                    // 241: codeaudit.common.v1.DownloadFileRequest
+	(*DownloadFileChunk)(nil),                      // 242: codeaudit.common.v1.DownloadFileChunk
+	(*GetPresignedUrlRequest)(nil),                 // 243: codeaudit.common.v1.GetPresignedUrlRequest
+	(*GetPresignedUrlResponse)(nil),                // 244: codeaudit.common.v1.GetPresignedUrlResponse
+	(*GetFileInfoRequest)(nil),                     // 245: codeaudit.common.v1.GetFileInfoRequest
+	(*DeleteFileRequest)(nil),                      // 246: codeaudit.common.v1.DeleteFileRequest
+	(*ListFilesRequest)(nil),                       // 247: codeaudit.common.v1.ListFilesRequest
+	(*ListFilesResponse)(nil),                      // 248: codeaudit.common.v1.ListFilesResponse
+	(*SendNotificationRequest)(nil),                // 249: codeaudit.common.v1.SendNotificationRequest
+	(*SendBatchNotificationRequest)(nil),           // 250: codeaudit.common.v1.SendBatchNotificationRequest
+	(*PauseTaskRequest)(nil),                       // 251: codeaudit.common.v1.PauseTaskRequest
+	(*ResumeTaskRequest)(nil),                      // 252: codeaudit.common.v1.ResumeTaskRequest
+	(*PauseAnalysisRequest)(nil),                   // 253: codeaudit.common.v1.PauseAnalysisRequest
+	(*ResumeAnalysisRequest)(nil),                  // 254: codeaudit.common.v1.ResumeAnalysisRequest
+	(*ListNotificationsRequest)(nil),               // 255: codeaudit.common.v1.ListNotificationsRequest
+	(*ListNotificationsResponse)(nil),              // 256: codeaudit.common.v1.ListNotificationsResponse
+	(*MarkNotificationReadRequest)(nil),            // 257: codeaudit.common.v1.MarkNotificationReadRequest
+	nil,                                            // 258: codeaudit.common.v1.LanguageStats.LanguagesEntry
+	nil,                                            // 259: codeaudit.common.v1.SASTScanResult.ResultsEntry
+	nil,                                            // 260: codeaudit.common.v1.ScanMetrics.FindingsBySeverityEntry
+	nil,                                            // 261: codeaudit.common.v1.ReportSummary.BySeverityEntry
+	nil,                                            // 262: codeaudit.common.v1.ReportSummary.ByCweEntry
+	nil,                                            // 263: codeaudit.common.v1.ReportSummary.ByStatusEntry
+	nil,                                            // 264: codeaudit.common.v1.TaskStage.MetadataEntry
+	nil,                                            // 265: codeaudit.common.v1.ReviewStats.ByOpinionEntry
+	nil,                                            // 266: codeaudit.common.v1.Notification.PayloadEntry
+	nil,                                            // 267: codeaudit.common.v1.CreateScanTaskRequest.ConfigEntry
+	nil,                                            // 268: codeaudit.common.v1.ReportStageCompleteRequest.OutputRefsEntry
+	nil,                                            // 269: codeaudit.common.v1.ScanTask.ConfigEntry
+	nil,                                            // 270: codeaudit.common.v1.ProjectConfig.ConfigEntry
+	nil,                                            // 271: codeaudit.common.v1.BatchUpdateFindingsRequest.PatchJsonEntry
+	nil,                                            // 272: codeaudit.common.v1.ResultStats.BySeverityEntry
+	nil,                                            // 273: codeaudit.common.v1.ResultStats.ByCweEntry
+	nil,                                            // 274: codeaudit.common.v1.ResultStats.ByVerdictEntry
+	nil,                                            // 275: codeaudit.common.v1.InferenceProviderInfo.ConfigEntry
+	nil,                                            // 276: codeaudit.common.v1.UpsertInferenceProviderRequest.CredentialsEntry
+	nil,                                            // 277: codeaudit.common.v1.UpsertInferenceProviderRequest.ConfigEntry
+	nil,                                            // 278: codeaudit.common.v1.RunSASTScanRequest.ToolConfigEntry
+	nil,                                            // 279: codeaudit.common.v1.ValidateToolConfigRequest.ToolConfigEntry
+	nil,                                            // 280: codeaudit.common.v1.FusionConfig.ConfigEntry
+	(*timestamppb.Timestamp)(nil),                  // 281: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),                          // 282: google.protobuf.Empty
 }
 var file_codeaudit_common_proto_depIdxs = []int32{
 	27,  // 0: codeaudit.common.v1.UnifiedFinding.location:type_name -> codeaudit.common.v1.LocationInfo
@@ -16564,13 +17337,13 @@ var file_codeaudit_common_proto_depIdxs = []int32{
 	29,  // 2: codeaudit.common.v1.UnifiedFinding.evidence:type_name -> codeaudit.common.v1.EvidenceChain
 	1,   // 3: codeaudit.common.v1.UnifiedFinding.ai_verdict:type_name -> codeaudit.common.v1.AIVerdict
 	3,   // 4: codeaudit.common.v1.UnifiedFinding.status:type_name -> codeaudit.common.v1.FindingStatus
-	265, // 5: codeaudit.common.v1.UnifiedFinding.created_at:type_name -> google.protobuf.Timestamp
-	265, // 6: codeaudit.common.v1.UnifiedFinding.updated_at:type_name -> google.protobuf.Timestamp
+	281, // 5: codeaudit.common.v1.UnifiedFinding.created_at:type_name -> google.protobuf.Timestamp
+	281, // 6: codeaudit.common.v1.UnifiedFinding.updated_at:type_name -> google.protobuf.Timestamp
 	30,  // 7: codeaudit.common.v1.EvidenceChain.data_flow:type_name -> codeaudit.common.v1.FlowStep
 	2,   // 8: codeaudit.common.v1.FlowStep.role:type_name -> codeaudit.common.v1.FlowRole
-	265, // 9: codeaudit.common.v1.ErrorResponse.timestamp:type_name -> google.protobuf.Timestamp
+	281, // 9: codeaudit.common.v1.ErrorResponse.timestamp:type_name -> google.protobuf.Timestamp
 	32,  // 10: codeaudit.common.v1.ErrorResponse.details:type_name -> codeaudit.common.v1.ErrorDetail
-	265, // 11: codeaudit.common.v1.RequestMetadata.timestamp:type_name -> google.protobuf.Timestamp
+	281, // 11: codeaudit.common.v1.RequestMetadata.timestamp:type_name -> google.protobuf.Timestamp
 	7,   // 12: codeaudit.common.v1.SortRequest.order:type_name -> codeaudit.common.v1.SortOrder
 	38,  // 13: codeaudit.common.v1.FilterRequest.conditions:type_name -> codeaudit.common.v1.FilterCondition
 	9,   // 14: codeaudit.common.v1.FilterRequest.operator:type_name -> codeaudit.common.v1.LogicalOperator
@@ -16579,11 +17352,11 @@ var file_codeaudit_common_proto_depIdxs = []int32{
 	41,  // 17: codeaudit.common.v1.CodeAnalysisResult.features:type_name -> codeaudit.common.v1.ProjectFeatures
 	43,  // 18: codeaudit.common.v1.CodeAnalysisResult.language_stats:type_name -> codeaudit.common.v1.LanguageStats
 	42,  // 19: codeaudit.common.v1.ProjectFeatures.modules:type_name -> codeaudit.common.v1.ModuleFeatures
-	245, // 20: codeaudit.common.v1.LanguageStats.languages:type_name -> codeaudit.common.v1.LanguageStats.LanguagesEntry
-	246, // 21: codeaudit.common.v1.SASTScanResult.results:type_name -> codeaudit.common.v1.SASTScanResult.ResultsEntry
+	258, // 20: codeaudit.common.v1.LanguageStats.languages:type_name -> codeaudit.common.v1.LanguageStats.LanguagesEntry
+	259, // 21: codeaudit.common.v1.SASTScanResult.results:type_name -> codeaudit.common.v1.SASTScanResult.ResultsEntry
 	47,  // 22: codeaudit.common.v1.ToolScanResult.metrics:type_name -> codeaudit.common.v1.ScanMetrics
 	10,  // 23: codeaudit.common.v1.ToolScanResult.status:type_name -> codeaudit.common.v1.ScanStatus
-	247, // 24: codeaudit.common.v1.ScanMetrics.findings_by_severity:type_name -> codeaudit.common.v1.ScanMetrics.FindingsBySeverityEntry
+	260, // 24: codeaudit.common.v1.ScanMetrics.findings_by_severity:type_name -> codeaudit.common.v1.ScanMetrics.FindingsBySeverityEntry
 	52,  // 25: codeaudit.common.v1.AIInferenceResult.metrics:type_name -> codeaudit.common.v1.AnalysisMetrics
 	1,   // 26: codeaudit.common.v1.VerifiedFinding.verdict:type_name -> codeaudit.common.v1.AIVerdict
 	50,  // 27: codeaudit.common.v1.VerifiedFinding.evidence:type_name -> codeaudit.common.v1.EvidenceItem
@@ -16596,14 +17369,14 @@ var file_codeaudit_common_proto_depIdxs = []int32{
 	60,  // 34: codeaudit.common.v1.ComparisonSummary.metrics:type_name -> codeaudit.common.v1.ComparisonMetrics
 	12,  // 35: codeaudit.common.v1.ReportResult.format:type_name -> codeaudit.common.v1.ReportFormat
 	62,  // 36: codeaudit.common.v1.ReportResult.summary:type_name -> codeaudit.common.v1.ReportSummary
-	248, // 37: codeaudit.common.v1.ReportSummary.by_severity:type_name -> codeaudit.common.v1.ReportSummary.BySeverityEntry
-	249, // 38: codeaudit.common.v1.ReportSummary.by_cwe:type_name -> codeaudit.common.v1.ReportSummary.ByCweEntry
-	250, // 39: codeaudit.common.v1.ReportSummary.by_status:type_name -> codeaudit.common.v1.ReportSummary.ByStatusEntry
+	261, // 37: codeaudit.common.v1.ReportSummary.by_severity:type_name -> codeaudit.common.v1.ReportSummary.BySeverityEntry
+	262, // 38: codeaudit.common.v1.ReportSummary.by_cwe:type_name -> codeaudit.common.v1.ReportSummary.ByCweEntry
+	263, // 39: codeaudit.common.v1.ReportSummary.by_status:type_name -> codeaudit.common.v1.ReportSummary.ByStatusEntry
 	13,  // 40: codeaudit.common.v1.TaskStage.type:type_name -> codeaudit.common.v1.StageType
 	14,  // 41: codeaudit.common.v1.TaskStage.status:type_name -> codeaudit.common.v1.StageStatus
-	265, // 42: codeaudit.common.v1.TaskStage.started_at:type_name -> google.protobuf.Timestamp
-	265, // 43: codeaudit.common.v1.TaskStage.completed_at:type_name -> google.protobuf.Timestamp
-	251, // 44: codeaudit.common.v1.TaskStage.metadata:type_name -> codeaudit.common.v1.TaskStage.MetadataEntry
+	281, // 42: codeaudit.common.v1.TaskStage.started_at:type_name -> google.protobuf.Timestamp
+	281, // 43: codeaudit.common.v1.TaskStage.completed_at:type_name -> google.protobuf.Timestamp
+	264, // 44: codeaudit.common.v1.TaskStage.metadata:type_name -> codeaudit.common.v1.TaskStage.MetadataEntry
 	65,  // 45: codeaudit.common.v1.AuditReviewReport.overall:type_name -> codeaudit.common.v1.OverallAssessment
 	68,  // 46: codeaudit.common.v1.AuditReviewReport.reviews:type_name -> codeaudit.common.v1.FindingReview
 	71,  // 47: codeaudit.common.v1.AuditReviewReport.stats:type_name -> codeaudit.common.v1.ReviewStats
@@ -16618,18 +17391,18 @@ var file_codeaudit_common_proto_depIdxs = []int32{
 	70,  // 56: codeaudit.common.v1.FindingReview.location_assessment:type_name -> codeaudit.common.v1.LocationAssessment
 	0,   // 57: codeaudit.common.v1.SeverityAssessment.original_severity:type_name -> codeaudit.common.v1.Severity
 	0,   // 58: codeaudit.common.v1.SeverityAssessment.suggested_severity:type_name -> codeaudit.common.v1.Severity
-	252, // 59: codeaudit.common.v1.ReviewStats.by_opinion:type_name -> codeaudit.common.v1.ReviewStats.ByOpinionEntry
-	265, // 60: codeaudit.common.v1.ReviewMetadata.review_time:type_name -> google.protobuf.Timestamp
+	265, // 59: codeaudit.common.v1.ReviewStats.by_opinion:type_name -> codeaudit.common.v1.ReviewStats.ByOpinionEntry
+	281, // 60: codeaudit.common.v1.ReviewMetadata.review_time:type_name -> google.protobuf.Timestamp
 	18,  // 61: codeaudit.common.v1.Notification.type:type_name -> codeaudit.common.v1.NotificationType
 	19,  // 62: codeaudit.common.v1.Notification.event:type_name -> codeaudit.common.v1.NotificationEvent
-	253, // 63: codeaudit.common.v1.Notification.payload:type_name -> codeaudit.common.v1.Notification.PayloadEntry
-	265, // 64: codeaudit.common.v1.Notification.created_at:type_name -> google.protobuf.Timestamp
-	265, // 65: codeaudit.common.v1.StoredFile.created_at:type_name -> google.protobuf.Timestamp
-	265, // 66: codeaudit.common.v1.StoredFile.expires_at:type_name -> google.protobuf.Timestamp
+	266, // 63: codeaudit.common.v1.Notification.payload:type_name -> codeaudit.common.v1.Notification.PayloadEntry
+	281, // 64: codeaudit.common.v1.Notification.created_at:type_name -> google.protobuf.Timestamp
+	281, // 65: codeaudit.common.v1.StoredFile.created_at:type_name -> google.protobuf.Timestamp
+	281, // 66: codeaudit.common.v1.StoredFile.expires_at:type_name -> google.protobuf.Timestamp
 	33,  // 67: codeaudit.common.v1.CreateScanTaskRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
 	4,   // 68: codeaudit.common.v1.CreateScanTaskRequest.scan_mode:type_name -> codeaudit.common.v1.ScanMode
 	6,   // 69: codeaudit.common.v1.CreateScanTaskRequest.priority:type_name -> codeaudit.common.v1.Priority
-	254, // 70: codeaudit.common.v1.CreateScanTaskRequest.config:type_name -> codeaudit.common.v1.CreateScanTaskRequest.ConfigEntry
+	267, // 70: codeaudit.common.v1.CreateScanTaskRequest.config:type_name -> codeaudit.common.v1.CreateScanTaskRequest.ConfigEntry
 	22,  // 71: codeaudit.common.v1.RetryScanTaskRequest.scope:type_name -> codeaudit.common.v1.RetryScanTaskRequest.RetryScope
 	34,  // 72: codeaudit.common.v1.ListScanTasksRequest.pagination:type_name -> codeaudit.common.v1.PaginationRequest
 	37,  // 73: codeaudit.common.v1.ListScanTasksRequest.filter:type_name -> codeaudit.common.v1.FilterRequest
@@ -16638,7 +17411,7 @@ var file_codeaudit_common_proto_depIdxs = []int32{
 	35,  // 76: codeaudit.common.v1.ListScanTasksResponse.pagination:type_name -> codeaudit.common.v1.PaginationResponse
 	14,  // 77: codeaudit.common.v1.UpdateStageStatusRequest.status:type_name -> codeaudit.common.v1.StageStatus
 	33,  // 78: codeaudit.common.v1.ReportStageCompleteRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
-	255, // 79: codeaudit.common.v1.ReportStageCompleteRequest.output_refs:type_name -> codeaudit.common.v1.ReportStageCompleteRequest.OutputRefsEntry
+	268, // 79: codeaudit.common.v1.ReportStageCompleteRequest.output_refs:type_name -> codeaudit.common.v1.ReportStageCompleteRequest.OutputRefsEntry
 	33,  // 80: codeaudit.common.v1.ReportStageFailedRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
 	20,  // 81: codeaudit.common.v1.TaskLogEntry.level:type_name -> codeaudit.common.v1.TaskLogLevel
 	33,  // 82: codeaudit.common.v1.AppendTaskLogRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
@@ -16652,15 +17425,15 @@ var file_codeaudit_common_proto_depIdxs = []int32{
 	5,   // 90: codeaudit.common.v1.ScanTask.status:type_name -> codeaudit.common.v1.TaskStatus
 	6,   // 91: codeaudit.common.v1.ScanTask.priority:type_name -> codeaudit.common.v1.Priority
 	63,  // 92: codeaudit.common.v1.ScanTask.stages:type_name -> codeaudit.common.v1.TaskStage
-	265, // 93: codeaudit.common.v1.ScanTask.created_at:type_name -> google.protobuf.Timestamp
-	265, // 94: codeaudit.common.v1.ScanTask.updated_at:type_name -> google.protobuf.Timestamp
-	256, // 95: codeaudit.common.v1.ScanTask.config:type_name -> codeaudit.common.v1.ScanTask.ConfigEntry
+	281, // 93: codeaudit.common.v1.ScanTask.created_at:type_name -> google.protobuf.Timestamp
+	281, // 94: codeaudit.common.v1.ScanTask.updated_at:type_name -> google.protobuf.Timestamp
+	269, // 95: codeaudit.common.v1.ScanTask.config:type_name -> codeaudit.common.v1.ScanTask.ConfigEntry
 	5,   // 96: codeaudit.common.v1.TaskProgress.status:type_name -> codeaudit.common.v1.TaskStatus
 	63,  // 97: codeaudit.common.v1.TaskProgress.stages:type_name -> codeaudit.common.v1.TaskStage
 	5,   // 98: codeaudit.common.v1.TaskProgressEvent.status:type_name -> codeaudit.common.v1.TaskStatus
-	265, // 99: codeaudit.common.v1.TaskProgressEvent.timestamp:type_name -> google.protobuf.Timestamp
+	281, // 99: codeaudit.common.v1.TaskProgressEvent.timestamp:type_name -> google.protobuf.Timestamp
 	4,   // 100: codeaudit.common.v1.Project.default_scan_mode:type_name -> codeaudit.common.v1.ScanMode
-	265, // 101: codeaudit.common.v1.Project.created_at:type_name -> google.protobuf.Timestamp
+	281, // 101: codeaudit.common.v1.Project.created_at:type_name -> google.protobuf.Timestamp
 	33,  // 102: codeaudit.common.v1.CreateProjectRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
 	101, // 103: codeaudit.common.v1.CreateProjectRequest.project:type_name -> codeaudit.common.v1.Project
 	101, // 104: codeaudit.common.v1.UpdateProjectRequest.project:type_name -> codeaudit.common.v1.Project
@@ -16668,7 +17441,7 @@ var file_codeaudit_common_proto_depIdxs = []int32{
 	37,  // 106: codeaudit.common.v1.ListProjectsRequest.filter:type_name -> codeaudit.common.v1.FilterRequest
 	101, // 107: codeaudit.common.v1.ListProjectsResponse.projects:type_name -> codeaudit.common.v1.Project
 	35,  // 108: codeaudit.common.v1.ListProjectsResponse.pagination:type_name -> codeaudit.common.v1.PaginationResponse
-	257, // 109: codeaudit.common.v1.ProjectConfig.config:type_name -> codeaudit.common.v1.ProjectConfig.ConfigEntry
+	270, // 109: codeaudit.common.v1.ProjectConfig.config:type_name -> codeaudit.common.v1.ProjectConfig.ConfigEntry
 	108, // 110: codeaudit.common.v1.UpdateProjectConfigRequest.config:type_name -> codeaudit.common.v1.ProjectConfig
 	33,  // 111: codeaudit.common.v1.AddProjectMemberRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
 	113, // 112: codeaudit.common.v1.AddProjectMemberRequest.member:type_name -> codeaudit.common.v1.ProjectMember
@@ -16676,7 +17449,7 @@ var file_codeaudit_common_proto_depIdxs = []int32{
 	113, // 114: codeaudit.common.v1.ListProjectMembersResponse.members:type_name -> codeaudit.common.v1.ProjectMember
 	35,  // 115: codeaudit.common.v1.ListProjectMembersResponse.pagination:type_name -> codeaudit.common.v1.PaginationResponse
 	23,  // 116: codeaudit.common.v1.User.state:type_name -> codeaudit.common.v1.User.UserState
-	265, // 117: codeaudit.common.v1.User.created_at:type_name -> google.protobuf.Timestamp
+	281, // 117: codeaudit.common.v1.User.created_at:type_name -> google.protobuf.Timestamp
 	21,  // 118: codeaudit.common.v1.User.role:type_name -> codeaudit.common.v1.Role
 	118, // 119: codeaudit.common.v1.UpdateUserRequest.user:type_name -> codeaudit.common.v1.User
 	33,  // 120: codeaudit.common.v1.RegisterUserRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
@@ -16700,15 +17473,15 @@ var file_codeaudit_common_proto_depIdxs = []int32{
 	33,  // 138: codeaudit.common.v1.BatchCreateFindingsRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
 	28,  // 139: codeaudit.common.v1.BatchCreateFindingsRequest.findings:type_name -> codeaudit.common.v1.UnifiedFinding
 	33,  // 140: codeaudit.common.v1.BatchUpdateFindingsRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
-	258, // 141: codeaudit.common.v1.BatchUpdateFindingsRequest.patch_json:type_name -> codeaudit.common.v1.BatchUpdateFindingsRequest.PatchJsonEntry
+	271, // 141: codeaudit.common.v1.BatchUpdateFindingsRequest.patch_json:type_name -> codeaudit.common.v1.BatchUpdateFindingsRequest.PatchJsonEntry
 	33,  // 142: codeaudit.common.v1.BatchUpdateVerdictRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
 	1,   // 143: codeaudit.common.v1.BatchUpdateVerdictRequest.verdict:type_name -> codeaudit.common.v1.AIVerdict
 	1,   // 144: codeaudit.common.v1.UpdateVerdictRequest.verdict:type_name -> codeaudit.common.v1.AIVerdict
 	1,   // 145: codeaudit.common.v1.GetFindingsByVerdictRequest.verdict:type_name -> codeaudit.common.v1.AIVerdict
 	34,  // 146: codeaudit.common.v1.GetFindingsByVerdictRequest.pagination:type_name -> codeaudit.common.v1.PaginationRequest
-	259, // 147: codeaudit.common.v1.ResultStats.by_severity:type_name -> codeaudit.common.v1.ResultStats.BySeverityEntry
-	260, // 148: codeaudit.common.v1.ResultStats.by_cwe:type_name -> codeaudit.common.v1.ResultStats.ByCweEntry
-	261, // 149: codeaudit.common.v1.ResultStats.by_verdict:type_name -> codeaudit.common.v1.ResultStats.ByVerdictEntry
+	272, // 147: codeaudit.common.v1.ResultStats.by_severity:type_name -> codeaudit.common.v1.ResultStats.BySeverityEntry
+	273, // 148: codeaudit.common.v1.ResultStats.by_cwe:type_name -> codeaudit.common.v1.ResultStats.ByCweEntry
+	274, // 149: codeaudit.common.v1.ResultStats.by_verdict:type_name -> codeaudit.common.v1.ResultStats.ByVerdictEntry
 	12,  // 150: codeaudit.common.v1.ExportFindingsRequest.format:type_name -> codeaudit.common.v1.ReportFormat
 	33,  // 151: codeaudit.common.v1.SubmitFindingFeedbackRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
 	24,  // 152: codeaudit.common.v1.SubmitFindingFeedbackRequest.feedback_type:type_name -> codeaudit.common.v1.SubmitFindingFeedbackRequest.FeedbackType
@@ -16716,7 +17489,7 @@ var file_codeaudit_common_proto_depIdxs = []int32{
 	12,  // 154: codeaudit.common.v1.GenerateReportRequest.format:type_name -> codeaudit.common.v1.ReportFormat
 	61,  // 155: codeaudit.common.v1.GenerateReportResponse.result:type_name -> codeaudit.common.v1.ReportResult
 	12,  // 156: codeaudit.common.v1.Report.format:type_name -> codeaudit.common.v1.ReportFormat
-	265, // 157: codeaudit.common.v1.Report.generated_at:type_name -> google.protobuf.Timestamp
+	281, // 157: codeaudit.common.v1.Report.generated_at:type_name -> google.protobuf.Timestamp
 	34,  // 158: codeaudit.common.v1.ListReportsRequest.pagination:type_name -> codeaudit.common.v1.PaginationRequest
 	162, // 159: codeaudit.common.v1.ListReportsResponse.reports:type_name -> codeaudit.common.v1.Report
 	35,  // 160: codeaudit.common.v1.ListReportsResponse.pagination:type_name -> codeaudit.common.v1.PaginationResponse
@@ -16736,254 +17509,274 @@ var file_codeaudit_common_proto_depIdxs = []int32{
 	64,  // 174: codeaudit.common.v1.ReviewSASTResultsResponse.report:type_name -> codeaudit.common.v1.AuditReviewReport
 	11,  // 175: codeaudit.common.v1.AnalysisProgress.status:type_name -> codeaudit.common.v1.AnalysisStatus
 	11,  // 176: codeaudit.common.v1.AnalysisProgressEvent.status:type_name -> codeaudit.common.v1.AnalysisStatus
-	265, // 177: codeaudit.common.v1.AnalysisProgressEvent.timestamp:type_name -> google.protobuf.Timestamp
-	33,  // 178: codeaudit.common.v1.AnalyzeCodeRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
-	39,  // 179: codeaudit.common.v1.AnalyzeCodeResponse.result:type_name -> codeaudit.common.v1.CodeAnalysisResult
-	33,  // 180: codeaudit.common.v1.RunSASTScanRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
-	262, // 181: codeaudit.common.v1.RunSASTScanRequest.tool_config:type_name -> codeaudit.common.v1.RunSASTScanRequest.ToolConfigEntry
-	46,  // 182: codeaudit.common.v1.RunSASTScanResponse.result:type_name -> codeaudit.common.v1.ToolScanResult
-	33,  // 183: codeaudit.common.v1.RunMultipleScansRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
-	45,  // 184: codeaudit.common.v1.RunMultipleScansResponse.result:type_name -> codeaudit.common.v1.SASTScanResult
-	206, // 185: codeaudit.common.v1.ListAvailableToolsResponse.tools:type_name -> codeaudit.common.v1.SASTToolInfo
-	263, // 186: codeaudit.common.v1.ValidateToolConfigRequest.tool_config:type_name -> codeaudit.common.v1.ValidateToolConfigRequest.ToolConfigEntry
-	10,  // 187: codeaudit.common.v1.ScanProgress.status:type_name -> codeaudit.common.v1.ScanStatus
-	33,  // 188: codeaudit.common.v1.FuseResultsRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
-	53,  // 189: codeaudit.common.v1.FuseResultsResponse.result:type_name -> codeaudit.common.v1.FusionResult
-	56,  // 190: codeaudit.common.v1.AlignLocationsResponse.aligned_groups:type_name -> codeaudit.common.v1.MergeGroup
-	56,  // 191: codeaudit.common.v1.ClusterFindingsResponse.clusters:type_name -> codeaudit.common.v1.MergeGroup
-	57,  // 192: codeaudit.common.v1.ResolveConflictsResponse.resolved:type_name -> codeaudit.common.v1.ConflictItem
-	264, // 193: codeaudit.common.v1.FusionConfig.config:type_name -> codeaudit.common.v1.FusionConfig.ConfigEntry
-	219, // 194: codeaudit.common.v1.UpdateFusionConfigRequest.config:type_name -> codeaudit.common.v1.FusionConfig
-	59,  // 195: codeaudit.common.v1.CompareResultsResponse.summary:type_name -> codeaudit.common.v1.ComparisonSummary
-	12,  // 196: codeaudit.common.v1.GenerateComparisonReportRequest.format:type_name -> codeaudit.common.v1.ReportFormat
-	59,  // 197: codeaudit.common.v1.ComparisonReport.summary:type_name -> codeaudit.common.v1.ComparisonSummary
-	26,  // 198: codeaudit.common.v1.GetPresignedUrlRequest.operation:type_name -> codeaudit.common.v1.GetPresignedUrlRequest.UrlOp
-	265, // 199: codeaudit.common.v1.GetPresignedUrlResponse.expires_at:type_name -> google.protobuf.Timestamp
-	34,  // 200: codeaudit.common.v1.ListFilesRequest.pagination:type_name -> codeaudit.common.v1.PaginationRequest
-	74,  // 201: codeaudit.common.v1.ListFilesResponse.files:type_name -> codeaudit.common.v1.StoredFile
-	35,  // 202: codeaudit.common.v1.ListFilesResponse.pagination:type_name -> codeaudit.common.v1.PaginationResponse
-	33,  // 203: codeaudit.common.v1.SendNotificationRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
-	73,  // 204: codeaudit.common.v1.SendNotificationRequest.notification:type_name -> codeaudit.common.v1.Notification
-	33,  // 205: codeaudit.common.v1.SendBatchNotificationRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
-	73,  // 206: codeaudit.common.v1.SendBatchNotificationRequest.notifications:type_name -> codeaudit.common.v1.Notification
-	34,  // 207: codeaudit.common.v1.ListNotificationsRequest.pagination:type_name -> codeaudit.common.v1.PaginationRequest
-	73,  // 208: codeaudit.common.v1.ListNotificationsResponse.notifications:type_name -> codeaudit.common.v1.Notification
-	35,  // 209: codeaudit.common.v1.ListNotificationsResponse.pagination:type_name -> codeaudit.common.v1.PaginationResponse
-	44,  // 210: codeaudit.common.v1.LanguageStats.LanguagesEntry.value:type_name -> codeaudit.common.v1.LanguageInfo
-	46,  // 211: codeaudit.common.v1.SASTScanResult.ResultsEntry.value:type_name -> codeaudit.common.v1.ToolScanResult
-	75,  // 212: codeaudit.common.v1.TaskService.CreateScanTask:input_type -> codeaudit.common.v1.CreateScanTaskRequest
-	76,  // 213: codeaudit.common.v1.TaskService.GetScanTask:input_type -> codeaudit.common.v1.GetScanTaskRequest
-	77,  // 214: codeaudit.common.v1.TaskService.CancelScanTask:input_type -> codeaudit.common.v1.CancelScanTaskRequest
-	78,  // 215: codeaudit.common.v1.TaskService.RetryScanTask:input_type -> codeaudit.common.v1.RetryScanTaskRequest
-	79,  // 216: codeaudit.common.v1.TaskService.ListScanTasks:input_type -> codeaudit.common.v1.ListScanTasksRequest
-	81,  // 217: codeaudit.common.v1.TaskService.StartTask:input_type -> codeaudit.common.v1.StartTaskRequest
-	238, // 218: codeaudit.common.v1.TaskService.PauseTask:input_type -> codeaudit.common.v1.PauseTaskRequest
-	239, // 219: codeaudit.common.v1.TaskService.ResumeTask:input_type -> codeaudit.common.v1.ResumeTaskRequest
-	82,  // 220: codeaudit.common.v1.TaskService.CompleteTask:input_type -> codeaudit.common.v1.CompleteTaskRequest
-	83,  // 221: codeaudit.common.v1.TaskService.FailTask:input_type -> codeaudit.common.v1.FailTaskRequest
-	84,  // 222: codeaudit.common.v1.TaskService.UpdateStageStatus:input_type -> codeaudit.common.v1.UpdateStageStatusRequest
-	85,  // 223: codeaudit.common.v1.TaskService.GetTaskProgress:input_type -> codeaudit.common.v1.GetTaskProgressRequest
-	86,  // 224: codeaudit.common.v1.TaskService.WatchTaskProgress:input_type -> codeaudit.common.v1.WatchTaskProgressRequest
-	87,  // 225: codeaudit.common.v1.TaskService.ReportStageComplete:input_type -> codeaudit.common.v1.ReportStageCompleteRequest
-	88,  // 226: codeaudit.common.v1.TaskService.ReportStageFailed:input_type -> codeaudit.common.v1.ReportStageFailedRequest
-	89,  // 227: codeaudit.common.v1.TaskService.GetTaskContext:input_type -> codeaudit.common.v1.GetTaskContextRequest
-	91,  // 228: codeaudit.common.v1.TaskService.AppendTaskLog:input_type -> codeaudit.common.v1.AppendTaskLogRequest
-	93,  // 229: codeaudit.common.v1.TaskService.GetTaskLogs:input_type -> codeaudit.common.v1.GetTaskLogsRequest
-	95,  // 230: codeaudit.common.v1.TaskService.StreamTaskSnapshot:input_type -> codeaudit.common.v1.StreamTaskSnapshotRequest
-	102, // 231: codeaudit.common.v1.ProjectService.CreateProject:input_type -> codeaudit.common.v1.CreateProjectRequest
-	103, // 232: codeaudit.common.v1.ProjectService.GetProject:input_type -> codeaudit.common.v1.GetProjectRequest
-	104, // 233: codeaudit.common.v1.ProjectService.UpdateProject:input_type -> codeaudit.common.v1.UpdateProjectRequest
-	105, // 234: codeaudit.common.v1.ProjectService.DeleteProject:input_type -> codeaudit.common.v1.DeleteProjectRequest
-	106, // 235: codeaudit.common.v1.ProjectService.ListProjects:input_type -> codeaudit.common.v1.ListProjectsRequest
-	109, // 236: codeaudit.common.v1.ProjectService.GetProjectConfig:input_type -> codeaudit.common.v1.GetProjectConfigRequest
-	110, // 237: codeaudit.common.v1.ProjectService.UpdateProjectConfig:input_type -> codeaudit.common.v1.UpdateProjectConfigRequest
-	112, // 238: codeaudit.common.v1.ProjectService.GetProjectStats:input_type -> codeaudit.common.v1.GetProjectStatsRequest
-	114, // 239: codeaudit.common.v1.ProjectService.AddProjectMember:input_type -> codeaudit.common.v1.AddProjectMemberRequest
-	115, // 240: codeaudit.common.v1.ProjectService.RemoveProjectMember:input_type -> codeaudit.common.v1.RemoveProjectMemberRequest
-	116, // 241: codeaudit.common.v1.ProjectService.ListProjectMembers:input_type -> codeaudit.common.v1.ListProjectMembersRequest
-	119, // 242: codeaudit.common.v1.UserService.Login:input_type -> codeaudit.common.v1.LoginRequest
-	121, // 243: codeaudit.common.v1.UserService.Logout:input_type -> codeaudit.common.v1.LogoutRequest
-	122, // 244: codeaudit.common.v1.UserService.RefreshToken:input_type -> codeaudit.common.v1.RefreshTokenRequest
-	124, // 245: codeaudit.common.v1.UserService.GetCurrentUser:input_type -> codeaudit.common.v1.GetCurrentUserRequest
-	125, // 246: codeaudit.common.v1.UserService.GetUser:input_type -> codeaudit.common.v1.GetUserRequest
-	126, // 247: codeaudit.common.v1.UserService.UpdateUser:input_type -> codeaudit.common.v1.UpdateUserRequest
-	127, // 248: codeaudit.common.v1.UserService.ValidatePermission:input_type -> codeaudit.common.v1.ValidatePermissionRequest
-	129, // 249: codeaudit.common.v1.UserService.GetUserPermissions:input_type -> codeaudit.common.v1.GetUserPermissionsRequest
-	131, // 250: codeaudit.common.v1.UserService.RegisterUser:input_type -> codeaudit.common.v1.RegisterUserRequest
-	132, // 251: codeaudit.common.v1.UserService.ListUsers:input_type -> codeaudit.common.v1.ListUsersRequest
-	134, // 252: codeaudit.common.v1.UserService.CreateUser:input_type -> codeaudit.common.v1.CreateUserRequest
-	135, // 253: codeaudit.common.v1.UserService.ChangePassword:input_type -> codeaudit.common.v1.ChangePasswordRequest
-	136, // 254: codeaudit.common.v1.UserService.ResetPassword:input_type -> codeaudit.common.v1.ResetPasswordRequest
-	139, // 255: codeaudit.common.v1.ResultService.CreateFinding:input_type -> codeaudit.common.v1.CreateFindingRequest
-	140, // 256: codeaudit.common.v1.ResultService.GetFinding:input_type -> codeaudit.common.v1.GetFindingRequest
-	141, // 257: codeaudit.common.v1.ResultService.UpdateFinding:input_type -> codeaudit.common.v1.UpdateFindingRequest
-	142, // 258: codeaudit.common.v1.ResultService.DeleteFinding:input_type -> codeaudit.common.v1.DeleteFindingRequest
-	143, // 259: codeaudit.common.v1.ResultService.ListFindings:input_type -> codeaudit.common.v1.ListFindingsRequest
-	145, // 260: codeaudit.common.v1.ResultService.BatchCreateFindings:input_type -> codeaudit.common.v1.BatchCreateFindingsRequest
-	147, // 261: codeaudit.common.v1.ResultService.BatchUpdateFindings:input_type -> codeaudit.common.v1.BatchUpdateFindingsRequest
-	149, // 262: codeaudit.common.v1.ResultService.BatchUpdateVerdict:input_type -> codeaudit.common.v1.BatchUpdateVerdictRequest
-	151, // 263: codeaudit.common.v1.ResultService.UpdateVerdict:input_type -> codeaudit.common.v1.UpdateVerdictRequest
-	152, // 264: codeaudit.common.v1.ResultService.GetFindingsByVerdict:input_type -> codeaudit.common.v1.GetFindingsByVerdictRequest
-	154, // 265: codeaudit.common.v1.ResultService.GetTaskResultStats:input_type -> codeaudit.common.v1.GetTaskResultStatsRequest
-	155, // 266: codeaudit.common.v1.ResultService.ExportFindings:input_type -> codeaudit.common.v1.ExportFindingsRequest
-	157, // 267: codeaudit.common.v1.ResultService.SubmitFindingFeedback:input_type -> codeaudit.common.v1.SubmitFindingFeedbackRequest
-	159, // 268: codeaudit.common.v1.ReportService.GenerateReport:input_type -> codeaudit.common.v1.GenerateReportRequest
-	161, // 269: codeaudit.common.v1.ReportService.GetReport:input_type -> codeaudit.common.v1.GetReportRequest
-	163, // 270: codeaudit.common.v1.ReportService.ListReports:input_type -> codeaudit.common.v1.ListReportsRequest
-	165, // 271: codeaudit.common.v1.ReportService.ListTemplates:input_type -> codeaudit.common.v1.ListTemplatesRequest
-	168, // 272: codeaudit.common.v1.ReportService.GetTemplate:input_type -> codeaudit.common.v1.GetTemplateRequest
-	169, // 273: codeaudit.common.v1.ReportService.DownloadReport:input_type -> codeaudit.common.v1.DownloadReportRequest
-	171, // 274: codeaudit.common.v1.DSHRuntimeService.RunAIAnalysis:input_type -> codeaudit.common.v1.RunAIAnalysisRequest
-	173, // 275: codeaudit.common.v1.DSHRuntimeService.VerifySASTResults:input_type -> codeaudit.common.v1.VerifySASTResultsRequest
-	175, // 276: codeaudit.common.v1.DSHRuntimeService.SearchMissedVulns:input_type -> codeaudit.common.v1.SearchMissedVulnsRequest
-	177, // 277: codeaudit.common.v1.DSHRuntimeService.ReviewSASTResults:input_type -> codeaudit.common.v1.ReviewSASTResultsRequest
-	180, // 278: codeaudit.common.v1.DSHRuntimeService.GetAnalysisProgress:input_type -> codeaudit.common.v1.GetAnalysisProgressRequest
-	182, // 279: codeaudit.common.v1.DSHRuntimeService.WatchAnalysisProgress:input_type -> codeaudit.common.v1.WatchAnalysisProgressRequest
-	184, // 280: codeaudit.common.v1.DSHRuntimeService.GetSessionStatus:input_type -> codeaudit.common.v1.GetSessionStatusRequest
-	186, // 281: codeaudit.common.v1.DSHRuntimeService.CancelAnalysis:input_type -> codeaudit.common.v1.CancelAnalysisRequest
-	240, // 282: codeaudit.common.v1.DSHRuntimeService.PauseAnalysis:input_type -> codeaudit.common.v1.PauseAnalysisRequest
-	241, // 283: codeaudit.common.v1.DSHRuntimeService.ResumeAnalysis:input_type -> codeaudit.common.v1.ResumeAnalysisRequest
-	187, // 284: codeaudit.common.v1.DSHRuntimeService.GetAIInteractionLog:input_type -> codeaudit.common.v1.GetAIInteractionLogRequest
-	189, // 285: codeaudit.common.v1.DSHRuntimeService.StreamAIInteractionLog:input_type -> codeaudit.common.v1.StreamAIInteractionLogRequest
-	190, // 286: codeaudit.common.v1.CodeAnalysisService.AnalyzeCode:input_type -> codeaudit.common.v1.AnalyzeCodeRequest
-	192, // 287: codeaudit.common.v1.CodeAnalysisService.QueryCPG:input_type -> codeaudit.common.v1.QueryCPGRequest
-	194, // 288: codeaudit.common.v1.CodeAnalysisService.GetCallGraph:input_type -> codeaudit.common.v1.GetCallGraphRequest
-	196, // 289: codeaudit.common.v1.CodeAnalysisService.GetDataFlow:input_type -> codeaudit.common.v1.GetDataFlowRequest
-	180, // 290: codeaudit.common.v1.CodeAnalysisService.GetAnalysisProgress:input_type -> codeaudit.common.v1.GetAnalysisProgressRequest
-	199, // 291: codeaudit.common.v1.SASTAdapterService.RunSASTScan:input_type -> codeaudit.common.v1.RunSASTScanRequest
-	201, // 292: codeaudit.common.v1.SASTAdapterService.RunMultipleScans:input_type -> codeaudit.common.v1.RunMultipleScansRequest
-	203, // 293: codeaudit.common.v1.SASTAdapterService.ListAvailableTools:input_type -> codeaudit.common.v1.ListAvailableToolsRequest
-	205, // 294: codeaudit.common.v1.SASTAdapterService.GetToolInfo:input_type -> codeaudit.common.v1.GetToolInfoRequest
-	207, // 295: codeaudit.common.v1.SASTAdapterService.ValidateToolConfig:input_type -> codeaudit.common.v1.ValidateToolConfigRequest
-	209, // 296: codeaudit.common.v1.SASTAdapterService.GetScanProgress:input_type -> codeaudit.common.v1.GetScanProgressRequest
-	211, // 297: codeaudit.common.v1.SASTFusionService.FuseResults:input_type -> codeaudit.common.v1.FuseResultsRequest
-	213, // 298: codeaudit.common.v1.SASTFusionService.AlignLocations:input_type -> codeaudit.common.v1.AlignLocationsRequest
-	215, // 299: codeaudit.common.v1.SASTFusionService.ClusterFindings:input_type -> codeaudit.common.v1.ClusterFindingsRequest
-	217, // 300: codeaudit.common.v1.SASTFusionService.ResolveConflicts:input_type -> codeaudit.common.v1.ResolveConflictsRequest
-	220, // 301: codeaudit.common.v1.SASTFusionService.GetFusionConfig:input_type -> codeaudit.common.v1.GetFusionConfigRequest
-	221, // 302: codeaudit.common.v1.SASTFusionService.UpdateFusionConfig:input_type -> codeaudit.common.v1.UpdateFusionConfigRequest
-	222, // 303: codeaudit.common.v1.SASTFusionService.CompareResults:input_type -> codeaudit.common.v1.CompareResultsRequest
-	224, // 304: codeaudit.common.v1.SASTFusionService.CalculateMetrics:input_type -> codeaudit.common.v1.CalculateMetricsRequest
-	225, // 305: codeaudit.common.v1.SASTFusionService.GenerateComparisonReport:input_type -> codeaudit.common.v1.GenerateComparisonReportRequest
-	227, // 306: codeaudit.common.v1.StorageService.UploadFile:input_type -> codeaudit.common.v1.UploadFileChunk
-	228, // 307: codeaudit.common.v1.StorageService.DownloadFile:input_type -> codeaudit.common.v1.DownloadFileRequest
-	230, // 308: codeaudit.common.v1.StorageService.GetPresignedUrl:input_type -> codeaudit.common.v1.GetPresignedUrlRequest
-	232, // 309: codeaudit.common.v1.StorageService.GetFileInfo:input_type -> codeaudit.common.v1.GetFileInfoRequest
-	233, // 310: codeaudit.common.v1.StorageService.DeleteFile:input_type -> codeaudit.common.v1.DeleteFileRequest
-	234, // 311: codeaudit.common.v1.StorageService.ListFiles:input_type -> codeaudit.common.v1.ListFilesRequest
-	236, // 312: codeaudit.common.v1.NotificationService.SendNotification:input_type -> codeaudit.common.v1.SendNotificationRequest
-	237, // 313: codeaudit.common.v1.NotificationService.SendBatchNotification:input_type -> codeaudit.common.v1.SendBatchNotificationRequest
-	242, // 314: codeaudit.common.v1.NotificationService.ListNotifications:input_type -> codeaudit.common.v1.ListNotificationsRequest
-	244, // 315: codeaudit.common.v1.NotificationService.MarkNotificationRead:input_type -> codeaudit.common.v1.MarkNotificationReadRequest
-	97,  // 316: codeaudit.common.v1.TaskService.CreateScanTask:output_type -> codeaudit.common.v1.ScanTask
-	97,  // 317: codeaudit.common.v1.TaskService.GetScanTask:output_type -> codeaudit.common.v1.ScanTask
-	97,  // 318: codeaudit.common.v1.TaskService.CancelScanTask:output_type -> codeaudit.common.v1.ScanTask
-	97,  // 319: codeaudit.common.v1.TaskService.RetryScanTask:output_type -> codeaudit.common.v1.ScanTask
-	80,  // 320: codeaudit.common.v1.TaskService.ListScanTasks:output_type -> codeaudit.common.v1.ListScanTasksResponse
-	97,  // 321: codeaudit.common.v1.TaskService.StartTask:output_type -> codeaudit.common.v1.ScanTask
-	97,  // 322: codeaudit.common.v1.TaskService.PauseTask:output_type -> codeaudit.common.v1.ScanTask
-	97,  // 323: codeaudit.common.v1.TaskService.ResumeTask:output_type -> codeaudit.common.v1.ScanTask
-	97,  // 324: codeaudit.common.v1.TaskService.CompleteTask:output_type -> codeaudit.common.v1.ScanTask
-	97,  // 325: codeaudit.common.v1.TaskService.FailTask:output_type -> codeaudit.common.v1.ScanTask
-	97,  // 326: codeaudit.common.v1.TaskService.UpdateStageStatus:output_type -> codeaudit.common.v1.ScanTask
-	98,  // 327: codeaudit.common.v1.TaskService.GetTaskProgress:output_type -> codeaudit.common.v1.TaskProgress
-	99,  // 328: codeaudit.common.v1.TaskService.WatchTaskProgress:output_type -> codeaudit.common.v1.TaskProgressEvent
-	266, // 329: codeaudit.common.v1.TaskService.ReportStageComplete:output_type -> google.protobuf.Empty
-	266, // 330: codeaudit.common.v1.TaskService.ReportStageFailed:output_type -> google.protobuf.Empty
-	100, // 331: codeaudit.common.v1.TaskService.GetTaskContext:output_type -> codeaudit.common.v1.TaskContext
-	92,  // 332: codeaudit.common.v1.TaskService.AppendTaskLog:output_type -> codeaudit.common.v1.AppendTaskLogResponse
-	94,  // 333: codeaudit.common.v1.TaskService.GetTaskLogs:output_type -> codeaudit.common.v1.GetTaskLogsResponse
-	96,  // 334: codeaudit.common.v1.TaskService.StreamTaskSnapshot:output_type -> codeaudit.common.v1.TaskSnapshotDelta
-	101, // 335: codeaudit.common.v1.ProjectService.CreateProject:output_type -> codeaudit.common.v1.Project
-	101, // 336: codeaudit.common.v1.ProjectService.GetProject:output_type -> codeaudit.common.v1.Project
-	101, // 337: codeaudit.common.v1.ProjectService.UpdateProject:output_type -> codeaudit.common.v1.Project
-	266, // 338: codeaudit.common.v1.ProjectService.DeleteProject:output_type -> google.protobuf.Empty
-	107, // 339: codeaudit.common.v1.ProjectService.ListProjects:output_type -> codeaudit.common.v1.ListProjectsResponse
-	108, // 340: codeaudit.common.v1.ProjectService.GetProjectConfig:output_type -> codeaudit.common.v1.ProjectConfig
-	108, // 341: codeaudit.common.v1.ProjectService.UpdateProjectConfig:output_type -> codeaudit.common.v1.ProjectConfig
-	111, // 342: codeaudit.common.v1.ProjectService.GetProjectStats:output_type -> codeaudit.common.v1.ProjectStats
-	113, // 343: codeaudit.common.v1.ProjectService.AddProjectMember:output_type -> codeaudit.common.v1.ProjectMember
-	266, // 344: codeaudit.common.v1.ProjectService.RemoveProjectMember:output_type -> google.protobuf.Empty
-	117, // 345: codeaudit.common.v1.ProjectService.ListProjectMembers:output_type -> codeaudit.common.v1.ListProjectMembersResponse
-	120, // 346: codeaudit.common.v1.UserService.Login:output_type -> codeaudit.common.v1.LoginResponse
-	266, // 347: codeaudit.common.v1.UserService.Logout:output_type -> google.protobuf.Empty
-	123, // 348: codeaudit.common.v1.UserService.RefreshToken:output_type -> codeaudit.common.v1.RefreshTokenResponse
-	118, // 349: codeaudit.common.v1.UserService.GetCurrentUser:output_type -> codeaudit.common.v1.User
-	118, // 350: codeaudit.common.v1.UserService.GetUser:output_type -> codeaudit.common.v1.User
-	118, // 351: codeaudit.common.v1.UserService.UpdateUser:output_type -> codeaudit.common.v1.User
-	128, // 352: codeaudit.common.v1.UserService.ValidatePermission:output_type -> codeaudit.common.v1.ValidatePermissionResponse
-	130, // 353: codeaudit.common.v1.UserService.GetUserPermissions:output_type -> codeaudit.common.v1.UserPermissions
-	120, // 354: codeaudit.common.v1.UserService.RegisterUser:output_type -> codeaudit.common.v1.LoginResponse
-	133, // 355: codeaudit.common.v1.UserService.ListUsers:output_type -> codeaudit.common.v1.ListUsersResponse
-	118, // 356: codeaudit.common.v1.UserService.CreateUser:output_type -> codeaudit.common.v1.User
-	266, // 357: codeaudit.common.v1.UserService.ChangePassword:output_type -> google.protobuf.Empty
-	137, // 358: codeaudit.common.v1.UserService.ResetPassword:output_type -> codeaudit.common.v1.ResetPasswordResponse
-	138, // 359: codeaudit.common.v1.ResultService.CreateFinding:output_type -> codeaudit.common.v1.AuditFinding
-	138, // 360: codeaudit.common.v1.ResultService.GetFinding:output_type -> codeaudit.common.v1.AuditFinding
-	138, // 361: codeaudit.common.v1.ResultService.UpdateFinding:output_type -> codeaudit.common.v1.AuditFinding
-	266, // 362: codeaudit.common.v1.ResultService.DeleteFinding:output_type -> google.protobuf.Empty
-	144, // 363: codeaudit.common.v1.ResultService.ListFindings:output_type -> codeaudit.common.v1.ListFindingsResponse
-	146, // 364: codeaudit.common.v1.ResultService.BatchCreateFindings:output_type -> codeaudit.common.v1.BatchCreateFindingsResponse
-	148, // 365: codeaudit.common.v1.ResultService.BatchUpdateFindings:output_type -> codeaudit.common.v1.BatchUpdateFindingsResponse
-	150, // 366: codeaudit.common.v1.ResultService.BatchUpdateVerdict:output_type -> codeaudit.common.v1.BatchUpdateVerdictResponse
-	138, // 367: codeaudit.common.v1.ResultService.UpdateVerdict:output_type -> codeaudit.common.v1.AuditFinding
-	144, // 368: codeaudit.common.v1.ResultService.GetFindingsByVerdict:output_type -> codeaudit.common.v1.ListFindingsResponse
-	153, // 369: codeaudit.common.v1.ResultService.GetTaskResultStats:output_type -> codeaudit.common.v1.ResultStats
-	156, // 370: codeaudit.common.v1.ResultService.ExportFindings:output_type -> codeaudit.common.v1.ExportFindingsResponse
-	158, // 371: codeaudit.common.v1.ResultService.SubmitFindingFeedback:output_type -> codeaudit.common.v1.SubmitFindingFeedbackResponse
-	160, // 372: codeaudit.common.v1.ReportService.GenerateReport:output_type -> codeaudit.common.v1.GenerateReportResponse
-	162, // 373: codeaudit.common.v1.ReportService.GetReport:output_type -> codeaudit.common.v1.Report
-	164, // 374: codeaudit.common.v1.ReportService.ListReports:output_type -> codeaudit.common.v1.ListReportsResponse
-	166, // 375: codeaudit.common.v1.ReportService.ListTemplates:output_type -> codeaudit.common.v1.ListTemplatesResponse
-	167, // 376: codeaudit.common.v1.ReportService.GetTemplate:output_type -> codeaudit.common.v1.ReportTemplate
-	170, // 377: codeaudit.common.v1.ReportService.DownloadReport:output_type -> codeaudit.common.v1.ReportChunk
-	172, // 378: codeaudit.common.v1.DSHRuntimeService.RunAIAnalysis:output_type -> codeaudit.common.v1.RunAIAnalysisResponse
-	174, // 379: codeaudit.common.v1.DSHRuntimeService.VerifySASTResults:output_type -> codeaudit.common.v1.VerifySASTResultsResponse
-	176, // 380: codeaudit.common.v1.DSHRuntimeService.SearchMissedVulns:output_type -> codeaudit.common.v1.SearchMissedVulnsResponse
-	179, // 381: codeaudit.common.v1.DSHRuntimeService.ReviewSASTResults:output_type -> codeaudit.common.v1.ReviewSASTResultsResponse
-	181, // 382: codeaudit.common.v1.DSHRuntimeService.GetAnalysisProgress:output_type -> codeaudit.common.v1.AnalysisProgress
-	183, // 383: codeaudit.common.v1.DSHRuntimeService.WatchAnalysisProgress:output_type -> codeaudit.common.v1.AnalysisProgressEvent
-	185, // 384: codeaudit.common.v1.DSHRuntimeService.GetSessionStatus:output_type -> codeaudit.common.v1.SessionStatus
-	266, // 385: codeaudit.common.v1.DSHRuntimeService.CancelAnalysis:output_type -> google.protobuf.Empty
-	266, // 386: codeaudit.common.v1.DSHRuntimeService.PauseAnalysis:output_type -> google.protobuf.Empty
-	266, // 387: codeaudit.common.v1.DSHRuntimeService.ResumeAnalysis:output_type -> google.protobuf.Empty
-	188, // 388: codeaudit.common.v1.DSHRuntimeService.GetAIInteractionLog:output_type -> codeaudit.common.v1.GetAIInteractionLogResponse
-	188, // 389: codeaudit.common.v1.DSHRuntimeService.StreamAIInteractionLog:output_type -> codeaudit.common.v1.GetAIInteractionLogResponse
-	191, // 390: codeaudit.common.v1.CodeAnalysisService.AnalyzeCode:output_type -> codeaudit.common.v1.AnalyzeCodeResponse
-	193, // 391: codeaudit.common.v1.CodeAnalysisService.QueryCPG:output_type -> codeaudit.common.v1.QueryCPGResponse
-	195, // 392: codeaudit.common.v1.CodeAnalysisService.GetCallGraph:output_type -> codeaudit.common.v1.CallGraph
-	197, // 393: codeaudit.common.v1.CodeAnalysisService.GetDataFlow:output_type -> codeaudit.common.v1.DataFlowGraph
-	198, // 394: codeaudit.common.v1.CodeAnalysisService.GetAnalysisProgress:output_type -> codeaudit.common.v1.CodeAnalysisProgress
-	200, // 395: codeaudit.common.v1.SASTAdapterService.RunSASTScan:output_type -> codeaudit.common.v1.RunSASTScanResponse
-	202, // 396: codeaudit.common.v1.SASTAdapterService.RunMultipleScans:output_type -> codeaudit.common.v1.RunMultipleScansResponse
-	204, // 397: codeaudit.common.v1.SASTAdapterService.ListAvailableTools:output_type -> codeaudit.common.v1.ListAvailableToolsResponse
-	206, // 398: codeaudit.common.v1.SASTAdapterService.GetToolInfo:output_type -> codeaudit.common.v1.SASTToolInfo
-	208, // 399: codeaudit.common.v1.SASTAdapterService.ValidateToolConfig:output_type -> codeaudit.common.v1.ValidateToolConfigResponse
-	210, // 400: codeaudit.common.v1.SASTAdapterService.GetScanProgress:output_type -> codeaudit.common.v1.ScanProgress
-	212, // 401: codeaudit.common.v1.SASTFusionService.FuseResults:output_type -> codeaudit.common.v1.FuseResultsResponse
-	214, // 402: codeaudit.common.v1.SASTFusionService.AlignLocations:output_type -> codeaudit.common.v1.AlignLocationsResponse
-	216, // 403: codeaudit.common.v1.SASTFusionService.ClusterFindings:output_type -> codeaudit.common.v1.ClusterFindingsResponse
-	218, // 404: codeaudit.common.v1.SASTFusionService.ResolveConflicts:output_type -> codeaudit.common.v1.ResolveConflictsResponse
-	219, // 405: codeaudit.common.v1.SASTFusionService.GetFusionConfig:output_type -> codeaudit.common.v1.FusionConfig
-	219, // 406: codeaudit.common.v1.SASTFusionService.UpdateFusionConfig:output_type -> codeaudit.common.v1.FusionConfig
-	223, // 407: codeaudit.common.v1.SASTFusionService.CompareResults:output_type -> codeaudit.common.v1.CompareResultsResponse
-	60,  // 408: codeaudit.common.v1.SASTFusionService.CalculateMetrics:output_type -> codeaudit.common.v1.ComparisonMetrics
-	226, // 409: codeaudit.common.v1.SASTFusionService.GenerateComparisonReport:output_type -> codeaudit.common.v1.ComparisonReport
-	74,  // 410: codeaudit.common.v1.StorageService.UploadFile:output_type -> codeaudit.common.v1.StoredFile
-	229, // 411: codeaudit.common.v1.StorageService.DownloadFile:output_type -> codeaudit.common.v1.DownloadFileChunk
-	231, // 412: codeaudit.common.v1.StorageService.GetPresignedUrl:output_type -> codeaudit.common.v1.GetPresignedUrlResponse
-	74,  // 413: codeaudit.common.v1.StorageService.GetFileInfo:output_type -> codeaudit.common.v1.StoredFile
-	266, // 414: codeaudit.common.v1.StorageService.DeleteFile:output_type -> google.protobuf.Empty
-	235, // 415: codeaudit.common.v1.StorageService.ListFiles:output_type -> codeaudit.common.v1.ListFilesResponse
-	266, // 416: codeaudit.common.v1.NotificationService.SendNotification:output_type -> google.protobuf.Empty
-	266, // 417: codeaudit.common.v1.NotificationService.SendBatchNotification:output_type -> google.protobuf.Empty
-	243, // 418: codeaudit.common.v1.NotificationService.ListNotifications:output_type -> codeaudit.common.v1.ListNotificationsResponse
-	73,  // 419: codeaudit.common.v1.NotificationService.MarkNotificationRead:output_type -> codeaudit.common.v1.Notification
-	316, // [316:420] is the sub-list for method output_type
-	212, // [212:316] is the sub-list for method input_type
-	212, // [212:212] is the sub-list for extension type_name
-	212, // [212:212] is the sub-list for extension extendee
-	0,   // [0:212] is the sub-list for field type_name
+	281, // 177: codeaudit.common.v1.AnalysisProgressEvent.timestamp:type_name -> google.protobuf.Timestamp
+	275, // 178: codeaudit.common.v1.InferenceProviderInfo.config:type_name -> codeaudit.common.v1.InferenceProviderInfo.ConfigEntry
+	187, // 179: codeaudit.common.v1.ListInferenceProvidersResponse.providers:type_name -> codeaudit.common.v1.InferenceProviderInfo
+	33,  // 180: codeaudit.common.v1.UpsertInferenceProviderRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
+	276, // 181: codeaudit.common.v1.UpsertInferenceProviderRequest.credentials:type_name -> codeaudit.common.v1.UpsertInferenceProviderRequest.CredentialsEntry
+	277, // 182: codeaudit.common.v1.UpsertInferenceProviderRequest.config:type_name -> codeaudit.common.v1.UpsertInferenceProviderRequest.ConfigEntry
+	33,  // 183: codeaudit.common.v1.DeleteInferenceProviderRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
+	33,  // 184: codeaudit.common.v1.SetInferenceRouteRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
+	198, // 185: codeaudit.common.v1.SetInferenceRouteResponse.validated_endpoints:type_name -> codeaudit.common.v1.ValidatedEndpoint
+	33,  // 186: codeaudit.common.v1.AnalyzeCodeRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
+	39,  // 187: codeaudit.common.v1.AnalyzeCodeResponse.result:type_name -> codeaudit.common.v1.CodeAnalysisResult
+	33,  // 188: codeaudit.common.v1.RunSASTScanRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
+	278, // 189: codeaudit.common.v1.RunSASTScanRequest.tool_config:type_name -> codeaudit.common.v1.RunSASTScanRequest.ToolConfigEntry
+	46,  // 190: codeaudit.common.v1.RunSASTScanResponse.result:type_name -> codeaudit.common.v1.ToolScanResult
+	33,  // 191: codeaudit.common.v1.RunMultipleScansRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
+	45,  // 192: codeaudit.common.v1.RunMultipleScansResponse.result:type_name -> codeaudit.common.v1.SASTScanResult
+	219, // 193: codeaudit.common.v1.ListAvailableToolsResponse.tools:type_name -> codeaudit.common.v1.SASTToolInfo
+	279, // 194: codeaudit.common.v1.ValidateToolConfigRequest.tool_config:type_name -> codeaudit.common.v1.ValidateToolConfigRequest.ToolConfigEntry
+	10,  // 195: codeaudit.common.v1.ScanProgress.status:type_name -> codeaudit.common.v1.ScanStatus
+	33,  // 196: codeaudit.common.v1.FuseResultsRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
+	53,  // 197: codeaudit.common.v1.FuseResultsResponse.result:type_name -> codeaudit.common.v1.FusionResult
+	56,  // 198: codeaudit.common.v1.AlignLocationsResponse.aligned_groups:type_name -> codeaudit.common.v1.MergeGroup
+	56,  // 199: codeaudit.common.v1.ClusterFindingsResponse.clusters:type_name -> codeaudit.common.v1.MergeGroup
+	57,  // 200: codeaudit.common.v1.ResolveConflictsResponse.resolved:type_name -> codeaudit.common.v1.ConflictItem
+	280, // 201: codeaudit.common.v1.FusionConfig.config:type_name -> codeaudit.common.v1.FusionConfig.ConfigEntry
+	232, // 202: codeaudit.common.v1.UpdateFusionConfigRequest.config:type_name -> codeaudit.common.v1.FusionConfig
+	59,  // 203: codeaudit.common.v1.CompareResultsResponse.summary:type_name -> codeaudit.common.v1.ComparisonSummary
+	12,  // 204: codeaudit.common.v1.GenerateComparisonReportRequest.format:type_name -> codeaudit.common.v1.ReportFormat
+	59,  // 205: codeaudit.common.v1.ComparisonReport.summary:type_name -> codeaudit.common.v1.ComparisonSummary
+	26,  // 206: codeaudit.common.v1.GetPresignedUrlRequest.operation:type_name -> codeaudit.common.v1.GetPresignedUrlRequest.UrlOp
+	281, // 207: codeaudit.common.v1.GetPresignedUrlResponse.expires_at:type_name -> google.protobuf.Timestamp
+	34,  // 208: codeaudit.common.v1.ListFilesRequest.pagination:type_name -> codeaudit.common.v1.PaginationRequest
+	74,  // 209: codeaudit.common.v1.ListFilesResponse.files:type_name -> codeaudit.common.v1.StoredFile
+	35,  // 210: codeaudit.common.v1.ListFilesResponse.pagination:type_name -> codeaudit.common.v1.PaginationResponse
+	33,  // 211: codeaudit.common.v1.SendNotificationRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
+	73,  // 212: codeaudit.common.v1.SendNotificationRequest.notification:type_name -> codeaudit.common.v1.Notification
+	33,  // 213: codeaudit.common.v1.SendBatchNotificationRequest.metadata:type_name -> codeaudit.common.v1.RequestMetadata
+	73,  // 214: codeaudit.common.v1.SendBatchNotificationRequest.notifications:type_name -> codeaudit.common.v1.Notification
+	34,  // 215: codeaudit.common.v1.ListNotificationsRequest.pagination:type_name -> codeaudit.common.v1.PaginationRequest
+	73,  // 216: codeaudit.common.v1.ListNotificationsResponse.notifications:type_name -> codeaudit.common.v1.Notification
+	35,  // 217: codeaudit.common.v1.ListNotificationsResponse.pagination:type_name -> codeaudit.common.v1.PaginationResponse
+	44,  // 218: codeaudit.common.v1.LanguageStats.LanguagesEntry.value:type_name -> codeaudit.common.v1.LanguageInfo
+	46,  // 219: codeaudit.common.v1.SASTScanResult.ResultsEntry.value:type_name -> codeaudit.common.v1.ToolScanResult
+	75,  // 220: codeaudit.common.v1.TaskService.CreateScanTask:input_type -> codeaudit.common.v1.CreateScanTaskRequest
+	76,  // 221: codeaudit.common.v1.TaskService.GetScanTask:input_type -> codeaudit.common.v1.GetScanTaskRequest
+	77,  // 222: codeaudit.common.v1.TaskService.CancelScanTask:input_type -> codeaudit.common.v1.CancelScanTaskRequest
+	78,  // 223: codeaudit.common.v1.TaskService.RetryScanTask:input_type -> codeaudit.common.v1.RetryScanTaskRequest
+	79,  // 224: codeaudit.common.v1.TaskService.ListScanTasks:input_type -> codeaudit.common.v1.ListScanTasksRequest
+	81,  // 225: codeaudit.common.v1.TaskService.StartTask:input_type -> codeaudit.common.v1.StartTaskRequest
+	251, // 226: codeaudit.common.v1.TaskService.PauseTask:input_type -> codeaudit.common.v1.PauseTaskRequest
+	252, // 227: codeaudit.common.v1.TaskService.ResumeTask:input_type -> codeaudit.common.v1.ResumeTaskRequest
+	82,  // 228: codeaudit.common.v1.TaskService.CompleteTask:input_type -> codeaudit.common.v1.CompleteTaskRequest
+	83,  // 229: codeaudit.common.v1.TaskService.FailTask:input_type -> codeaudit.common.v1.FailTaskRequest
+	84,  // 230: codeaudit.common.v1.TaskService.UpdateStageStatus:input_type -> codeaudit.common.v1.UpdateStageStatusRequest
+	85,  // 231: codeaudit.common.v1.TaskService.GetTaskProgress:input_type -> codeaudit.common.v1.GetTaskProgressRequest
+	86,  // 232: codeaudit.common.v1.TaskService.WatchTaskProgress:input_type -> codeaudit.common.v1.WatchTaskProgressRequest
+	87,  // 233: codeaudit.common.v1.TaskService.ReportStageComplete:input_type -> codeaudit.common.v1.ReportStageCompleteRequest
+	88,  // 234: codeaudit.common.v1.TaskService.ReportStageFailed:input_type -> codeaudit.common.v1.ReportStageFailedRequest
+	89,  // 235: codeaudit.common.v1.TaskService.GetTaskContext:input_type -> codeaudit.common.v1.GetTaskContextRequest
+	91,  // 236: codeaudit.common.v1.TaskService.AppendTaskLog:input_type -> codeaudit.common.v1.AppendTaskLogRequest
+	93,  // 237: codeaudit.common.v1.TaskService.GetTaskLogs:input_type -> codeaudit.common.v1.GetTaskLogsRequest
+	95,  // 238: codeaudit.common.v1.TaskService.StreamTaskSnapshot:input_type -> codeaudit.common.v1.StreamTaskSnapshotRequest
+	102, // 239: codeaudit.common.v1.ProjectService.CreateProject:input_type -> codeaudit.common.v1.CreateProjectRequest
+	103, // 240: codeaudit.common.v1.ProjectService.GetProject:input_type -> codeaudit.common.v1.GetProjectRequest
+	104, // 241: codeaudit.common.v1.ProjectService.UpdateProject:input_type -> codeaudit.common.v1.UpdateProjectRequest
+	105, // 242: codeaudit.common.v1.ProjectService.DeleteProject:input_type -> codeaudit.common.v1.DeleteProjectRequest
+	106, // 243: codeaudit.common.v1.ProjectService.ListProjects:input_type -> codeaudit.common.v1.ListProjectsRequest
+	109, // 244: codeaudit.common.v1.ProjectService.GetProjectConfig:input_type -> codeaudit.common.v1.GetProjectConfigRequest
+	110, // 245: codeaudit.common.v1.ProjectService.UpdateProjectConfig:input_type -> codeaudit.common.v1.UpdateProjectConfigRequest
+	112, // 246: codeaudit.common.v1.ProjectService.GetProjectStats:input_type -> codeaudit.common.v1.GetProjectStatsRequest
+	114, // 247: codeaudit.common.v1.ProjectService.AddProjectMember:input_type -> codeaudit.common.v1.AddProjectMemberRequest
+	115, // 248: codeaudit.common.v1.ProjectService.RemoveProjectMember:input_type -> codeaudit.common.v1.RemoveProjectMemberRequest
+	116, // 249: codeaudit.common.v1.ProjectService.ListProjectMembers:input_type -> codeaudit.common.v1.ListProjectMembersRequest
+	119, // 250: codeaudit.common.v1.UserService.Login:input_type -> codeaudit.common.v1.LoginRequest
+	121, // 251: codeaudit.common.v1.UserService.Logout:input_type -> codeaudit.common.v1.LogoutRequest
+	122, // 252: codeaudit.common.v1.UserService.RefreshToken:input_type -> codeaudit.common.v1.RefreshTokenRequest
+	124, // 253: codeaudit.common.v1.UserService.GetCurrentUser:input_type -> codeaudit.common.v1.GetCurrentUserRequest
+	125, // 254: codeaudit.common.v1.UserService.GetUser:input_type -> codeaudit.common.v1.GetUserRequest
+	126, // 255: codeaudit.common.v1.UserService.UpdateUser:input_type -> codeaudit.common.v1.UpdateUserRequest
+	127, // 256: codeaudit.common.v1.UserService.ValidatePermission:input_type -> codeaudit.common.v1.ValidatePermissionRequest
+	129, // 257: codeaudit.common.v1.UserService.GetUserPermissions:input_type -> codeaudit.common.v1.GetUserPermissionsRequest
+	131, // 258: codeaudit.common.v1.UserService.RegisterUser:input_type -> codeaudit.common.v1.RegisterUserRequest
+	132, // 259: codeaudit.common.v1.UserService.ListUsers:input_type -> codeaudit.common.v1.ListUsersRequest
+	134, // 260: codeaudit.common.v1.UserService.CreateUser:input_type -> codeaudit.common.v1.CreateUserRequest
+	135, // 261: codeaudit.common.v1.UserService.ChangePassword:input_type -> codeaudit.common.v1.ChangePasswordRequest
+	136, // 262: codeaudit.common.v1.UserService.ResetPassword:input_type -> codeaudit.common.v1.ResetPasswordRequest
+	139, // 263: codeaudit.common.v1.ResultService.CreateFinding:input_type -> codeaudit.common.v1.CreateFindingRequest
+	140, // 264: codeaudit.common.v1.ResultService.GetFinding:input_type -> codeaudit.common.v1.GetFindingRequest
+	141, // 265: codeaudit.common.v1.ResultService.UpdateFinding:input_type -> codeaudit.common.v1.UpdateFindingRequest
+	142, // 266: codeaudit.common.v1.ResultService.DeleteFinding:input_type -> codeaudit.common.v1.DeleteFindingRequest
+	143, // 267: codeaudit.common.v1.ResultService.ListFindings:input_type -> codeaudit.common.v1.ListFindingsRequest
+	145, // 268: codeaudit.common.v1.ResultService.BatchCreateFindings:input_type -> codeaudit.common.v1.BatchCreateFindingsRequest
+	147, // 269: codeaudit.common.v1.ResultService.BatchUpdateFindings:input_type -> codeaudit.common.v1.BatchUpdateFindingsRequest
+	149, // 270: codeaudit.common.v1.ResultService.BatchUpdateVerdict:input_type -> codeaudit.common.v1.BatchUpdateVerdictRequest
+	151, // 271: codeaudit.common.v1.ResultService.UpdateVerdict:input_type -> codeaudit.common.v1.UpdateVerdictRequest
+	152, // 272: codeaudit.common.v1.ResultService.GetFindingsByVerdict:input_type -> codeaudit.common.v1.GetFindingsByVerdictRequest
+	154, // 273: codeaudit.common.v1.ResultService.GetTaskResultStats:input_type -> codeaudit.common.v1.GetTaskResultStatsRequest
+	155, // 274: codeaudit.common.v1.ResultService.ExportFindings:input_type -> codeaudit.common.v1.ExportFindingsRequest
+	157, // 275: codeaudit.common.v1.ResultService.SubmitFindingFeedback:input_type -> codeaudit.common.v1.SubmitFindingFeedbackRequest
+	159, // 276: codeaudit.common.v1.ReportService.GenerateReport:input_type -> codeaudit.common.v1.GenerateReportRequest
+	161, // 277: codeaudit.common.v1.ReportService.GetReport:input_type -> codeaudit.common.v1.GetReportRequest
+	163, // 278: codeaudit.common.v1.ReportService.ListReports:input_type -> codeaudit.common.v1.ListReportsRequest
+	165, // 279: codeaudit.common.v1.ReportService.ListTemplates:input_type -> codeaudit.common.v1.ListTemplatesRequest
+	168, // 280: codeaudit.common.v1.ReportService.GetTemplate:input_type -> codeaudit.common.v1.GetTemplateRequest
+	169, // 281: codeaudit.common.v1.ReportService.DownloadReport:input_type -> codeaudit.common.v1.DownloadReportRequest
+	171, // 282: codeaudit.common.v1.DSHRuntimeService.RunAIAnalysis:input_type -> codeaudit.common.v1.RunAIAnalysisRequest
+	173, // 283: codeaudit.common.v1.DSHRuntimeService.VerifySASTResults:input_type -> codeaudit.common.v1.VerifySASTResultsRequest
+	175, // 284: codeaudit.common.v1.DSHRuntimeService.SearchMissedVulns:input_type -> codeaudit.common.v1.SearchMissedVulnsRequest
+	177, // 285: codeaudit.common.v1.DSHRuntimeService.ReviewSASTResults:input_type -> codeaudit.common.v1.ReviewSASTResultsRequest
+	180, // 286: codeaudit.common.v1.DSHRuntimeService.GetAnalysisProgress:input_type -> codeaudit.common.v1.GetAnalysisProgressRequest
+	182, // 287: codeaudit.common.v1.DSHRuntimeService.WatchAnalysisProgress:input_type -> codeaudit.common.v1.WatchAnalysisProgressRequest
+	184, // 288: codeaudit.common.v1.DSHRuntimeService.GetSessionStatus:input_type -> codeaudit.common.v1.GetSessionStatusRequest
+	186, // 289: codeaudit.common.v1.DSHRuntimeService.CancelAnalysis:input_type -> codeaudit.common.v1.CancelAnalysisRequest
+	253, // 290: codeaudit.common.v1.DSHRuntimeService.PauseAnalysis:input_type -> codeaudit.common.v1.PauseAnalysisRequest
+	254, // 291: codeaudit.common.v1.DSHRuntimeService.ResumeAnalysis:input_type -> codeaudit.common.v1.ResumeAnalysisRequest
+	200, // 292: codeaudit.common.v1.DSHRuntimeService.GetAIInteractionLog:input_type -> codeaudit.common.v1.GetAIInteractionLogRequest
+	202, // 293: codeaudit.common.v1.DSHRuntimeService.StreamAIInteractionLog:input_type -> codeaudit.common.v1.StreamAIInteractionLogRequest
+	188, // 294: codeaudit.common.v1.DSHRuntimeService.ListInferenceProviders:input_type -> codeaudit.common.v1.ListInferenceProvidersRequest
+	190, // 295: codeaudit.common.v1.DSHRuntimeService.GetInferenceProvider:input_type -> codeaudit.common.v1.GetInferenceProviderRequest
+	191, // 296: codeaudit.common.v1.DSHRuntimeService.UpsertInferenceProvider:input_type -> codeaudit.common.v1.UpsertInferenceProviderRequest
+	193, // 297: codeaudit.common.v1.DSHRuntimeService.DeleteInferenceProvider:input_type -> codeaudit.common.v1.DeleteInferenceProviderRequest
+	195, // 298: codeaudit.common.v1.DSHRuntimeService.GetInferenceRoute:input_type -> codeaudit.common.v1.GetInferenceRouteRequest
+	197, // 299: codeaudit.common.v1.DSHRuntimeService.SetInferenceRoute:input_type -> codeaudit.common.v1.SetInferenceRouteRequest
+	203, // 300: codeaudit.common.v1.CodeAnalysisService.AnalyzeCode:input_type -> codeaudit.common.v1.AnalyzeCodeRequest
+	205, // 301: codeaudit.common.v1.CodeAnalysisService.QueryCPG:input_type -> codeaudit.common.v1.QueryCPGRequest
+	207, // 302: codeaudit.common.v1.CodeAnalysisService.GetCallGraph:input_type -> codeaudit.common.v1.GetCallGraphRequest
+	209, // 303: codeaudit.common.v1.CodeAnalysisService.GetDataFlow:input_type -> codeaudit.common.v1.GetDataFlowRequest
+	180, // 304: codeaudit.common.v1.CodeAnalysisService.GetAnalysisProgress:input_type -> codeaudit.common.v1.GetAnalysisProgressRequest
+	212, // 305: codeaudit.common.v1.SASTAdapterService.RunSASTScan:input_type -> codeaudit.common.v1.RunSASTScanRequest
+	214, // 306: codeaudit.common.v1.SASTAdapterService.RunMultipleScans:input_type -> codeaudit.common.v1.RunMultipleScansRequest
+	216, // 307: codeaudit.common.v1.SASTAdapterService.ListAvailableTools:input_type -> codeaudit.common.v1.ListAvailableToolsRequest
+	218, // 308: codeaudit.common.v1.SASTAdapterService.GetToolInfo:input_type -> codeaudit.common.v1.GetToolInfoRequest
+	220, // 309: codeaudit.common.v1.SASTAdapterService.ValidateToolConfig:input_type -> codeaudit.common.v1.ValidateToolConfigRequest
+	222, // 310: codeaudit.common.v1.SASTAdapterService.GetScanProgress:input_type -> codeaudit.common.v1.GetScanProgressRequest
+	224, // 311: codeaudit.common.v1.SASTFusionService.FuseResults:input_type -> codeaudit.common.v1.FuseResultsRequest
+	226, // 312: codeaudit.common.v1.SASTFusionService.AlignLocations:input_type -> codeaudit.common.v1.AlignLocationsRequest
+	228, // 313: codeaudit.common.v1.SASTFusionService.ClusterFindings:input_type -> codeaudit.common.v1.ClusterFindingsRequest
+	230, // 314: codeaudit.common.v1.SASTFusionService.ResolveConflicts:input_type -> codeaudit.common.v1.ResolveConflictsRequest
+	233, // 315: codeaudit.common.v1.SASTFusionService.GetFusionConfig:input_type -> codeaudit.common.v1.GetFusionConfigRequest
+	234, // 316: codeaudit.common.v1.SASTFusionService.UpdateFusionConfig:input_type -> codeaudit.common.v1.UpdateFusionConfigRequest
+	235, // 317: codeaudit.common.v1.SASTFusionService.CompareResults:input_type -> codeaudit.common.v1.CompareResultsRequest
+	237, // 318: codeaudit.common.v1.SASTFusionService.CalculateMetrics:input_type -> codeaudit.common.v1.CalculateMetricsRequest
+	238, // 319: codeaudit.common.v1.SASTFusionService.GenerateComparisonReport:input_type -> codeaudit.common.v1.GenerateComparisonReportRequest
+	240, // 320: codeaudit.common.v1.StorageService.UploadFile:input_type -> codeaudit.common.v1.UploadFileChunk
+	241, // 321: codeaudit.common.v1.StorageService.DownloadFile:input_type -> codeaudit.common.v1.DownloadFileRequest
+	243, // 322: codeaudit.common.v1.StorageService.GetPresignedUrl:input_type -> codeaudit.common.v1.GetPresignedUrlRequest
+	245, // 323: codeaudit.common.v1.StorageService.GetFileInfo:input_type -> codeaudit.common.v1.GetFileInfoRequest
+	246, // 324: codeaudit.common.v1.StorageService.DeleteFile:input_type -> codeaudit.common.v1.DeleteFileRequest
+	247, // 325: codeaudit.common.v1.StorageService.ListFiles:input_type -> codeaudit.common.v1.ListFilesRequest
+	249, // 326: codeaudit.common.v1.NotificationService.SendNotification:input_type -> codeaudit.common.v1.SendNotificationRequest
+	250, // 327: codeaudit.common.v1.NotificationService.SendBatchNotification:input_type -> codeaudit.common.v1.SendBatchNotificationRequest
+	255, // 328: codeaudit.common.v1.NotificationService.ListNotifications:input_type -> codeaudit.common.v1.ListNotificationsRequest
+	257, // 329: codeaudit.common.v1.NotificationService.MarkNotificationRead:input_type -> codeaudit.common.v1.MarkNotificationReadRequest
+	97,  // 330: codeaudit.common.v1.TaskService.CreateScanTask:output_type -> codeaudit.common.v1.ScanTask
+	97,  // 331: codeaudit.common.v1.TaskService.GetScanTask:output_type -> codeaudit.common.v1.ScanTask
+	97,  // 332: codeaudit.common.v1.TaskService.CancelScanTask:output_type -> codeaudit.common.v1.ScanTask
+	97,  // 333: codeaudit.common.v1.TaskService.RetryScanTask:output_type -> codeaudit.common.v1.ScanTask
+	80,  // 334: codeaudit.common.v1.TaskService.ListScanTasks:output_type -> codeaudit.common.v1.ListScanTasksResponse
+	97,  // 335: codeaudit.common.v1.TaskService.StartTask:output_type -> codeaudit.common.v1.ScanTask
+	97,  // 336: codeaudit.common.v1.TaskService.PauseTask:output_type -> codeaudit.common.v1.ScanTask
+	97,  // 337: codeaudit.common.v1.TaskService.ResumeTask:output_type -> codeaudit.common.v1.ScanTask
+	97,  // 338: codeaudit.common.v1.TaskService.CompleteTask:output_type -> codeaudit.common.v1.ScanTask
+	97,  // 339: codeaudit.common.v1.TaskService.FailTask:output_type -> codeaudit.common.v1.ScanTask
+	97,  // 340: codeaudit.common.v1.TaskService.UpdateStageStatus:output_type -> codeaudit.common.v1.ScanTask
+	98,  // 341: codeaudit.common.v1.TaskService.GetTaskProgress:output_type -> codeaudit.common.v1.TaskProgress
+	99,  // 342: codeaudit.common.v1.TaskService.WatchTaskProgress:output_type -> codeaudit.common.v1.TaskProgressEvent
+	282, // 343: codeaudit.common.v1.TaskService.ReportStageComplete:output_type -> google.protobuf.Empty
+	282, // 344: codeaudit.common.v1.TaskService.ReportStageFailed:output_type -> google.protobuf.Empty
+	100, // 345: codeaudit.common.v1.TaskService.GetTaskContext:output_type -> codeaudit.common.v1.TaskContext
+	92,  // 346: codeaudit.common.v1.TaskService.AppendTaskLog:output_type -> codeaudit.common.v1.AppendTaskLogResponse
+	94,  // 347: codeaudit.common.v1.TaskService.GetTaskLogs:output_type -> codeaudit.common.v1.GetTaskLogsResponse
+	96,  // 348: codeaudit.common.v1.TaskService.StreamTaskSnapshot:output_type -> codeaudit.common.v1.TaskSnapshotDelta
+	101, // 349: codeaudit.common.v1.ProjectService.CreateProject:output_type -> codeaudit.common.v1.Project
+	101, // 350: codeaudit.common.v1.ProjectService.GetProject:output_type -> codeaudit.common.v1.Project
+	101, // 351: codeaudit.common.v1.ProjectService.UpdateProject:output_type -> codeaudit.common.v1.Project
+	282, // 352: codeaudit.common.v1.ProjectService.DeleteProject:output_type -> google.protobuf.Empty
+	107, // 353: codeaudit.common.v1.ProjectService.ListProjects:output_type -> codeaudit.common.v1.ListProjectsResponse
+	108, // 354: codeaudit.common.v1.ProjectService.GetProjectConfig:output_type -> codeaudit.common.v1.ProjectConfig
+	108, // 355: codeaudit.common.v1.ProjectService.UpdateProjectConfig:output_type -> codeaudit.common.v1.ProjectConfig
+	111, // 356: codeaudit.common.v1.ProjectService.GetProjectStats:output_type -> codeaudit.common.v1.ProjectStats
+	113, // 357: codeaudit.common.v1.ProjectService.AddProjectMember:output_type -> codeaudit.common.v1.ProjectMember
+	282, // 358: codeaudit.common.v1.ProjectService.RemoveProjectMember:output_type -> google.protobuf.Empty
+	117, // 359: codeaudit.common.v1.ProjectService.ListProjectMembers:output_type -> codeaudit.common.v1.ListProjectMembersResponse
+	120, // 360: codeaudit.common.v1.UserService.Login:output_type -> codeaudit.common.v1.LoginResponse
+	282, // 361: codeaudit.common.v1.UserService.Logout:output_type -> google.protobuf.Empty
+	123, // 362: codeaudit.common.v1.UserService.RefreshToken:output_type -> codeaudit.common.v1.RefreshTokenResponse
+	118, // 363: codeaudit.common.v1.UserService.GetCurrentUser:output_type -> codeaudit.common.v1.User
+	118, // 364: codeaudit.common.v1.UserService.GetUser:output_type -> codeaudit.common.v1.User
+	118, // 365: codeaudit.common.v1.UserService.UpdateUser:output_type -> codeaudit.common.v1.User
+	128, // 366: codeaudit.common.v1.UserService.ValidatePermission:output_type -> codeaudit.common.v1.ValidatePermissionResponse
+	130, // 367: codeaudit.common.v1.UserService.GetUserPermissions:output_type -> codeaudit.common.v1.UserPermissions
+	120, // 368: codeaudit.common.v1.UserService.RegisterUser:output_type -> codeaudit.common.v1.LoginResponse
+	133, // 369: codeaudit.common.v1.UserService.ListUsers:output_type -> codeaudit.common.v1.ListUsersResponse
+	118, // 370: codeaudit.common.v1.UserService.CreateUser:output_type -> codeaudit.common.v1.User
+	282, // 371: codeaudit.common.v1.UserService.ChangePassword:output_type -> google.protobuf.Empty
+	137, // 372: codeaudit.common.v1.UserService.ResetPassword:output_type -> codeaudit.common.v1.ResetPasswordResponse
+	138, // 373: codeaudit.common.v1.ResultService.CreateFinding:output_type -> codeaudit.common.v1.AuditFinding
+	138, // 374: codeaudit.common.v1.ResultService.GetFinding:output_type -> codeaudit.common.v1.AuditFinding
+	138, // 375: codeaudit.common.v1.ResultService.UpdateFinding:output_type -> codeaudit.common.v1.AuditFinding
+	282, // 376: codeaudit.common.v1.ResultService.DeleteFinding:output_type -> google.protobuf.Empty
+	144, // 377: codeaudit.common.v1.ResultService.ListFindings:output_type -> codeaudit.common.v1.ListFindingsResponse
+	146, // 378: codeaudit.common.v1.ResultService.BatchCreateFindings:output_type -> codeaudit.common.v1.BatchCreateFindingsResponse
+	148, // 379: codeaudit.common.v1.ResultService.BatchUpdateFindings:output_type -> codeaudit.common.v1.BatchUpdateFindingsResponse
+	150, // 380: codeaudit.common.v1.ResultService.BatchUpdateVerdict:output_type -> codeaudit.common.v1.BatchUpdateVerdictResponse
+	138, // 381: codeaudit.common.v1.ResultService.UpdateVerdict:output_type -> codeaudit.common.v1.AuditFinding
+	144, // 382: codeaudit.common.v1.ResultService.GetFindingsByVerdict:output_type -> codeaudit.common.v1.ListFindingsResponse
+	153, // 383: codeaudit.common.v1.ResultService.GetTaskResultStats:output_type -> codeaudit.common.v1.ResultStats
+	156, // 384: codeaudit.common.v1.ResultService.ExportFindings:output_type -> codeaudit.common.v1.ExportFindingsResponse
+	158, // 385: codeaudit.common.v1.ResultService.SubmitFindingFeedback:output_type -> codeaudit.common.v1.SubmitFindingFeedbackResponse
+	160, // 386: codeaudit.common.v1.ReportService.GenerateReport:output_type -> codeaudit.common.v1.GenerateReportResponse
+	162, // 387: codeaudit.common.v1.ReportService.GetReport:output_type -> codeaudit.common.v1.Report
+	164, // 388: codeaudit.common.v1.ReportService.ListReports:output_type -> codeaudit.common.v1.ListReportsResponse
+	166, // 389: codeaudit.common.v1.ReportService.ListTemplates:output_type -> codeaudit.common.v1.ListTemplatesResponse
+	167, // 390: codeaudit.common.v1.ReportService.GetTemplate:output_type -> codeaudit.common.v1.ReportTemplate
+	170, // 391: codeaudit.common.v1.ReportService.DownloadReport:output_type -> codeaudit.common.v1.ReportChunk
+	172, // 392: codeaudit.common.v1.DSHRuntimeService.RunAIAnalysis:output_type -> codeaudit.common.v1.RunAIAnalysisResponse
+	174, // 393: codeaudit.common.v1.DSHRuntimeService.VerifySASTResults:output_type -> codeaudit.common.v1.VerifySASTResultsResponse
+	176, // 394: codeaudit.common.v1.DSHRuntimeService.SearchMissedVulns:output_type -> codeaudit.common.v1.SearchMissedVulnsResponse
+	179, // 395: codeaudit.common.v1.DSHRuntimeService.ReviewSASTResults:output_type -> codeaudit.common.v1.ReviewSASTResultsResponse
+	181, // 396: codeaudit.common.v1.DSHRuntimeService.GetAnalysisProgress:output_type -> codeaudit.common.v1.AnalysisProgress
+	183, // 397: codeaudit.common.v1.DSHRuntimeService.WatchAnalysisProgress:output_type -> codeaudit.common.v1.AnalysisProgressEvent
+	185, // 398: codeaudit.common.v1.DSHRuntimeService.GetSessionStatus:output_type -> codeaudit.common.v1.SessionStatus
+	282, // 399: codeaudit.common.v1.DSHRuntimeService.CancelAnalysis:output_type -> google.protobuf.Empty
+	282, // 400: codeaudit.common.v1.DSHRuntimeService.PauseAnalysis:output_type -> google.protobuf.Empty
+	282, // 401: codeaudit.common.v1.DSHRuntimeService.ResumeAnalysis:output_type -> google.protobuf.Empty
+	201, // 402: codeaudit.common.v1.DSHRuntimeService.GetAIInteractionLog:output_type -> codeaudit.common.v1.GetAIInteractionLogResponse
+	201, // 403: codeaudit.common.v1.DSHRuntimeService.StreamAIInteractionLog:output_type -> codeaudit.common.v1.GetAIInteractionLogResponse
+	189, // 404: codeaudit.common.v1.DSHRuntimeService.ListInferenceProviders:output_type -> codeaudit.common.v1.ListInferenceProvidersResponse
+	187, // 405: codeaudit.common.v1.DSHRuntimeService.GetInferenceProvider:output_type -> codeaudit.common.v1.InferenceProviderInfo
+	192, // 406: codeaudit.common.v1.DSHRuntimeService.UpsertInferenceProvider:output_type -> codeaudit.common.v1.UpsertInferenceProviderResponse
+	194, // 407: codeaudit.common.v1.DSHRuntimeService.DeleteInferenceProvider:output_type -> codeaudit.common.v1.DeleteInferenceProviderResponse
+	196, // 408: codeaudit.common.v1.DSHRuntimeService.GetInferenceRoute:output_type -> codeaudit.common.v1.InferenceRouteInfo
+	199, // 409: codeaudit.common.v1.DSHRuntimeService.SetInferenceRoute:output_type -> codeaudit.common.v1.SetInferenceRouteResponse
+	204, // 410: codeaudit.common.v1.CodeAnalysisService.AnalyzeCode:output_type -> codeaudit.common.v1.AnalyzeCodeResponse
+	206, // 411: codeaudit.common.v1.CodeAnalysisService.QueryCPG:output_type -> codeaudit.common.v1.QueryCPGResponse
+	208, // 412: codeaudit.common.v1.CodeAnalysisService.GetCallGraph:output_type -> codeaudit.common.v1.CallGraph
+	210, // 413: codeaudit.common.v1.CodeAnalysisService.GetDataFlow:output_type -> codeaudit.common.v1.DataFlowGraph
+	211, // 414: codeaudit.common.v1.CodeAnalysisService.GetAnalysisProgress:output_type -> codeaudit.common.v1.CodeAnalysisProgress
+	213, // 415: codeaudit.common.v1.SASTAdapterService.RunSASTScan:output_type -> codeaudit.common.v1.RunSASTScanResponse
+	215, // 416: codeaudit.common.v1.SASTAdapterService.RunMultipleScans:output_type -> codeaudit.common.v1.RunMultipleScansResponse
+	217, // 417: codeaudit.common.v1.SASTAdapterService.ListAvailableTools:output_type -> codeaudit.common.v1.ListAvailableToolsResponse
+	219, // 418: codeaudit.common.v1.SASTAdapterService.GetToolInfo:output_type -> codeaudit.common.v1.SASTToolInfo
+	221, // 419: codeaudit.common.v1.SASTAdapterService.ValidateToolConfig:output_type -> codeaudit.common.v1.ValidateToolConfigResponse
+	223, // 420: codeaudit.common.v1.SASTAdapterService.GetScanProgress:output_type -> codeaudit.common.v1.ScanProgress
+	225, // 421: codeaudit.common.v1.SASTFusionService.FuseResults:output_type -> codeaudit.common.v1.FuseResultsResponse
+	227, // 422: codeaudit.common.v1.SASTFusionService.AlignLocations:output_type -> codeaudit.common.v1.AlignLocationsResponse
+	229, // 423: codeaudit.common.v1.SASTFusionService.ClusterFindings:output_type -> codeaudit.common.v1.ClusterFindingsResponse
+	231, // 424: codeaudit.common.v1.SASTFusionService.ResolveConflicts:output_type -> codeaudit.common.v1.ResolveConflictsResponse
+	232, // 425: codeaudit.common.v1.SASTFusionService.GetFusionConfig:output_type -> codeaudit.common.v1.FusionConfig
+	232, // 426: codeaudit.common.v1.SASTFusionService.UpdateFusionConfig:output_type -> codeaudit.common.v1.FusionConfig
+	236, // 427: codeaudit.common.v1.SASTFusionService.CompareResults:output_type -> codeaudit.common.v1.CompareResultsResponse
+	60,  // 428: codeaudit.common.v1.SASTFusionService.CalculateMetrics:output_type -> codeaudit.common.v1.ComparisonMetrics
+	239, // 429: codeaudit.common.v1.SASTFusionService.GenerateComparisonReport:output_type -> codeaudit.common.v1.ComparisonReport
+	74,  // 430: codeaudit.common.v1.StorageService.UploadFile:output_type -> codeaudit.common.v1.StoredFile
+	242, // 431: codeaudit.common.v1.StorageService.DownloadFile:output_type -> codeaudit.common.v1.DownloadFileChunk
+	244, // 432: codeaudit.common.v1.StorageService.GetPresignedUrl:output_type -> codeaudit.common.v1.GetPresignedUrlResponse
+	74,  // 433: codeaudit.common.v1.StorageService.GetFileInfo:output_type -> codeaudit.common.v1.StoredFile
+	282, // 434: codeaudit.common.v1.StorageService.DeleteFile:output_type -> google.protobuf.Empty
+	248, // 435: codeaudit.common.v1.StorageService.ListFiles:output_type -> codeaudit.common.v1.ListFilesResponse
+	282, // 436: codeaudit.common.v1.NotificationService.SendNotification:output_type -> google.protobuf.Empty
+	282, // 437: codeaudit.common.v1.NotificationService.SendBatchNotification:output_type -> google.protobuf.Empty
+	256, // 438: codeaudit.common.v1.NotificationService.ListNotifications:output_type -> codeaudit.common.v1.ListNotificationsResponse
+	73,  // 439: codeaudit.common.v1.NotificationService.MarkNotificationRead:output_type -> codeaudit.common.v1.Notification
+	330, // [330:440] is the sub-list for method output_type
+	220, // [220:330] is the sub-list for method input_type
+	220, // [220:220] is the sub-list for extension type_name
+	220, // [220:220] is the sub-list for extension extendee
+	0,   // [0:220] is the sub-list for field type_name
 }
 
 func init() { file_codeaudit_common_proto_init() }
@@ -16997,7 +17790,7 @@ func file_codeaudit_common_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_codeaudit_common_proto_rawDesc), len(file_codeaudit_common_proto_rawDesc)),
 			NumEnums:      27,
-			NumMessages:   238,
+			NumMessages:   254,
 			NumExtensions: 0,
 			NumServices:   11,
 		},

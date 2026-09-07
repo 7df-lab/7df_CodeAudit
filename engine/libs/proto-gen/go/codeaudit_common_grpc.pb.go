@@ -2802,18 +2802,24 @@ var ReportService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	DSHRuntimeService_RunAIAnalysis_FullMethodName          = "/codeaudit.common.v1.DSHRuntimeService/RunAIAnalysis"
-	DSHRuntimeService_VerifySASTResults_FullMethodName      = "/codeaudit.common.v1.DSHRuntimeService/VerifySASTResults"
-	DSHRuntimeService_SearchMissedVulns_FullMethodName      = "/codeaudit.common.v1.DSHRuntimeService/SearchMissedVulns"
-	DSHRuntimeService_ReviewSASTResults_FullMethodName      = "/codeaudit.common.v1.DSHRuntimeService/ReviewSASTResults"
-	DSHRuntimeService_GetAnalysisProgress_FullMethodName    = "/codeaudit.common.v1.DSHRuntimeService/GetAnalysisProgress"
-	DSHRuntimeService_WatchAnalysisProgress_FullMethodName  = "/codeaudit.common.v1.DSHRuntimeService/WatchAnalysisProgress"
-	DSHRuntimeService_GetSessionStatus_FullMethodName       = "/codeaudit.common.v1.DSHRuntimeService/GetSessionStatus"
-	DSHRuntimeService_CancelAnalysis_FullMethodName         = "/codeaudit.common.v1.DSHRuntimeService/CancelAnalysis"
-	DSHRuntimeService_PauseAnalysis_FullMethodName          = "/codeaudit.common.v1.DSHRuntimeService/PauseAnalysis"
-	DSHRuntimeService_ResumeAnalysis_FullMethodName         = "/codeaudit.common.v1.DSHRuntimeService/ResumeAnalysis"
-	DSHRuntimeService_GetAIInteractionLog_FullMethodName    = "/codeaudit.common.v1.DSHRuntimeService/GetAIInteractionLog"
-	DSHRuntimeService_StreamAIInteractionLog_FullMethodName = "/codeaudit.common.v1.DSHRuntimeService/StreamAIInteractionLog"
+	DSHRuntimeService_RunAIAnalysis_FullMethodName           = "/codeaudit.common.v1.DSHRuntimeService/RunAIAnalysis"
+	DSHRuntimeService_VerifySASTResults_FullMethodName       = "/codeaudit.common.v1.DSHRuntimeService/VerifySASTResults"
+	DSHRuntimeService_SearchMissedVulns_FullMethodName       = "/codeaudit.common.v1.DSHRuntimeService/SearchMissedVulns"
+	DSHRuntimeService_ReviewSASTResults_FullMethodName       = "/codeaudit.common.v1.DSHRuntimeService/ReviewSASTResults"
+	DSHRuntimeService_GetAnalysisProgress_FullMethodName     = "/codeaudit.common.v1.DSHRuntimeService/GetAnalysisProgress"
+	DSHRuntimeService_WatchAnalysisProgress_FullMethodName   = "/codeaudit.common.v1.DSHRuntimeService/WatchAnalysisProgress"
+	DSHRuntimeService_GetSessionStatus_FullMethodName        = "/codeaudit.common.v1.DSHRuntimeService/GetSessionStatus"
+	DSHRuntimeService_CancelAnalysis_FullMethodName          = "/codeaudit.common.v1.DSHRuntimeService/CancelAnalysis"
+	DSHRuntimeService_PauseAnalysis_FullMethodName           = "/codeaudit.common.v1.DSHRuntimeService/PauseAnalysis"
+	DSHRuntimeService_ResumeAnalysis_FullMethodName          = "/codeaudit.common.v1.DSHRuntimeService/ResumeAnalysis"
+	DSHRuntimeService_GetAIInteractionLog_FullMethodName     = "/codeaudit.common.v1.DSHRuntimeService/GetAIInteractionLog"
+	DSHRuntimeService_StreamAIInteractionLog_FullMethodName  = "/codeaudit.common.v1.DSHRuntimeService/StreamAIInteractionLog"
+	DSHRuntimeService_ListInferenceProviders_FullMethodName  = "/codeaudit.common.v1.DSHRuntimeService/ListInferenceProviders"
+	DSHRuntimeService_GetInferenceProvider_FullMethodName    = "/codeaudit.common.v1.DSHRuntimeService/GetInferenceProvider"
+	DSHRuntimeService_UpsertInferenceProvider_FullMethodName = "/codeaudit.common.v1.DSHRuntimeService/UpsertInferenceProvider"
+	DSHRuntimeService_DeleteInferenceProvider_FullMethodName = "/codeaudit.common.v1.DSHRuntimeService/DeleteInferenceProvider"
+	DSHRuntimeService_GetInferenceRoute_FullMethodName       = "/codeaudit.common.v1.DSHRuntimeService/GetInferenceRoute"
+	DSHRuntimeService_SetInferenceRoute_FullMethodName       = "/codeaudit.common.v1.DSHRuntimeService/SetInferenceRoute"
 )
 
 // DSHRuntimeServiceClient is the client API for DSHRuntimeService service.
@@ -2843,6 +2849,16 @@ type DSHRuntimeServiceClient interface {
 	// ADR-189 交互日志订阅流：人性化流写入即推增量（字节游标语义与 GetAIInteractionLog
 	// 一致；complete=true 终帧后服务端关流）
 	StreamAIInteractionLog(ctx context.Context, in *StreamAIInteractionLogRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetAIInteractionLogResponse], error)
+	// 推理 provider/路由管理（ADR-217：经 openshell-manager 透传 OpenShell 网关，权威
+	// 存储在网关 gateway.db；本服务只做管道。workspace 由 dsh-runtime 从全局配置
+	// dsh_runtime.sandbox.workspace 注入，不对外暴露；credentials 只进不出——透传
+	// manager→网关加密存储，任何响应不回流）
+	ListInferenceProviders(ctx context.Context, in *ListInferenceProvidersRequest, opts ...grpc.CallOption) (*ListInferenceProvidersResponse, error)
+	GetInferenceProvider(ctx context.Context, in *GetInferenceProviderRequest, opts ...grpc.CallOption) (*InferenceProviderInfo, error)
+	UpsertInferenceProvider(ctx context.Context, in *UpsertInferenceProviderRequest, opts ...grpc.CallOption) (*UpsertInferenceProviderResponse, error)
+	DeleteInferenceProvider(ctx context.Context, in *DeleteInferenceProviderRequest, opts ...grpc.CallOption) (*DeleteInferenceProviderResponse, error)
+	GetInferenceRoute(ctx context.Context, in *GetInferenceRouteRequest, opts ...grpc.CallOption) (*InferenceRouteInfo, error)
+	SetInferenceRoute(ctx context.Context, in *SetInferenceRouteRequest, opts ...grpc.CallOption) (*SetInferenceRouteResponse, error)
 }
 
 type dSHRuntimeServiceClient struct {
@@ -2991,6 +3007,66 @@ func (c *dSHRuntimeServiceClient) StreamAIInteractionLog(ctx context.Context, in
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DSHRuntimeService_StreamAIInteractionLogClient = grpc.ServerStreamingClient[GetAIInteractionLogResponse]
 
+func (c *dSHRuntimeServiceClient) ListInferenceProviders(ctx context.Context, in *ListInferenceProvidersRequest, opts ...grpc.CallOption) (*ListInferenceProvidersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListInferenceProvidersResponse)
+	err := c.cc.Invoke(ctx, DSHRuntimeService_ListInferenceProviders_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *dSHRuntimeServiceClient) GetInferenceProvider(ctx context.Context, in *GetInferenceProviderRequest, opts ...grpc.CallOption) (*InferenceProviderInfo, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InferenceProviderInfo)
+	err := c.cc.Invoke(ctx, DSHRuntimeService_GetInferenceProvider_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *dSHRuntimeServiceClient) UpsertInferenceProvider(ctx context.Context, in *UpsertInferenceProviderRequest, opts ...grpc.CallOption) (*UpsertInferenceProviderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpsertInferenceProviderResponse)
+	err := c.cc.Invoke(ctx, DSHRuntimeService_UpsertInferenceProvider_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *dSHRuntimeServiceClient) DeleteInferenceProvider(ctx context.Context, in *DeleteInferenceProviderRequest, opts ...grpc.CallOption) (*DeleteInferenceProviderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteInferenceProviderResponse)
+	err := c.cc.Invoke(ctx, DSHRuntimeService_DeleteInferenceProvider_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *dSHRuntimeServiceClient) GetInferenceRoute(ctx context.Context, in *GetInferenceRouteRequest, opts ...grpc.CallOption) (*InferenceRouteInfo, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InferenceRouteInfo)
+	err := c.cc.Invoke(ctx, DSHRuntimeService_GetInferenceRoute_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *dSHRuntimeServiceClient) SetInferenceRoute(ctx context.Context, in *SetInferenceRouteRequest, opts ...grpc.CallOption) (*SetInferenceRouteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetInferenceRouteResponse)
+	err := c.cc.Invoke(ctx, DSHRuntimeService_SetInferenceRoute_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DSHRuntimeServiceServer is the server API for DSHRuntimeService service.
 // All implementations must embed UnimplementedDSHRuntimeServiceServer
 // for forward compatibility.
@@ -3018,6 +3094,16 @@ type DSHRuntimeServiceServer interface {
 	// ADR-189 交互日志订阅流：人性化流写入即推增量（字节游标语义与 GetAIInteractionLog
 	// 一致；complete=true 终帧后服务端关流）
 	StreamAIInteractionLog(*StreamAIInteractionLogRequest, grpc.ServerStreamingServer[GetAIInteractionLogResponse]) error
+	// 推理 provider/路由管理（ADR-217：经 openshell-manager 透传 OpenShell 网关，权威
+	// 存储在网关 gateway.db；本服务只做管道。workspace 由 dsh-runtime 从全局配置
+	// dsh_runtime.sandbox.workspace 注入，不对外暴露；credentials 只进不出——透传
+	// manager→网关加密存储，任何响应不回流）
+	ListInferenceProviders(context.Context, *ListInferenceProvidersRequest) (*ListInferenceProvidersResponse, error)
+	GetInferenceProvider(context.Context, *GetInferenceProviderRequest) (*InferenceProviderInfo, error)
+	UpsertInferenceProvider(context.Context, *UpsertInferenceProviderRequest) (*UpsertInferenceProviderResponse, error)
+	DeleteInferenceProvider(context.Context, *DeleteInferenceProviderRequest) (*DeleteInferenceProviderResponse, error)
+	GetInferenceRoute(context.Context, *GetInferenceRouteRequest) (*InferenceRouteInfo, error)
+	SetInferenceRoute(context.Context, *SetInferenceRouteRequest) (*SetInferenceRouteResponse, error)
 	mustEmbedUnimplementedDSHRuntimeServiceServer()
 }
 
@@ -3063,6 +3149,24 @@ func (UnimplementedDSHRuntimeServiceServer) GetAIInteractionLog(context.Context,
 }
 func (UnimplementedDSHRuntimeServiceServer) StreamAIInteractionLog(*StreamAIInteractionLogRequest, grpc.ServerStreamingServer[GetAIInteractionLogResponse]) error {
 	return status.Error(codes.Unimplemented, "method StreamAIInteractionLog not implemented")
+}
+func (UnimplementedDSHRuntimeServiceServer) ListInferenceProviders(context.Context, *ListInferenceProvidersRequest) (*ListInferenceProvidersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListInferenceProviders not implemented")
+}
+func (UnimplementedDSHRuntimeServiceServer) GetInferenceProvider(context.Context, *GetInferenceProviderRequest) (*InferenceProviderInfo, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetInferenceProvider not implemented")
+}
+func (UnimplementedDSHRuntimeServiceServer) UpsertInferenceProvider(context.Context, *UpsertInferenceProviderRequest) (*UpsertInferenceProviderResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpsertInferenceProvider not implemented")
+}
+func (UnimplementedDSHRuntimeServiceServer) DeleteInferenceProvider(context.Context, *DeleteInferenceProviderRequest) (*DeleteInferenceProviderResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteInferenceProvider not implemented")
+}
+func (UnimplementedDSHRuntimeServiceServer) GetInferenceRoute(context.Context, *GetInferenceRouteRequest) (*InferenceRouteInfo, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetInferenceRoute not implemented")
+}
+func (UnimplementedDSHRuntimeServiceServer) SetInferenceRoute(context.Context, *SetInferenceRouteRequest) (*SetInferenceRouteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetInferenceRoute not implemented")
 }
 func (UnimplementedDSHRuntimeServiceServer) mustEmbedUnimplementedDSHRuntimeServiceServer() {}
 func (UnimplementedDSHRuntimeServiceServer) testEmbeddedByValue()                           {}
@@ -3287,6 +3391,114 @@ func _DSHRuntimeService_StreamAIInteractionLog_Handler(srv interface{}, stream g
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DSHRuntimeService_StreamAIInteractionLogServer = grpc.ServerStreamingServer[GetAIInteractionLogResponse]
 
+func _DSHRuntimeService_ListInferenceProviders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListInferenceProvidersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DSHRuntimeServiceServer).ListInferenceProviders(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DSHRuntimeService_ListInferenceProviders_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DSHRuntimeServiceServer).ListInferenceProviders(ctx, req.(*ListInferenceProvidersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DSHRuntimeService_GetInferenceProvider_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetInferenceProviderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DSHRuntimeServiceServer).GetInferenceProvider(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DSHRuntimeService_GetInferenceProvider_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DSHRuntimeServiceServer).GetInferenceProvider(ctx, req.(*GetInferenceProviderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DSHRuntimeService_UpsertInferenceProvider_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpsertInferenceProviderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DSHRuntimeServiceServer).UpsertInferenceProvider(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DSHRuntimeService_UpsertInferenceProvider_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DSHRuntimeServiceServer).UpsertInferenceProvider(ctx, req.(*UpsertInferenceProviderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DSHRuntimeService_DeleteInferenceProvider_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteInferenceProviderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DSHRuntimeServiceServer).DeleteInferenceProvider(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DSHRuntimeService_DeleteInferenceProvider_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DSHRuntimeServiceServer).DeleteInferenceProvider(ctx, req.(*DeleteInferenceProviderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DSHRuntimeService_GetInferenceRoute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetInferenceRouteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DSHRuntimeServiceServer).GetInferenceRoute(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DSHRuntimeService_GetInferenceRoute_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DSHRuntimeServiceServer).GetInferenceRoute(ctx, req.(*GetInferenceRouteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DSHRuntimeService_SetInferenceRoute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetInferenceRouteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DSHRuntimeServiceServer).SetInferenceRoute(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DSHRuntimeService_SetInferenceRoute_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DSHRuntimeServiceServer).SetInferenceRoute(ctx, req.(*SetInferenceRouteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DSHRuntimeService_ServiceDesc is the grpc.ServiceDesc for DSHRuntimeService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -3333,6 +3545,30 @@ var DSHRuntimeService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetAIInteractionLog",
 			Handler:    _DSHRuntimeService_GetAIInteractionLog_Handler,
+		},
+		{
+			MethodName: "ListInferenceProviders",
+			Handler:    _DSHRuntimeService_ListInferenceProviders_Handler,
+		},
+		{
+			MethodName: "GetInferenceProvider",
+			Handler:    _DSHRuntimeService_GetInferenceProvider_Handler,
+		},
+		{
+			MethodName: "UpsertInferenceProvider",
+			Handler:    _DSHRuntimeService_UpsertInferenceProvider_Handler,
+		},
+		{
+			MethodName: "DeleteInferenceProvider",
+			Handler:    _DSHRuntimeService_DeleteInferenceProvider_Handler,
+		},
+		{
+			MethodName: "GetInferenceRoute",
+			Handler:    _DSHRuntimeService_GetInferenceRoute_Handler,
+		},
+		{
+			MethodName: "SetInferenceRoute",
+			Handler:    _DSHRuntimeService_SetInferenceRoute_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

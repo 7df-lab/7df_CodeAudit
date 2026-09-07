@@ -28,9 +28,15 @@ func (s *ConflictResolveStage) Name() string {
 func (s *ConflictResolveStage) Execute(ctx context.Context, input *FusionContext) (*FusionContext, error) {
 	conflicts := make([]*pb.ConflictItem, 0)
 
-	// byID — 组内成员实体索引
+	// byID — 组内成员实体索引。ADR-214: 索引必须覆盖全量输入（FilteredSAST+
+	// FilteredAI）——dedup 后 FusedFindings 只剩各组 primary，AI 成员已被移除；
+	// 原实现在此查 AI 成员恒 nil（len<2 早退/成员缺位 continue），冲突解决对
+	// 合并组从未生效（Conflicts 恒空，阶段死代码）。
 	byID := make(map[string]*pb.UnifiedFinding)
-	for _, f := range input.FusedFindings {
+	for _, f := range input.FilteredSAST {
+		byID[f.GetFindingId()] = f
+	}
+	for _, f := range input.FilteredAI {
 		byID[f.GetFindingId()] = f
 	}
 	// isAI — source_tool=ai_agent 判定（依据: proto L68 source_tool 注释 "ai_agent"）

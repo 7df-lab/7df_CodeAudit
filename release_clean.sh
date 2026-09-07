@@ -25,6 +25,7 @@ MODE="${1:-}"
 #    - 根目录 ./AGENTS.md 是本工作区现行宪法（AI 会话入口），不删
 #    - AGENTS.md 只删子仓根部（深度2）的宪法；深层嵌套的（如 dsh-runtime
 #      packages 文档、snapshots/ 测试夹具）是内容数据，不删
+#    - 深度2 的 .git（子仓 git 指针文件，随 GitLab 同步反复回来；根 ./.git 是本仓，不删）
 # ============================================================
 # 目录名精确匹配（-name），避免 find Emacs 正则的管道符转义坑
 ARTIFACT_DIR_NAMES='.agent .agents .zcode archive'
@@ -33,7 +34,8 @@ scan_artifacts() {
   local dir_tests=""
   for d in $ARTIFACT_DIR_NAMES; do dir_tests+=" -name $d -o"; done
   dir_tests="${dir_tests% -o}"
-    { find . -mindepth 1 -maxdepth 2 \
+    { find . -mindepth 2 -maxdepth 2 -name ".git" -print 2>/dev/null;
+    find . -mindepth 1 -maxdepth 2 \
       \( -name .git -o -name node_modules -o -name .toolchain -o -name .githooks \) -prune -o \
       -type d \( $dir_tests \) -print 2>/dev/null;
     find . \
@@ -185,6 +187,34 @@ for p in changed:
     print('       ' + p)
 if not changed:
     print('[remarks] 全部干净')
+
+# ---- 第二阶段: 保留文档里的 .agent 死链修补（docs/ 与各仓 REGRESSIONS.md）----
+# engine/.agent 已被 artifacts 删除，保留文档中对它的引用改为发布副本的真实入口
+REF_TARGETS = sorted(glob.glob("docs/*.md") + glob.glob("*/REGRESSIONS.md"))
+REF_RULES = [
+    (r'`bash \.agent/verify\.sh`', '`make verify`'),
+    (r'`\.agent/verify\.sh`', '`make verify`'),
+    (r'bash \.agent/verify\.sh', 'make verify'),
+    (r'、`\.agent/test-gates\.md`', ''),
+    (r'、`\.agent/[^`*]+`', ''),
+]
+ref_changed = []
+for path in REF_TARGETS:
+    try:
+        raw = open(path, 'rb').read().decode('utf-8').replace('\r\n', '\n')
+    except (UnicodeDecodeError, FileNotFoundError):
+        continue
+    text = raw
+    for pat, rep in REF_RULES:
+        text = re.sub(pat, rep, text)
+    if text != raw:
+        ref_changed.append(path)
+        if not dry:
+            open(path, 'wb').write(text.encode('utf-8'))
+if ref_changed:
+    print('[remarks] 死链修补 %s %d 个:' % ('将改动' if dry else '了', len(ref_changed)))
+    for p in ref_changed:
+        print('       ' + p)
 PYEOF
 }
 

@@ -3,6 +3,7 @@ module github.com/codeaudit/services/result-service
 go 1.22
 
 require (
+	github.com/codeaudit/common-go v0.0.0
 	github.com/codeaudit/go-config v0.0.0
 	github.com/codeaudit/proto-gen v0.0.0
 	github.com/lib/pq v1.10.9
@@ -22,5 +23,7 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240528184218-531527333157 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/codeaudit/common-go => ../../libs/common-go
 
 replace github.com/codeaudit/go-config => ../../libs/go-config

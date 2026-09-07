@@ -42,22 +42,38 @@ func NewTaskEventProducer(brokers []string) *TaskEventProducer {
 	}
 }
 
+// buildTaskEvent — 消息构造纯函数（可测）。
+// ADR-212: 消费端按 event_type 头分发（result event_consumer.processMessage），
+// 此前不带头→task.created/completed 全部落入 "Unknown event type" 被静默丢弃，
+// offset 照常提交（ADR-006 Kafka 主路径自上线即死路径）；载荷字段亦与消费端
+// TaskCompletedEvent JSON tag 对齐（补 task_type/completed_at）。
+func buildTaskEvent(topic string, task *pb.ScanTask) kafka.Message {
+	completedAt := task.GetUpdatedAt().AsTime().Unix()
+	if task.GetUpdatedAt() == nil {
+		completedAt = task.GetCreatedAt().AsTime().Unix()
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"task_id":      task.GetTaskId(),
+		"project_id":   task.GetProjectId(),
+		"task_type":    task.GetScanMode().String(),
+		"status":       task.GetStatus().String(),
+		"created_by":   task.GetCreatedBy(),
+		"completed_at": completedAt,
+	})
+	return kafka.Message{
+		Topic: topic,
+		Key:   []byte(task.GetTaskId()),
+		Value: payload,
+		Headers: []kafka.Header{{Key: "event_type", Value: []byte(topic)}},
+	}
+}
+
 // PublishAsync — 序列化同步（持锁调用点安全），网络发送异步非致命。
 func (p *TaskEventProducer) PublishAsync(topic string, task *pb.ScanTask) {
 	if p == nil || !p.enabled || task == nil {
 		return
 	}
-	payload, err := json.Marshal(map[string]string{
-		"task_id":    task.GetTaskId(),
-		"project_id": task.GetProjectId(),
-		"status":     task.GetStatus().String(),
-		"created_by": task.GetCreatedBy(),
-	})
-	if err != nil {
-		log.Printf("[task-events] marshal %s/%s: %v", topic, task.GetTaskId(), err)
-		return
-	}
-	msg := kafka.Message{Topic: topic, Key: []byte(task.GetTaskId()), Value: payload}
+	msg := buildTaskEvent(topic, task)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()

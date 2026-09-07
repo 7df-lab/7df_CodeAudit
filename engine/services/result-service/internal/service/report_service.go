@@ -74,6 +74,14 @@ func (s *ReportServiceImpl) GenerateReport(ctx context.Context, req *pb.Generate
 			},
 		}, nil
 	}
+	// ADR-212: ADR-135 允许 FAILED 报告同键重试，但重试沿用同一确定性 ID 对
+	// 主键裸 INSERT 必冲突 → 每次重试恒 500（"允许重试"从未真正可达）。
+	// 除旧行后重建，同键重试幂等于同一 report_id。
+	if existing != nil && existing.Status == "FAILED" {
+		if err := s.repo.DeleteReport(existing.ID); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to clear FAILED report %s: %v", existing.ID, err)
+		}
+	}
 
 	// 依据: ADR-006 异步主路径（Kafka） vs 降级路径（gRPC 直调）
 	// 此处为降级路径实现：直接生成报告
@@ -311,7 +319,10 @@ func (s *ReportServiceImpl) DownloadReport(req *pb.DownloadReportRequest, stream
 func (s *ReportServiceImpl) HandleTaskCompleted(ctx context.Context, event *TaskCompletedEvent) error {
 	log.Printf("Kafka主路径: task.completed 到达, task=%s, 生成报告", event.TaskID)
 	_, err := s.GenerateReport(ctx, &pb.GenerateReportRequest{
-		Metadata:   &pb.RequestMetadata{RequestId: fmt.Sprintf("kafka_%s_%d", event.TaskID, time.Now().UnixNano())},
+		// ADR-212: request_id 确定化——原 UnixNano 唯一键使重投递（rebalance/
+		// 重放）每次都生成新报告；确定性键让重复消费幂等重放，失败重试走
+		// 上面 FAILED 重建通道。
+		Metadata:   &pb.RequestMetadata{RequestId: "kafka_" + event.TaskID},
 		TaskId:     event.TaskID,
 		TemplateId: "standard",
 	})

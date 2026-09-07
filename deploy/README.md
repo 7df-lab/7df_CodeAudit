@@ -59,16 +59,73 @@ make down-sim                              # 停栈（数据卷保留）；destr
 
 ```bash
 git clone --recurse-submodules <伞仓> && cd codeaudit-umbrella   # 或 clone 后 make update
-bash deploy/production-deploy.sh deploy    # 预检→密钥→镜像→gateway→manager→engine→沙箱镜像→console
+bash deploy/production-deploy.sh configure  # 可选：先交互确认参数，只落盘不部署
+bash deploy/production-deploy.sh deploy     # 交互确认→预检→密钥→镜像→gateway→manager→engine→沙箱镜像→console
 bash deploy/production-deploy.sh status | stop | down [-v]
 ```
 
+- **交互确认**（2026-09-07 增）：终端运行 `deploy`/`configure` 时与部署人员核对个性化关键信息——
+  访问入口地址（多网卡可选，**仅用于完成横幅/汇总显示，内部接线不依赖**）、**沙箱服务路由域**
+  （2026-09-08 增，缺省 `sandbox.codeaudit.internal`，纯字符串路由键全程不解析，gateway
+  server_sans 与 sse 冒烟断言同源联动）、异己端口冲突（给空闲建议并联动改配落盘）、引擎网段
+  与宿主重叠（给跳位建议）；最后汇总参数确认才开工。
+  `--yes`（或 `PROD_DEPLOY_ASSUME_YES=1`）或 stdin 非终端（CI/管道）自动跳过问答按现值执行。
+  LLM provider 不在部署期配置——部署成功后按完成横幅指引自行注册管理。
+- **沙箱构建素材免下载**（2026-09-08 增）：`pdtools/nuclei-templates/agent-tools` 等 gitignored
+  大件部署前先 `fetch.sh --verify` 离线复核（sbom sha256 逐项），**在位即零下载**；缺失/漂移
+  才全量拉取（需网络出口，离线主机按 sandbox-artifacts/README 手工补件）；`check` 命令只报
+  在位性不下载。opengrep 同理（缺失自动按 PROVENANCE.md 来源拉取）。
 - 参数 `deploy/production.env`（gitignored）首跑自动生成：密钥随机、宿主 IP 探测、
-  端口/网段/Kafka 广播地址全部 env 化，改后重跑 deploy 即收敛。
+  端口/网段/Kafka 广播地址全部 env 化，改后重跑 deploy 即收敛。**联动键自动重算**：
+  manager→网关端点与沙箱拨号随 `OPENSHELL_PORT`、console `/v1` 反代随 `CODEAUDIT_HOST_GATEWAY`
+  ——改一个端口键全链跟随（dind 实测的反代 404 手误由此根治）；**manager 是内部面非交互面**：
+  `OPENSHELL_MANAGER_URL` 恒为内部常量 `host.docker.internal:18800`（hosts 别名解析，零 DNS、
+  零用户输入，2026-09-08 起与访问 IP 解耦）；沙箱镜像 tag 经 `DSH_IMAGE` 可调（缺省 `:latest`）。
+- **解析机制（全新安装零 DNS 依赖，2026-09-08 代码实证）**：用户不需要提供任何 DNS——
+  同 compose 网络内服务互访（`project:50052`、`kafka:9092` 等）走 **docker 内嵌 DNS**（127.0.0.11，
+  dockerd 自带，与用户环境无关）；跨栈各跳走 `host.docker.internal` hosts 别名（`extra_hosts: host-gateway`
+  注入，非 DNS）或裸 IP（manager）；沙箱服务路由域（缺省 `*.openshell.internal`，字符串）**从不被解析**——
+  engine dsh-runtime 的 routeReq 等价 `curl --resolve`：拨 `host.docker.internal:8080`、路由域只进
+  `Host` 头由网关匹配（`sandbox.go` routeReq；bridge.mjs 零出站连接；dsh-runtime 全服务零
+  `net.LookupHost`）。用户以 **IP+端口**直接访问 console（`http://<IP>:8088`）与网关 API
+  （`http://<IP>:8090`，部署完成横幅打印实际地址）。唯一出网依赖 = 部署后自注册的
+  LLM provider endpoint（可达性由用户环境保证，可 IP 可域名）。
 - 部署前 opengrep 缺失时自动按 PROVENANCE.md 来源拉取（官方 release，sha256 复核；
   无 GitHub 出口按文件内指引手工 vendor）。
 - 网关侧 JWT 签名密钥与 supervisor 镜像由 `gateway_lifecycle.sh ensure` 自举
   （2026-09-05 前 = 隐藏手工步骤，107 全量退役实测暴露后固化）。
+
+### 3.2 Windows 环境（双壳：Git Bash 优先 → WSL2 兜底，2026-09-08）
+
+**架构一句话**：Docker Desktop 装在 Windows 侧（Windows 应用，自带隐藏的 docker-desktop
+WSL 发行版承载 Linux 内核与 daemon）；容器永远跑在 Docker Desktop 的引擎里。引导脚本
+装的 Ubuntu（若走到 WSL 壳）只是 bash 部署脚本的运行环境——**选壳只影响 bash 在哪里跑，
+daemon 只有一份**。产品镜像全为 Linux 镜像，Linux 容器在 Windows 上必然经 WSL2/Hyper-V
+内核，没有"绕开 WSL 的纯 Windows Docker"选项。
+
+部署逻辑复用 §3.1 同一个 bash 入口（不维护第二套部署事实源），PowerShell 只做环境引导：
+
+```powershell
+# Git Bash 优先：已装 Git for Windows 即用它当壳（免管理员，仓库在 NTFS）
+powershell -ExecutionPolicy Bypass -File deploy\windows\bootstrap.ps1 -RepoUrl <伞仓地址>
+# 没有 Git Bash 时自动兜底 WSL2 路径（需管理员：启用 WSL → 装 Ubuntu → 仓库进 ext4）
+# 动作透传：-Action configure|deploy|status|stop|down；局域网暴露（可选）：
+powershell -ExecutionPolicy Bypass -File deploy\windows\expose-lan.ps1            # 8088/8090 → LAN
+```
+
+- **Git Bash 壳**：克隆统一 `-c core.autocrlf=false` + CRLF 校验（残留则
+  checkout-index 强制重检出 LF）；bash 入口内置 MSYS 工具面回退——`ss`→`netstat`、
+  `ip`/`hostname -I`→`ipconfig`（port_listening/access_ip/host_ip_candidates 三处）、
+  `python3`→`python`（bootstrap 缺 Python 时 winget 装，仅有 python 时自动建
+  `~/bin/python3` 垫片）；unzip 缺失仅告警（只影响素材全量拉取分支，在位即零下载不受影响）。
+- **WSL 壳**：仓库克隆在 WSL 的 Linux 文件系统（`$HOME`）内——`/mnt/c` 又慢又可能因
+  CRLF 损坏 shell 脚本；bash 入口在 WSL 下自动把访问面缺省地址切为 `localhost`
+  （`is_wsl` 探测 /proc/version）并在汇总/横幅提示 portproxy。
+- 访问口径（两壳一致）：Windows 本机浏览器 `http://localhost:<口>`；局域网其它设备用
+  `expose-lan.ps1`（netsh portproxy + 防火墙）或 Win11 22H2+ 的 WSL 镜像网络模式。
+- 状态（U8 如实记）：bootstrap/expose-lan 为静态编写，尚未在真实 Windows 上实测
+  （本机无 pwsh/Windows）；bash 入口的可移植性回退分支经本机可测面验证
+  （netstat 正则实测命中、configure/deploy 全链回归绿），MSYS/WSL 分支待实机。
 
 ## 4. 功能测试覆盖面（deploy/tests/run.sh）
 
@@ -80,12 +137,20 @@ bash deploy/production-deploy.sh status | stop | down [-v]
 | 04 上传→SAST 全链（核心） | 压缩包直传 storage(MinIO) → task 按 upload_file_id 拉包解包 → bandit 真扫 → 发现落库 → 报告生成 |
 | 05 控制台 | 容器内 nginx：SPA 首页/路由回退//v1 反代认证透传 |
 | 06 通知 | 任务完成事件 → 通知中心可达非空（Kafka→Redis→notification） |
-| 07 AI 链路 | 环境相关：manager+LLM 可达则全链 COMPLETED；不可达则断言**诚实失败**（终态+完整 error_message，不允许静默挂死） |
+| 07 AI 链路 | 上传型项目（2026-09-07 修正：原挂假仓库项目恒 DEAD，全链从未被行使）：manager+沙箱+LLM 可达 → COMPLETED 且 AI 交互日志非空；沙箱不可达 → COMPLETED 走 RuleScan 兜底（发现标 NEEDS_MANUAL，设计行为）；崩坏 → 诚实失败（终态+完整 error_message，不允许静默挂死） |
 | 08 项目级上传→自动任务（GUI 用户路径回归） | 复刻 GUI 请求序列：上传→建项目→config 关联→空 config 任务→start——回归服务间地址接线（409 锚点）与任务源共享卷（空目录扫描锚点） |
 | 09 可观测面 | 快照聚合含执行日志、通知非空——回归 AppendTaskLog 接线与 storage 存储档位 |
 
 测试原则：只走 gateway/console 的 HTTP 面（黑盒，等价真实用户）；样本漏洞自带
 （SQL 注入+硬编码凭据 Python 文件），不依赖外部仓库。
+
+仓库拉取（git clone）场景的可复现夹具：`bash deploy/tests/git_fixture_107.sh up`
+在 107 起匿名 git-daemon（:19418，transient）+ sample-sast.git，项目
+repo_url 填 `git://10.10.210.1:19418/sample-sast.git`（分支 main）；跑完 `down`
+收敛，不在共享宿主留常驻进程。GUI 交互层黑盒门禁单入口
+`python3 deploy/tests/ui_check.py`（本机 playwright：默认全流程闭环——UI 创建流+
+运行期流式判据+终态页签/风险详情链路点选/报告/在线查看/通知，截图存证；
+`--task <RUNNING>` 挂载模式只验流式）。
 
 ## 5. 边界与已知约束
 

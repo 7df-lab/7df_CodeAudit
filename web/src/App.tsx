@@ -20,6 +20,7 @@ import ComparisonView from './pages/views/ComparisonView';
 import ReportsPage from './pages/reports/ReportsPage';
 import NotificationsPage from './pages/notifications/NotificationsPage';
 import UsersPage from './pages/admin/UsersPage';
+import ProvidersPage from './pages/admin/ProvidersPage';
 import { ApiErrorOverlay, ErrorPage } from './components/errors';
 
 import { useParams } from 'react-router-dom';
@@ -67,12 +68,11 @@ function Shell({ children }: { children: ReactNode }) {
     : location.pathname.startsWith('/reports') ? 'reports'
     : location.pathname.startsWith('/notifications') ? 'notifications'
     : location.pathname.startsWith('/admin/users') ? 'users'
+    : location.pathname.startsWith('/admin/providers') ? 'providers'
     : '';
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Layout.Header style={{ display: 'flex', alignItems: 'center' }}>
-        {/* 14号 §3.5: 全局 API 错误组件挂载点（403/501 整页 + 503 降级横幅） */}
-        <ApiErrorOverlay />
         <div style={{ color: '#fff', fontWeight: 600, marginRight: 32 }}>CodeAudit</div>
         <Menu
           theme="dark"
@@ -95,6 +95,10 @@ function Shell({ children }: { children: ReactNode }) {
             ...(user.role === 'ROLE_ADMIN'
               ? [{ key: 'users', label: '用户管理', onClick: () => navigate('/admin/users') }]
               : []),
+            // ADR-217: 推理 Provider 管理仅管理员可见（凭据写入与路由切换）
+            ...(user.role === 'ROLE_ADMIN'
+              ? [{ key: 'providers', label: '推理 Provider', onClick: () => navigate('/admin/providers') }]
+              : []),
           ]}
           style={{ flex: 1 }}
         />
@@ -104,6 +108,10 @@ function Shell({ children }: { children: ReactNode }) {
         </Button>
         <Button onClick={() => logout()}>登出</Button>
       </Layout.Header>
+      {/* 14号 §3.5: 全局 API 错误组件挂载点（403/501 整页 fixed 不受挂点影响；503 降级
+          横幅原挂 Header 首位会作为 flex 项嵌进深色导航行内——移到 Header 之下随文档流
+          全宽展开，下推内容不再遮导航） */}
+      <ApiErrorOverlay />
       <Layout.Content style={{ padding: 24 }}>{children}</Layout.Content>
     </Layout>
   );
@@ -151,6 +159,8 @@ export default function App() {
       {/* V2.1 (ADR-205): 首登强改密页 + 管理端用户列表（admin 门禁） */}
       <Route path="/change-password" element={<Shell><ChangePasswordPage /></Shell>} />
       <Route path="/admin/users" element={<Shell><RequireAdmin><UsersPage /></RequireAdmin></Shell>} />
+      {/* ADR-217: 推理 Provider 管理（admin 门禁；/v1/inference/* 全路由 requireAdmin） */}
+      <Route path="/admin/providers" element={<Shell><RequireAdmin><ProvidersPage /></RequireAdmin></Shell>} />
       {/* 14号 §3.5: 未知路由 → 404 空态（此前静默重定向回项目页, 用户不知道发生了什么） */}
       <Route path="*" element={<Shell><ErrorPage code={404} /></Shell>} />
     </Routes>

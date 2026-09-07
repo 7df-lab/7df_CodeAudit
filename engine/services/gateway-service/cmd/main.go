@@ -58,13 +58,14 @@ func main() {
 
 	// Middleware chains
 	// 1. Logging (outermost)
-	// 2. Rate limiting - 依据: 07 §7 限流（XFF 仅可信代理时信任，ADR-132）
-	// 3. JWT - 依据: 03 §4
+	// 2. JWT - 依据: 03 §4（保护链 JWT 外置：限流键需读 JWT sub，ADR-212）
+	// 3. Rate limiting - 依据: 07 §7 限流（XFF 仅可信代理时信任，ADR-132）
 	// TP12-T3 回归修复：/v1/auth/* 必须免 JWT（登录是令牌的来源），但仍限流
 	rateLimited := func(next http.Handler) http.Handler {
 		return middleware.LoggingMiddleware(middleware.RateLimitMiddleware(cfg.TrustProxy, cfg.RateLimitPerMin, next))
 	}
-	protected := rateLimited(middleware.JWTMiddleware(cfg.JWTSecret, apiMux))
+	protected := middleware.JWTMiddleware(cfg.JWTSecret,
+		middleware.RateLimitMiddleware(cfg.TrustProxy, cfg.RateLimitPerMin, apiMux))
 
 	// /v1/auth/* 免认证链；/health 公共；其余 /v1/* 走 JWT 保护链
 	authMux := http.NewServeMux()

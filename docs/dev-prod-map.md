@@ -52,9 +52,9 @@ vscode-plugin ──(codeaudit.serverUrl 配置)──> engine gateway REST/WS �
 | 维度 | 内容 |
 |------|------|
 | **开发** | 先 `source .toolchain/env.sh`(Go 工具链在 gitignored 本地目录);`make build`(7 服务逐 module,根目录无 go.mod,go 命令必须逐服务目录执行);proto SSOT=根目录 `codeaudit_common.proto`,生成走 `scripts/generate-proto.sh`(ADR-112),一致性 `scripts/check-proto-sync.sh` |
-| **测试** | 交付门禁 `bash .agent/verify.sh`(G1 SSOT 红线 7 检查 + G2 Go 逐 module 单测 + pytest + G4 契约测试经 fixture_server:50071);`--milestone` 加 G5 冒烟(`tests/smoke/run.sh`,2026-09-05 补齐:无栈时用例如实 SKIP,ADR-136 口径);真 gRPC 全链 e2e `tests/e2e/`(15~30min,手动);Makefile `test-contract` 与 verify.sh G4 同口径 |
-| **生产** | 每服务一份 `services/<svc>/Dockerfile`(构建上下文=仓库根,proto-gen 走相对 replace);sast-adapter 特殊:python:3.12-slim + vendored opengrep(见 §4 SSOT)+ bandit;配置唯一承载 `configs/codeaudit.yaml`(ADR-137,缺键启动 panic,env `CODEAUDIT_*` 覆盖);API 面 `/health` + `/v1/auth|uploads|projects|tasks|findings|reports|tools|notifications|users`(日志→限流 50/min→JWT) |
-| **关键文件** | `configs/codeaudit.yaml`、`codeaudit_common.proto`、`proto/buf.gen.yaml`、`docker-compose.yml`(本地编排=三层共用事实源)、`Makefile`、`.agent/verify.sh`、`.agent/test-gates.md`、`.toolchain/env.sh`、`services/*/Dockerfile`(×7)、`scripts/init-db.sql`(仅模拟栈 seed 用,生产只建空库不建表) |
+| **测试** | 交付门禁 `make verify`(11 checks:G1 SSOT 红线 7 检查 + G2 Go 逐 module 单测 + pytest + G4 契约测试经 fixture_server:50071 + G6 守门 12 用例 + G7 变异自检 27 条,2026-09-07 ADR-216);`--milestone` 加 G5 冒烟(`tests/smoke/run.sh`,2026-09-05 补齐:无栈时用例如实 SKIP,ADR-136 口径);真 gRPC 全链 e2e `tests/e2e/`(15~30min,手动);Makefile `test-contract` 与 verify.sh G4 同口径,`test-guardrails`/`test-mutation` 与 G6/G7 同口径;**接口契约三件套 `docs/{api-external,api-internal,data-flows}.md` + 缺陷档案 `REGRESSIONS.md`(修 bug 必登记+补变异,ADR-216 纪律)** |
+| **生产** | 每服务一份 `services/<svc>/Dockerfile`(构建上下文=仓库根,proto-gen 走相对 replace);sast-adapter 特殊:python:3.12-slim + vendored opengrep(见 §4 SSOT)+ bandit;配置唯一承载 `configs/codeaudit.yaml`(ADR-137,缺键启动 panic,env `CODEAUDIT_*` 覆盖);API 面 `/health` + `/v1/auth|uploads|projects|tasks|findings|reports|tools|notifications|users|inference`(鉴权三链实测:免认证链 Logging→限流 50/min,保护链 JWT→限流——限流键=JWT sub,2026-09-07 核对更正;`/v1/inference/*` 推理 provider/路由管理面全路由 admin 门禁,ADR-217,依赖 manager df01928 配套——2026-09-07 人类指令升级后全链通,e2e 用例 10 并入默认序列) |
+| **关键文件** | `configs/codeaudit.yaml`、`codeaudit_common.proto`、`proto/buf.gen.yaml`、`docker-compose.yml`(本地编排=三层共用事实源)、`Makefile`、`make verify`、`REGRESSIONS.md`(缺陷档案)、`docs/`(接口契约三件套)、`tests/test_guardrails.py`、`tests/mutation/run_mutations.py`、`.toolchain/env.sh`、`services/*/Dockerfile`(×7)、`scripts/init-db.sql`(仅模拟栈 seed 用,生产只建空库不建表) |
 
 注:dsh-runtime 唯一入口 = `cmd/main.go`(Go);`requirements.txt` 为 FastAPI 时代遗留,不再是构建输入。
 2026-09-05 已删 Makefile 过时的 build-python/test-python/lint-python 段,并把 dsh-runtime-service 补进 Go 构建/测试循环。
@@ -82,16 +82,16 @@ vscode-plugin ──(codeaudit.serverUrl 配置)──> engine gateway REST/WS �
 | 维度 | 内容 |
 |------|------|
 | **开发** | `./run.sh` = `python3 -m openshell_manager`(默认 127.0.0.1:18800,环回免 token);无 requirements.txt,依赖清单体现在 `deploy/Dockerfile.manager` pip 行(fastapi/uvicorn/grpcio/httpx 等);`config.json` 与引擎共享(gitignored,见 §4) |
-| **测试** | `python3 -m pytest tests/ -q`——26 条离线契约测试(假 SDK 经 client_factory 缝注入 + 真 uvicorn HTTP 层,无需网关) |
-| **生产** | `deploy/deploy.sh`(统一契约 deploy/check/status/start/stop/restart/logs)同步到 LXC 107 `/root/os-deploy/deploy/openshell-manager` 并 compose 构建;镜像两条路径:根 `Dockerfile`(离线 wheels 叠加 = 现役 2.0.0 实际产出)/`deploy/Dockerfile.manager`(自包含配方 python:3.12-slim);非环回绑定强制 token;**不挂 docker.sock**(纯管道,不持业务状态) |
-| **关键文件** | `config.json`(SSOT)、`.token`、`run.sh`、`Dockerfile`、`deploy/{Dockerfile.manager,docker-compose.yml,deploy.sh,env,env.template,README.md}`、`tests/test_contract.py`、`libs/OpenShell/python`(vendored SDK,镜像仅取此子树) |
+| **测试** | 交付门禁 `make verify`(=pytest 全量 + 直跑双模式)——47 条离线测试:39 条契约(假 SDK 经 client_factory 缝注入 + 真 uvicorn HTTP 层,无需网关) + 8 条守门(鉴权全覆盖/路由快照/README 文档实测化/分块 1MiB 上限/常量时间比较/SDK 在库/回归档案完整);防回归档案 `REGRESSIONS.md`(R1…R12,每条缺陷绑定具名锁定测试,修 bug 先红后修再记档) |
+| **生产** | `deploy/deploy.sh`(统一契约 deploy/check/status/start/stop/restart/logs)同步到 LXC 107 `/root/os-deploy/deploy/openshell-manager` 并 compose 构建;镜像两条路径:根 `Dockerfile`(离线 wheels 叠加 = 现役 2.0.0 实际产出)/`deploy/Dockerfile.manager`(自包含配方 python:3.12-slim);非环回绑定强制 token;**不挂 docker.sock**(纯管道,不持业务状态);API 面 ≥df01928 补 `DELETE /api/v1/inference/providers/{name}`+清单对象化+set_route 验证回执透传(engine `/v1/inference` 链路的前置;2026-09-07 人类指令升级,现役 107 已是 df01928,e2e 实证) |
+| **关键文件** | `config.json`(SSOT)、`.token`、`run.sh`、`Dockerfile`、`deploy/{Dockerfile.manager,docker-compose.yml,deploy.sh,env,env.template,README.md}`、`tests/{test_contract,test_guardrails}.py`、`REGRESSIONS.md`、`make verify`、`docs/{api-external,api-internal,data-flows}.md`(接口文档三件套)、`libs/OpenShell/python`(vendored SDK,镜像仅取此子树) |
 
 ### 2.5 openshell-gateway(网关部署事实源,纯配置仓)
 
 | 维度 | 内容 |
 |------|------|
 | **形态** | 无源码无测试:网关本体用上游预构建镜像 `ghcr.io/nvidia/openshell/gateway:latest`;正确性靠 `deploy.sh --check`(md5 漂移)+ `gateway_lifecycle.sh verify`;两个 Dockerfile 属上游源码重建路径,非日常 |
-| **关键配置** | `gateway.toml`(bind 8080/8081、DooD compute_drivers、server_sans 路由域、auth 信任 LXC 内网)+ `docker-compose.yml`(`command: []` 清 CLI flags 让 TOML 接管、挂 docker.sock、`/var/lib/openshell` 同路径 bind) |
+| **关键配置** | `gateway.toml`(bind 8080/8081、DooD compute_drivers、server_sans 路由域(缺省 `*.sandbox.codeaudit.internal`,纯路由键不解析;lifecycle `ROUTING_DOMAIN` env 可远端钉制,2026-09-08 内网域清中性)、auth 信任 LXC 内网)+ `docker-compose.yml`(`command: []` 清 CLI flags 让 TOML 接管、挂 docker.sock、`/var/lib/openshell` 同路径 bind;extra_hosts 仅 host.docker.internal/host.openshell.internal,xwpt 实验域块 2026-09-08 删除) |
 | **部署** | `./deploy.sh`(差量下发 + ensure)/ `./gateway_lifecycle.sh {ensure|verify|status|restart|logs}`;纪律:别随手 `recreate` |
 | **实测口径** | 8080 gRPC 可达;**8081 health 发布但不可达**(仅绑 loopback),存活探测用 TCP 8080 或 manager `GET /api/v1/gateway/health` |
 
@@ -108,11 +108,12 @@ vscode-plugin ──(codeaudit.serverUrl 配置)──> engine gateway REST/WS �
 
 | 维度 | 内容 |
 |------|------|
-| **构建即全部** | 两阶段 `Dockerfile`(digest-pin base;stage1 `sha256sum -c` 强校验 agent-tools → jq/sqlmap/testssl/playwright;主镜像 Node 22 + Chromium + CJK 字体 + dsh-runtime 源码 `pnpm install --frozen-lockfile && pnpm run build` + pdtools/nuclei-templates + codeaudit-submit 插件 + settings.yaml(ADR-193 窗口 150000) + ENTRYPOINT `bridge.mjs`);**仓内无自动化测试,靠构建期断言 + deploy.sh smoke** |
-| **可复现** | `sandbox-artifacts/fetch.sh`(权威=引擎侧 four-direction-pentest-engine/deploy/tool-sbom.json)/ `fetch-agent-tools.sh`(权威=本目录 `agent-tools-sbom.json`);`--verify` 离线复核;vendored 大件 gitignore,**新检出首次构建前必须先跑 fetch** |
-| **部署** | `./deploy.sh` = staging 组装 → `pct exec 107 docker build -t dsh-pentest-sse:latest` → 经 manager API 冒烟(`SKIP_SMOKE=1` 跳过);镜像无常驻进程,网关按需拉起 |
-| **改 tag 同步三处** | `deploy.sh:16`(IMAGE 默认)、`sandbox-artifacts/agent-tools-sbom.json` 的 image 字段、伞仓 `deploy/sandbox-deploy.toml` |
-| **关键文件** | `Dockerfile`、`deploy.sh`、`bridge.mjs`(JSON-RPC⇄SSE 桥,320 行,零依赖)、`dsh-settings/settings.yaml`、`plugins/codeaudit-submit/`、`sandbox-artifacts/{fetch.sh,fetch-agent-tools.sh,agent-tools-sbom.json,agent-tools.sha256}` |
+| **构建即全部** | 两阶段 `Dockerfile`(digest-pin base;stage1 `sha256sum -c` 强校验 agent-tools → jq/sqlmap/testssl/playwright;主镜像 Node 22 + Chromium + CJK 字体 + dsh-runtime 源码 `pnpm install --frozen-lockfile && pnpm run build` + pdtools/nuclei-templates + codeaudit-submit 插件 + settings.yaml(ADR-193 窗口 150000) + ENTRYPOINT `bridge.mjs`) |
+| **测试** | 仓内门禁 `node --test test/*.test.mjs`(≈45s,48 例:HTTP/SSE/生命周期/线协议/插件契约/静态一致性含 staging 离线演练/变异自检);回归台账+修 bug 工作循环见其 `test/REGRESSIONS.md`;契约三件套见其 `docs/`。**注意 node 22 `--test` 不收目录参数**,必须 `test/*.test.mjs` 通配 |
+| **可复现** | `sandbox-artifacts/fetch.sh`(权威=本仓入库副本 tool-sbom.json,引擎侧升版后同步覆盖,FDPE_SBOM 可覆盖)/ `fetch-agent-tools.sh`(权威=本目录 `agent-tools-sbom.json`);`--verify` 离线复核;vendored 大件 gitignore,**新检出首次构建前必须先跑 fetch** |
+| **部署** | `./deploy.sh` = staging 组装 → `pct exec 107 docker build -t dsh-pentest-sse:latest` → 经 manager API 冒烟(`SKIP_SMOKE=1` 跳过;路由域断言 `EXPOSE_DOMAIN` env 参数化,缺省与 gateway `ROUTING_DOMAIN` 同源=`sandbox.codeaudit.internal`,2026-09-08);镜像无常驻进程,网关按需拉起 |
+| **tag 口径** | 消费面一律 `:latest`(2026-09-06 人类指令);`deploy.sh` 缺省恒 `:latest`,版本化 `IMAGE=` 构建后自动刷新 latest;出新溯源 tag 时同步 `agent-tools-sbom.json` 的 image 字段(伞仓 toml 恒 `:latest`) |
+| **关键文件** | `Dockerfile`、`deploy.sh`、`bridge.mjs`(JSON-RPC⇄SSE 桥,零依赖)、`dsh-settings/settings.yaml`、`plugins/codeaudit-submit/`、`sandbox-artifacts/{fetch.sh,fetch-agent-tools.sh,agent-tools-sbom.json,agent-tools.sha256}`、`test/`、`docs/` |
 
 ---
 
@@ -126,15 +127,18 @@ vscode-plugin ──(codeaudit.serverUrl 配置)──> engine gateway REST/WS �
 | `bash deploy/production-deploy.sh` | **生产态一键**:clone 后在本机 docker daemon 直接构建 | 任意 docker 服务器 | 第三方用户自部署 |
 
 - 只读:`bash deploy/sandbox-deploy.sh plan`(清单)/ `check`(全项目漂移;`check <name>` 单查)/ `pull`(全项目上游镜像预拉,多源兜底)。
-- 模拟栈供给:`bash deploy/sim-sync.sh push|rebuild|test [VMID]`——把本地 git 已提交树(engine+deploy)同步到 107 侧检出台(/root/codeaudit-sim-check, git archive 只取已提交内容, overlay 解包保远端 env.sim)并调远端 sim.sh up/tests;rebuild 构建久, 勿套短超时(2026-09-06 人类指令"用脚本走安装流程"固化)。
+- 模拟栈供给:`bash deploy/sim-sync.sh push|rebuild|test [VMID]`——把本地 git 已提交树(engine+web+deploy)同步到 107 侧检出台(/root/codeaudit-sim-check, git archive 只取已提交内容, overlay 解包保远端 env.sim)并调远端 sim.sh up/tests;rebuild 构建久, 勿套短超时(2026-09-06 人类指令"用脚本走安装流程"固化;2026-09-07 起 web 与 engine 同批同步——console 容器 build context=../web,漏同步=前端修复不进部署产物,gw-f6a3523 实证)。
+- GUI 黑盒门禁单入口:`python3 deploy/tests/ui_check.py [--base http://gateway.internal:18088]`(2026-09-07 收编 gui_streaming_check+ui_walkthrough_check 为一文件两模式)——默认全流程闭环:登录→UI 上传→toast 三连→自动跳任务详情→运行期流式判据 v3 内联(自建任务 AI 阶段即观测窗,进度耦合:面板须跟随后端实质产出直至终态)→snapshot API 终态(勿用页面文本判终态:AI 对话含"失败"字样会误判)→发现/融合视图→风险详情深检(ADR-195 链路点选定位(蓝=链路行/黄=漏洞行)+ADR-158 污点链 SOURCE→SINK+人工裁决回写(verdict 与 reasoning 都须落库,R-30 锚))→报告深链 ?task=/在线查看新标签页/通知→仓库型项目呈现;`--task <RUNNING>` 挂载模式只跑流式判据(退出码 0/1/2,2=inconclusive)——碰流式链路(WS/网关推流/前端吸收)的交付快速验证不必走整套创建流;改前端任务详情/报告页交互或 findings 持久化层的交付必跑全流程(R-30 即此门禁揪出:reasoning 列三路径漏接)。
+- 仓库拉取模式夹具:`bash deploy/tests/git_fixture_107.sh up|down|status`——107 上匿名 git-daemon(:19418, transient)+sample-sast.git(app.py: B608×2+B105),repo_url=`git://10.10.210.1:19418/sample-sast.git`(任务容器经 sim 网桥网关回宿主);验证 git clone 场景时 up→建 repo 项目 SAST_ONLY 任务→跑完 down 收敛(共享宿主不留常驻进程;2026-09-07 实证 gw-ec58356 findings=3)。
 - 部署:`all` 或 `<name> [action]`;**deploy 前自动跑 pull-images.sh**(daemon registry-mirrors 不可信:死源+白名单拒 bitnami/*,实测 daocloud 拒/1panel 通)。
 - codeaudit 单独入口 `deploy/prod/deploy.sh {deploy|check|status|logs|start|stop|restart}`。
 - codeaudit deploy 流程:tar 同步 engine 源码树 + prod overlay → 远端 compose 双文件构建 7 Go 服务 + 4 中间件 → `.env` 首次随机 JWT、`OPENSHELL_MANAGER_TOKEN` 取 `manager/deploy/env` → 只建 3 空库不建表(服务自迁移)。
 - web deploy 流程(2026-09-05 接管 CD 退役后的 console 发布职责):收敛式同步 web 源码树 → `web/docker-compose.yml` 单文件构建(`codeaudit-console:latest`,npm 构建在镜像内) → 8088→80,`CODEAUDIT_GATEWAY_UPSTREAM=host.docker.internal:8090` 反代宿主发布网关 → 健康等待 + `/v1` 反代 401 透传断言。
-- **生产态一键**(`deploy/production-deploy.sh` + `deploy/production.env`,后者 gitignored,首跑按 template 自动生成:密钥随机+宿主 IP 探测):预检 → opengrep 自动拉取(官方 release manylinux_x86,sha256 复核,见 PROVENANCE.md) → 镜像预拉 → gateway(ensure 自足:JWT 密钥 generate-certs+supervisor 镜像 `:latest` retag `:local`) → manager(deploy/.manager-stage 装配) → engine → 沙箱镜像(DOCKER_CMD=docker) → web;`status/stop/down` 全套。密钥接线单文件:`deploy/production.env`(JWT/manager token/Kafka advertised/端口/网段全部 env 化)。
+- **生产态一键**(`deploy/production-deploy.sh` + `deploy/production.env`,后者 gitignored,首跑按 template 自动生成:密钥随机+宿主 IP 探测):交互确认(`configure` 单独参数模式;`deploy` 开工前确认访问入口地址(**仅显示面,不参与接线**)/端口冲突/网段重叠,`--yes` 或非 TTY 跳过) → 预检 → opengrep 自动拉取(官方 release manylinux_x86,sha256 复核,见 PROVENANCE.md) → 镜像预拉 → gateway(ensure 自足:JWT 密钥 generate-certs+supervisor 镜像 `:latest` retag `:local`) → manager(deploy/.manager-stage 装配) → engine → 沙箱镜像(DOCKER_CMD=docker) → web;`status/stop/down` 全套。密钥接线单文件:`deploy/production.env`(JWT/manager token/端口/网段/Kafka advertised 全部 env 化);**联动键每次运行自动重算回写**(manager→网关端点+沙箱拨号随 `OPENSHELL_PORT`、console 反代随 `CODEAUDIT_HOST_GATEWAY`,手改无效,2026-09-07 交互化时落地;`OPENSHELL_MANAGER_URL` 自 2026-09-08 起恒为内部常量 `host.docker.internal:18800`——manager 是内部面非交互面,与访问 IP 解耦,访问 IP 只存 `CODEAUDIT_ACCESS_IP` 供横幅显示);LLM provider 不在部署期配置(部署后按完成横幅指引自注册)。**Windows 支持**(2026-09-08):WSL2+Docker Desktop 路径,`deploy/windows/bootstrap.ps1` 环境引导后复用同一 bash 入口(镜像全 Linux 镜像,不维护第二套部署事实源);`expose-lan.ps1` 做 LAN 端口转发;bash 入口 WSL 下访问面缺省 `localhost`+提示 portproxy。
+- 全新安装**零 DNS 依赖**(2026-09-08 代码实证): 服务名=docker 内嵌 DNS(dockerd 自带,与用户环境无关); 跨栈=host.docker.internal hosts 别名(extra_hosts 注入,非 DNS)/裸 IP; 沙箱路由域仅作 Host 头路由键**从不解析**(dsh-runtime routeReq 等价 curl --resolve 拨 CODEAUDIT_GATEWAY_DIAL_ADDR、svcURL 仅进 req.Host; bridge.mjs 零出站连接; dsh-runtime 服务零 net.LookupHost); 用户以 IP+端口直访 console/网关(横幅打印); 唯一出网依赖=用户自注册的 LLM provider endpoint。
 - 容器化接线要点(2026-09-05 GUI 实测沉淀,均在 engine base compose):①服务间地址 env 全覆盖(task→project/storage,gateway→sast/dsh,dsh-runtime→result/task,缺省回落 yaml 的 localhost 即拨自身);②任务源共享卷 `agent_repos` 四方同卷(gateway/task/dsh-runtime 挂 /data/repos,sast-adapter 挂 /app/data/repos——运行时 CWD 各异);③dsh-runtime 沙箱路由 `CODEAUDIT_GATEWAY_DIAL_ADDR`(prod/sim overlay 缺省 host.docker.internal:8080);④prod overlay 补 `CODEAUDIT_STORE=s3`(storage 生产档,缺省 memory=通知空+文件不落 MinIO)。
 - e2e 套件 `bash deploy/tests/run.sh`(前置模拟栈已 up;`run.sh 04` 跑单用例):
-  01 健康 → 02 认证/refresh → 03 项目 CRUD → 04 上传→SAST 全链(任务自带上传件) → 05 console SPA/反代 → 06 通知(Kafka→Redis) → 07 AI 链路(manager/LLM 不可达时断言**诚实失败**) → **08 项目级上传→自动任务全链(GUI 用户路径,2026-09-05 增,回归服务间地址+共享卷接线)** → **09 可观测面(快照/AI 日志/通知,回归 AppendTaskLog+存储档位)**。
+  01 健康 → 02 认证/refresh → 03 项目 CRUD → 04 上传→SAST 全链(任务自带上传件) → 05 console SPA/反代 → 06 通知(Kafka→Redis) → 07 AI 链路(manager/LLM 不可达时断言**诚实失败**) → **08 项目级上传→自动任务全链(GUI 用户路径,2026-09-05 增,回归服务间地址+共享卷接线)** → **09 可观测面(快照/AI 日志/通知,回归 AppendTaskLog+存储档位)** → **10 推理 provider/路由管理面(ADR-217 透传链,2026-09-07 manager 升级后并入默认序列;已实测钉死上游语义:网关允许删除"在用" provider 且路由悬空存活——破坏在下一次 AI 阶段路由解析时暴露,前端"在用禁删"为必要保护)**。
 - 部署接线静态审计 `python3 deploy/check-wiring.py`(服务间地址 env 全覆盖/agent_repos 共享卷/生产档位/代码侧 env 出口/YAML 重复键;LESSONS #10 防线,sandbox-deploy check 与 production-deploy 预检已自动带)。
 - GUI 人工全流程指引:[docs/manual-test-guide.md](manual-test-guide.md)。
 
@@ -154,6 +158,7 @@ vscode-plugin ──(codeaudit.serverUrl 配置)──> engine gateway REST/WS �
 | `deploy/env.sim` | 模拟栈真实 env | 按 `deploy/env.sim.example` 填 | —(可选,存在则自动加载) |
 | `dsh-pentest-sse/sandbox-artifacts/` vendored 大件 | 沙箱镜像构建输入(pdtools/nuclei-templates/agent-tools) | `fetch.sh` + `fetch-agent-tools.sh`(按 sbom 拉取,`--verify` 复核);新检出首次构建前必跑。**tool-sbom.json 副本已入库为缺省事实源**(2026-09-05,原权威在伞仓外兄弟检出,FDPE_SBOM 可覆盖);GitHub 直连为缺省,PW_TOOLS_PROXY 显式才走代理 | —(fetch 产物) |
 | `engine/.toolchain/` | 本地 Go 工具链(gitignored,ADR-122) | 见 engine README/ADR;source `env.sh` | ✅ 在位 |
+| 各仓 `.agent/` 过程文档(engine 账本/决策/roadmap/研究、伞仓 status.md;2026-09-08 人类指令退订 git) | AI 会话工作流事实源(任务包/ADR/证据索引),退订≠删除——文件全在本机 | 无"重建"——本机即唯一副本,跨机迁移须手工拷贝(禁入 git);各仓 `*.sh` 门禁脚本仍随仓,`.agent/*` 已 ignore | ✅ 在位(本机) |
 | 各前端仓 node_modules | 依赖 | `npm install` / `pnpm install` | — |
 
 迁移/重构后四步自检(详版见 deploy/README.md):① grep 旧标识(`../platform`、`../console`、`CD/` 等)→ ② `sandbox-deploy.sh plan` + `check` 只读全链 → ③ 密钥交接/重建(上表) → ④ compose 接管冲突处置(曾被手工绕过的容器先 `docker rm -f` 再 up)。

@@ -1,6 +1,6 @@
 // 项目详情组件回归（14号 §3.2 P0 + ADR-181 关联任务）：项目信息/关联任务表/空态。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import ProjectDetailPage from '../pages/ProjectDetailPage';
@@ -10,9 +10,10 @@ import { useFakeGateway, type HandlerCtx } from '../testsupport/fakeGateway';
 // ADR-203 fakeGateway：真实 api/client 执行，仅 HTTP 层伪造。
 // ADR-181 断言（详情页必须带 project_id 过滤）从 mock 内部断言改为 handler 内守卫——
 // 缺过滤直接抛错，查询失败即页面空态，行为级响亮失败。
-useFakeGateway({
+const gateway = useFakeGateway({
   'GET /v1/projects/:projectId': () => ({ project_id: 'p1', name: 'Demo', repo_url: 'https://x', default_branch: 'main', created_at: '2026-09-02T00:00:00Z' }),
   'GET /v1/projects/:projectId/config': () => ({ project_id: 'p1', config: {} }),
+  'DELETE /v1/projects/:projectId': {},
   'GET /v1/tasks': (ctx: HandlerCtx) => {
     if (ctx.query.get('project_id') !== 'p1') {
       throw new Error('ADR-181: 关联任务查询必须携带 project_id 过滤');
@@ -50,5 +51,19 @@ describe('ProjectDetailPage（ADR-181 关联任务）', () => {
     expect(screen.getByText('旧·SAST→AI增强')).toBeTruthy(); // ADR-182 弃用项历史兼容展示
     expect(screen.getByText('已完成')).toBeTruthy();
     expect(screen.getByText('执行中')).toBeTruthy();
+  });
+
+  it('E-17: 删除项目经 Popconfirm 确认 → DELETE /v1/projects/p1', async () => {
+    renderWith();
+    await waitFor(() => expect(screen.getByText('关联任务（2）')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '删除项目' }));
+    const ok = await waitFor(() =>
+      document.body.querySelector<HTMLElement>('.ant-popconfirm-buttons .ant-btn-primary'),
+    );
+    expect(ok).toBeTruthy();
+    fireEvent.click(ok!);
+    await waitFor(() =>
+      expect(gateway.requests.some((r) => r.method === 'DELETE' && r.url === '/v1/projects/p1')).toBe(true),
+    );
   });
 });

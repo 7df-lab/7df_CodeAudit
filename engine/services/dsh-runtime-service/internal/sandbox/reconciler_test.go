@@ -16,7 +16,7 @@ func TestOrphanNames(t *testing.T) {
 		{Name: "openshell-default--am-8306b7aef2d6-xyz"},  // 他人沙箱(命名不符) → 留
 		{Name: "zz-unrelated"},                            // 无关 → 留
 		{Name: "ca-short"},                                // 前缀对但长度不符 → 留(防误伤)
-		{Name: "future-prefix-xyz", Labels: map[string]string{managedByLabel: "codeaudit-dsh-runtime"}}, // 名字不合正则但带归属标签 → 删(标签兜底)
+		{Name: "future-prefix-xyz", Labels: map[string]string{managedByLabelKey: managedByLabelValue}}, // 名字不合正则但带归属标签 → 删(标签兜底)
 		{Name: "future-prefix-abc", Labels: map[string]string{"managed-by": "someone-else"}}, // 他人标签 → 留
 	}
 	got := orphanNames(refs, func(n string) bool { return active[n] })
@@ -57,7 +57,7 @@ func TestSandboxNameRe(t *testing.T) {
 func TestDecodeSandboxRefs(t *testing.T) {
 	body := map[string]any{
 		"sandboxes": []any{
-			map[string]any{"name": "ca-0123456789ab", "labels": map[string]any{managedByLabel: "codeaudit-dsh-runtime"}},
+			map[string]any{"name": "ca-0123456789ab", "labels": map[string]any{managedByLabelKey: managedByLabelValue}},
 			map[string]any{"name": "other"},
 		},
 	}
@@ -65,7 +65,7 @@ func TestDecodeSandboxRefs(t *testing.T) {
 	if err != nil || len(refs) != 2 {
 		t.Fatalf("decodeSandboxRefs: refs=%v err=%v", refs, err)
 	}
-	if refs[0].Name != "ca-0123456789ab" || refs[0].Labels[managedByLabel] != "codeaudit-dsh-runtime" {
+	if refs[0].Name != "ca-0123456789ab" || refs[0].Labels[managedByLabelKey] != managedByLabelValue {
 		t.Fatalf("refs[0] = %+v", refs[0])
 	}
 	if _, err := decodeSandboxRefs(map[string]any{"unexpected": 1}); err == nil {

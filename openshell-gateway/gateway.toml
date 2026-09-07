@@ -26,7 +26,7 @@
 version = 1
 
 [openshell.gateway]
-server_sans = ["*.openshell.internal"]
+server_sans = ["*.sandbox.codeaudit.internal"]
 # Bind to loopback only.  The Docker driver adds an extra listener on the
 # bridge interface automatically so sandbox containers can reach the gateway.
 bind_address        = "127.0.0.1:8080"

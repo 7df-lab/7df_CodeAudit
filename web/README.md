@@ -12,6 +12,14 @@ Dockerfile                   多阶段：node:20-alpine 构建 → nginx:1.27-al
 docker-compose.yml           一键起容器（网关地址/端口可注入）
 nginx/default.conf.template  SPA 回退 + /v1 反代（REST+WS）+ gzip/缓存/上传余量
 index.html                   入口 HTML（中文站点，data-URL 空 favicon）
+docs/                        接口契约与防回归机制文档（AI 会话第二入口）
+  external-interfaces.md     外部接口契约：浏览器↔网关 HTTP/WS 全端点预期输入/输出（[E-nn] 锚点）
+  internal-interfaces.md     内部接口契约：模块间调用面/缓存键失效图/复用关系（[I-nn] 锚点）
+  dataflows-other.md         其余数据流：令牌生命周期/WS×轮询/下载流/反代链/构建部署
+  regression-guard.md        回归防线总纲：三道防线 + 缺陷模式档案 + 修复工作流
+scripts/
+  guard.sh                   静态守卫（npm run guard）：禁区模式 grep 拦截 + 锚点存在性自检
+  mutation-check.sh          变异检验（npm run mutation-check）：证明历史 bug 锁会红
 src/
   main.tsx                   装配：StrictMode + antd zh_CN + QueryClient + Router + Session + ErrorBoundary
   App.tsx                    路由表 + 全局壳（顶栏导航/会话守卫/未读角标/API 错误挂载点）
@@ -30,7 +38,7 @@ src/
                              findings/（列表/详情）、views/（融合/审核/对比）、reports、
                              notifications、admin/Users
   testsupport/fakeGateway.ts 测试台：axios adapter 层伪造网关（详见「测试」）
-  __tests__/                 21 个测试文件（vitest run 入口自动发现）
+  __tests__/                 28 个测试文件（vitest run 入口自动发现）
 ```
 
 ## 本地开发
@@ -94,7 +102,9 @@ npm run preview         # 本地预览生产构建（/v1 代理配置与 dev 相
 ## 测试
 
 ```bash
-npm test     # vitest run，jsdom 环境，src/test-setup.ts 补 antd 所需 matchMedia
+npm test            # vitest run，jsdom 环境，src/test-setup.ts 补 antd 所需 matchMedia
+npm run guard       # 静态守卫（秒级）：禁区模式拦截 + 防御锚点自检，每次交付提交前必跑
+npm run mutation-check  # 变异检验（2-4min，要求干净工作区）：证明历史 bug 回归锁会红
 ```
 
 测试台 `src/testsupport/fakeGateway.ts` 在 **axios adapter 层**伪造网关，纪律：
@@ -102,7 +112,15 @@ npm test     # vitest run，jsdom 环境，src/test-setup.ts 补 antd 所需 mat
 1. 只在 HTTP 传输层造假——`api/client.ts` 的真实代码（FormData 上传、参数序列化、401 刷新、503 重试）全量执行；
 2. 未建模的路由直接抛错（响亮失败），不做静默空成功；
 3. 错误用 `httpError(status, body)` 构造，经真实拦截器链回放（401 刷新/429 退避/503 重试均可测）;
-4. 断言请求形状用测试台返回的 `requests` 日志。
+4. 断言请求形状用测试台返回的 `requests` 日志（method/url/query/body/config）。
+
+### 回归防线（防同类 bug 复发）
+
+三道防线见 `docs/regression-guard.md`：①契约锚定测试（docs 两份接口文档的 [E-nn]/[I-nn]
+锚点 ↔ 用例双向追溯）；②`npm run guard` 静态守卫（整模块 mock / 死契约复活 / 防御锚点
+丢失直接拦截）；③`npm run mutation-check` 变异检验（对 20 类历史缺陷档案中的 12 个要害
+注入等价变异，证明对应测试会红——锁失效即红灯）。缺陷修复工作流：先写红测试 → 修 →
+建档（§3 缺陷模式档案加行/加固锁）→ 变异验证 → commit 记账。
 
 ## 容器化
 
@@ -146,6 +164,18 @@ CODEAUDIT_GATEWAY_UPSTREAM=gateway.internal:8080 docker compose up -d
   （本机当时无运行中的网关，ECONNREFUSED 属预期）
 - ⏳ `docker build / compose up`：本机无 docker 运行时，未实测；compose 已内置 Linux `extra_hosts`
   映射，在有 docker 的宿主上按上方命令执行即可
+
+## 验证状态（2026-09-07，接口文档三件套 + 测试体系完善 + 防回归机制会话）
+
+- ✅ `npm test`：28 个测试文件 147 用例全部通过（较 101 用例新增 46：契约锚定 clientContract/
+  拦截器 clientInterceptors/session 会话/App 路由守卫/快照增量吸收/翻页筛选契约/LoginPage/
+  项目删除；pages2 迁移至 fakeGateway 消除最后一处整模块 mock）
+- ✅ `npm run build`：`tsc -b` 零错误 + vite 四块分包（index 82.5KB / vendor 125.8KB /
+  react 163.9KB / antd 997.0KB，与上一版持平）
+- ✅ `npm run guard`：14 项静态守卫全过；`npm run mutation-check`：11 个变异全部被杀
+  （假绿检验自动化，工作区干净前提）；vitest 全局 testTimeout 放宽至 15s
+  （全量并发时 jsdom+antd 渲染被 5s 默认值误杀——绿必须可信）
+- 文档：docs/ 新增外部接口契约（E-01..E-47）/内部接口契约（I-nn）/其余数据流/回归防线总纲四件
 
 ## 验证状态（2026-09-06，六缺陷修复会话补测）
 

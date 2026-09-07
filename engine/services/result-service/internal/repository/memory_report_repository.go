@@ -21,6 +21,14 @@ func NewMemoryReportRepository() *MemoryReportRepository {
 	return &MemoryReportRepository{reports: map[string]*model.Report{}}
 }
 
+// DeleteReport — ADR-212: 同 DeleteReport 接口注释。
+func (m *MemoryReportRepository) DeleteReport(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.reports, id)
+	return nil
+}
+
 func (m *MemoryReportRepository) CreateReport(r *model.Report) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

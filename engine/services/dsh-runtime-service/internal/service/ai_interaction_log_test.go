@@ -2,8 +2,12 @@
 package service
 
 import (
+	"container/list"
 	"os"
 	"path/filepath"
+	"strconv"
+
+	sandbox "github.com/codeaudit/services/dsh-runtime-service/internal/sandbox"
 	"strings"
 	"sync"
 	"testing"
@@ -106,5 +110,109 @@ func TestAILogStore_ConcurrentWriters(t *testing.T) {
 	_, next, _, total := e.read(0, 0)
 	if total != 80 || next != 80 {
 		t.Fatalf("concurrent writes: total=%d next=%d", total, next)
+	}
+}
+
+// ADR-215 回归：LRU 双上限淘汰——条目数超限先淘汰最久未触碰的已终态条目
+// （进行中条目保护），淘汰后读路径走磁盘兜底不丢数据。
+func TestAILogStore_LRUEviction(t *testing.T) {
+	s := newAILogStore("")
+	// 填满上限（终态）+ 最老的条目置尾
+	first := s.writer("task-000")
+	first.write([]byte("oldest"))
+	first.finish()
+	// writer() 内联触发淘汰：填满上限再插入，最早的终态条目即被挤出
+	for i := 1; i <= aiLogMaxEntries; i++ {
+		e := s.writer(fmtTaskID(i))
+		e.write([]byte("x"))
+		e.finish()
+	}
+	if _, ok := s.logs["task-000"]; ok {
+		t.Fatalf("oldest completed entry must be evicted inline at insert")
+	}
+	// 再插一条新任务 → 最老的终态条目继续被挤掉
+	s.writer("task-new")
+	if len(s.logs) > aiLogMaxEntries {
+		t.Fatalf("store must stay within cap after insert, got %d", len(s.logs))
+	}
+	if _, ok := s.logs["task-new"]; !ok {
+		t.Fatalf("newest entry must survive")
+	}
+	if len(s.logs) > aiLogMaxEntries {
+		t.Fatalf("store must be within cap, got %d", len(s.logs))
+	}
+}
+
+// ADR-215 回归：进行中（未 finish）条目受保护——第一轮只淘汰终态条目。
+func TestAILogStore_IncompleteEntriesProtected(t *testing.T) {
+	s := newAILogStore("")
+	running := s.writer("task-running")
+	running.write([]byte("in-flight"))
+	// 全部其他条目置为终态且更老
+	for i := 0; i < aiLogMaxEntries; i++ {
+		e := s.writer(fmtTaskID(i))
+		e.write([]byte("x"))
+		e.finish()
+	}
+	// running 最老（最先创建）——若淘汰不区分终态，它应最先被挤掉
+	s.lru.MoveToBack(running.lruEl.(*list.Element))
+	s.writer("task-new")
+	if _, ok := s.logs["task-running"]; !ok {
+		t.Fatalf("in-flight entry must be protected while completed evictables exist")
+	}
+}
+
+// ADR-215 回归：淘汰后读路径走磁盘兜底——数据不丢。
+func TestAILogStore_EvictedTaskReadsFromDisk(t *testing.T) {
+	dir := t.TempDir()
+	s := newAILogStore(dir)
+	e := s.writer("task-evict")
+	e.write([]byte("precious payload"))
+	e.finish()
+	if _, ok := s.logs["task-evict"]; !ok {
+		t.Fatalf("precondition: entry present")
+	}
+	// 强制淘汰：手动从注册表移除（模拟 LRU 挤出）
+	s.mu.Lock()
+	delete(s.logs, "task-evict")
+	s.mu.Unlock()
+	chunk, next, total := s.readDiskOnly("task-evict", 0, 0)
+	const want = int64(len("precious payload"))
+	if string(chunk) != "precious payload" || total != want || next != want {
+		t.Fatalf("disk fallback after eviction: chunk=%q total=%d", chunk, total)
+	}
+}
+
+func fmtTaskID(i int) string { return "task-" + string(rune('a'+i%26)) + fmtInt(i) }
+
+func fmtInt(i int) string { return strconv.Itoa(i) }
+
+// ADR-215 补记回归：wireAILog 必须在 runner 构造前把回调写进 cfg（runner 拷贝
+// cfg，构造后补线即丢失——GUI 实测 AI 交互日志恒 0KB 的回归根因）；禁用态
+// 不建条目且回调保持 nil。
+func TestWireAILog_WiresCallbacksBeforeRunnerCopy(t *testing.T) {
+	cfg := &sandbox.Config{Mode: "openshell"}
+	e := wireAILog(cfg, "t-wire")
+	if e == nil || cfg.OnHumanLog == nil || cfg.OnRawLog == nil {
+		t.Fatalf("enabled mode must create entry and wire both callbacks")
+	}
+	cfg.OnHumanLog("hello") // 经 cfg 回调写入条目（拷贝后仍生效）
+	chunk, _, _, _ := e.read(0, 0)
+	if string(chunk) != "hello" {
+		t.Fatalf("write via cfg callback missing: %q", chunk)
+	}
+}
+
+func TestWireAILog_DisabledModeNoEntry(t *testing.T) {
+	before := len(sharedAILogs.logs)
+	cfg := &sandbox.Config{Mode: "rule"} // 非沙箱模式
+	if e := wireAILog(cfg, "t-disabled"); e != nil {
+		t.Fatalf("disabled mode must not create entry")
+	}
+	if cfg.OnHumanLog != nil || cfg.OnRawLog != nil {
+		t.Fatalf("disabled mode must leave callbacks nil")
+	}
+	if len(sharedAILogs.logs) != before {
+		t.Fatalf("disabled mode leaked an entry")
 	}
 }

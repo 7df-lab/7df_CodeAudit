@@ -34,16 +34,39 @@ var ReposDir string
 // config.project_path 写入 <dir>/.codeaudit-task-<task_id>，供任务→上传目录持久回查。
 func taskLinkName(taskID string) string { return ".codeaudit-task-" + taskID }
 
+// resolveProjectRoot — 剥壳降入：解包目录内只有唯一子目录时逐层降入（封顶 3 层）。
+// 与 task-service/internal/service.ResolveProjectRoot 同语义（跨 Go module 复制件，
+// 修改时两处同步——口径漂移会让 fixpatch 校验与 source-file 解析再度根错位）。
+func resolveProjectRoot(dir string) string {
+	cur := dir
+	for i := 0; i < 3; i++ {
+		entries, err := os.ReadDir(cur)
+		if err != nil || len(entries) != 1 || !entries[0].IsDir() {
+			return cur
+		}
+		cur = filepath.Join(cur, entries[0].Name())
+	}
+	return cur
+}
+
 // resolveTaskRoot — 任务源根解析（ADR-195 顺序）：
-// ①repos_dir/<task_id>（仓库拉取流）②上传目录链接文件 ③project config
-// project_path（ADR-148 上传流）④唯一内容回退（按 seedPath 在全部上传目录查包含者；
-// 唯一命中即用，多命中取 mtime 最新——覆盖 ADR-195 之前创建的无链接存量任务）。
+// ①repos_dir/<task_id>（仓库拉取流）①b uploads-<task_id>/unpacked（ADR-200 storage
+// 拉包流：task-service FetchUploadArchive 的落点布局，2026-09-06 起含剥壳——
+// gw-f6a3523 实证：布局迁移后旧四流对上传流任务全部落空 → 源码全文 404）
+// ②上传目录链接文件 ③project config project_path（ADR-148 上传流）
+// ④唯一内容回退（按 seedPath 在全部上传目录查包含者；唯一命中即用，多命中取
+// mtime 最新——覆盖 ADR-195 之前创建的无链接存量任务）。
 func (t *Transcoder) resolveTaskRoot(ctx context.Context, taskID, projectID, seedPath string) (string, string, error) {
 	// ① 仓库拉取流
 	if ReposDir != "" {
 		candidate := filepath.Join(ReposDir, taskID)
 		if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
 			return candidate, "repos_dir", nil
+		}
+		// ①b storage 拉包流（ADR-200/209）：uploads-<task_id>/unpacked [+剥壳降入]
+		candidate = filepath.Join(ReposDir, "uploads-"+taskID, "unpacked")
+		if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
+			return resolveProjectRoot(candidate), "uploads_unpacked", nil
 		}
 	}
 	// ② 上传目录链接文件

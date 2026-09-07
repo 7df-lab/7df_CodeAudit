@@ -1161,6 +1161,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const edit = new vscode.WorkspaceEdit();
     const expected: { doc: vscode.TextDocument; content: string }[] = [];
     let deletedCount = 0;
+    let recreatedCount = 0;
     try {
       for (const [fsPath, content] of Object.entries(restored)) {
         const uri = vscode.Uri.file(fsPath);
@@ -1168,6 +1169,14 @@ export function activate(context: vscode.ExtensionContext): void {
           // 修复前不存在的文件（Add File / Move to 目标）：回滚 = 删除
           edit.deleteFile(uri, { ignoreIfNotExists: true });
           deletedCount++;
+          continue;
+        }
+        if (!fs.existsSync(fsPath)) {
+          // Delete File / Move to 源已被补丁移除：回滚 = 重建。openTextDocument 对缺失文件
+          // 抛错、WorkspaceEdit.replace 无法作用于未打开文档，故此类直接落盘重建
+          await fs.promises.mkdir(path.dirname(fsPath), { recursive: true });
+          await fs.promises.writeFile(fsPath, content, 'utf8');
+          recreatedCount++;
           continue;
         }
         const doc = await vscode.workspace.openTextDocument(uri);
@@ -1195,7 +1204,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     // 回滚同样需要显式保存，否则仅存在于未保存缓冲区
     const saved = await Promise.all(expected.map((e) => e.doc.save()));
-    const summary = `已回滚 ${expected.length} 个文件${deletedCount > 0 ? `、删除 ${deletedCount} 个新增文件` : ''}`;
+    const summary = `已回滚 ${expected.length + recreatedCount} 个文件${deletedCount > 0 ? `、删除 ${deletedCount} 个新增文件` : ''}`;
     if (!saved.every(Boolean)) {
       return `${summary}（${saved.filter(Boolean).length}/${expected.length} 个文件保存成功，其余请手动保存）`;
     }

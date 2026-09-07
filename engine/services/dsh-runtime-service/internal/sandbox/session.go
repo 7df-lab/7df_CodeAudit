@@ -107,6 +107,10 @@ func (r *ManagerRunner) launch(ctx context.Context, taskID string) (ls *liveSess
 		"workspace": r.cfg.Workspace, "name": name, "spec": sandboxSpec(name, taskID, r.cfg.Image),
 	})
 	if err != nil {
+		// ADR-212: 注册先于创建（防对账竞态），失败必须注销——否则每次失败泄
+		// 一条注册表记录；最坏情形（manager 实际已建但响应丢失）真孤儿被本进程
+		// 注册表永久屏蔽，对账器（ADR-210）永不回收。
+		activeSandboxes.Delete(name)
 		r.event("error", "沙箱创建失败: %v", err)
 		return nil, fmt.Errorf("create sandbox: %w", err)
 	}
@@ -197,10 +201,14 @@ const recoverAgentPrompt = "你此前派发的后台子任务因推理流中断�
 // continueAfterStreamBreak — 主会话推理流瞬态中断后的继续指令（ADR-192，≤2 轮）：
 // 会话历史仍在沙箱内存中，模型可见自己被截断的提交，直接重发（Cline 对 API 流断
 // 的回合级重试映射）。ADR-194 分批提交：断流可能发生在批间——已成功的批次在服务
-// 端已累积，续跑只需补齐剩余批次。
+// 端已累积，续跑只需补齐剩余批次。ADR-211 自适应缩批：既然上一批把流养断了，续跑
+// 再按原批量重试就是重蹈覆辙——指令显式要求后续每批进一步缩小（含补丁每批 1 条），
+// 逐批连续提交、在服务端累积（turn() 跨回合合并），单批越小落袋概率越高。
 const continueAfterStreamBreak = "你上一回合的推理流在输出中途被截断（内容未送达）。" +
 	"请继续：若此前的 submit_findings 已有批次成功提交，只需提交剩余批次；若分析已完成但尚未开始提交，" +
-	"立即按输出契约分批提交全部发现（每批 ≤4 条）；不要重复已完成的探索。"
+	"立即按输出契约分批提交全部发现。截断说明单批参数流过长：后续每批进一步缩小——" +
+	"含 diff_patch 的发现每批 1 条、上下文行每侧最多 3 行，逐批连续提交（服务端合并去重）；" +
+	"不要重复已完成的探索。"
 
 // maxTurnStreamRetries — 主会话瞬态流断的回合级重试上限（ADR-192）。
 const maxTurnStreamRetries = 2
@@ -340,7 +348,7 @@ func (ls *liveSession) teardown() {
 		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_, err := ls.r.call(delCtx, "DELETE",
-			ls.url+"/api/v1/sandboxes/"+ls.ref.Name+"?workspace="+ls.r.cfg.Workspace, ls.token, nil)
+			ls.url+"/api/v1/sandboxes/"+ls.ref.Name+"?workspace="+neturl.QueryEscape(ls.r.cfg.Workspace), ls.token, nil) // ADR-212: workspace 转义（对齐 uploadFile）
 		return err
 	}
 	// ADR-210: 旧实现吞错且无条件打"已回收"（manager 瞬时不可达一次即永久泄漏，日志与事实相悖）

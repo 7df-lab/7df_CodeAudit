@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/codeaudit/common-go/grpcrecover"
 	codeauditcfg "github.com/codeaudit/go-config"
 	"log"
 	"net"
@@ -61,7 +62,10 @@ func main() {
 	userHandler := handler.NewUserHandler(userSvc, idm)
 
 	// Create gRPC server and register services.
-	s := grpc.NewServer()
+	s := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(grpcrecover.UnaryServerInterceptor()), // ADR-212: panic 杀请求不杀进程
+		grpc.ChainStreamInterceptor(grpcrecover.StreamServerInterceptor()),
+	)
 	v1.RegisterProjectServiceServer(s, projectHandler)
 	v1.RegisterUserServiceServer(s, userHandler)
 

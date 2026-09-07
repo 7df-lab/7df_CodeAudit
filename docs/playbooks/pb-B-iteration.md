@@ -17,7 +17,7 @@
 | manager | `manager/README.md` + `manager/deploy/README.md` | `python3 -m pytest tests/ -q`（26 条离线契约） |
 | openshell-gateway | `openshell-gateway/README.md` | 无测试仓：改配置后 `./deploy.sh --check` + `./gateway_lifecycle.sh verify` |
 | dsh-runtime | `dsh-runtime/AGENTS.md`（上游约定） | `pnpm test`（分层见其 docs/testing.md） |
-| dsh-pentest-sse | `dsh-pentest-sse/README.md` | 无自动化测试：构建期断言 + `./deploy.sh` 冒烟（走 pb-C） |
+| dsh-pentest-sse | `dsh-pentest-sse/README.md` | `node --test test/*.test.mjs`（48 例门禁，含变异自检；node 22 不收目录参数）+ 构建期断言；镜像联动走 pb-C |
 
 ## 步骤
 

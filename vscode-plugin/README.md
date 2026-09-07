@@ -133,14 +133,25 @@ DTO 与平台 proto 对齐（`UnifiedFinding`/`ScanTask`/`TaskProgress` 等 snak
 npm install
 npm run compile   # tsc 编译到 out/
 npm run watch     # 增量编译
-npm test          # tsc 编译测试 + mocha 跑全部单测（当前 139 个全过）
+npm test          # tsc 编译测试 + mocha 跑全部测试（当前 201 个全过：单测+胶水层行为测试+结构守卫）
 npm run package   # vsce 打包 vsix + verify-vsix 关卡
 ```
 
-- 测试在纯 Node 进程运行：`test/run.js` 把 `vscode` 模块重定向到 `test/mocks/vscode.js` 桩实现；业务逻辑全部抽成不 import vscode 的纯模块（见下表），因此无需启动扩展宿主即可覆盖。
+- 测试在纯 Node 进程运行：`test/run.js` 把 `vscode` 模块重定向到 `test/mocks/vscode.js` 内存桩（含 workspace/window/commands/URI/代码动作全 API 面与真实临时目录 fs），`test/extension.test.ts` 据此驱动 activate() 全流程；业务逻辑全部抽成不 import vscode 的纯模块（见下表），无需启动扩展宿主即可覆盖。
 - 真实链路脚本（需平台网关在线，默认 `http://localhost:8080`）：`node test/smoke.js`（登录→上传→建任务→轮询→拉发现）、`node test/fixflow.e2e.js`（多风险同文件顺序修复→逐字节回滚→再应用）；`node test/mockGateway.js` 可在无平台时驱动修复 UI 全流程。
 - **打包关卡**：`scripts/verify-vsix.js` 校验 VSIX 内必须含 `node_modules/adm-zip`（workspaceZip 顶层 require，缺它扩展激活即崩、全部命令注册不上——历史上真实发生过两次）。`.vscodeignore` 已放行 adm-zip，勿用 `--no-dependencies` 打包。
 - Node ≥ 20（实测 22）：REST 客户端与测试依赖全局 `fetch`/`FormData`/`Blob`。
+
+### 接口契约文档与防回归机制（改代码前必读）
+
+| 文档 | 内容 |
+|---|---|
+| `docs/external-interfaces.md` | 外部接口契约：平台 REST/WS 端点的预期输入/输出、VS Code 宿主接口面（命令/配置/上下文键/视图/postMessage 协议）、工作区文件边界、CLI 工具 |
+| `docs/internal-interfaces.md` | 内部接口契约：各纯模块导出符号的预期输入/输出/错误语义/不变量，含 extension 胶水层内部函数 |
+| `docs/data-flows.md` | 其他数据流转：持久化资产、状态机、事件/定时器拓扑、端到端链路走查、宿主进程交互、离线工具链 |
+| `docs/regressions.md` | **防回归机制与缺陷档案**：每类历史 bug 的根因与机器守卫位置；修 bug/改接口的纪律（修 bug 必附回归锁测试+档案行；改契约先改文档再改测试后改实现） |
+
+`test/guards.test.ts` 是结构守卫：package.json 命令/配置/视图声明 ⇄ extension.ts 注册互为全集、src 每个模块必须被测试引用——防止"命令 not found / 死配置键 / 测试盲区"类无声漂移。
 
 **模块结构**（`extension.ts` 为薄胶水层，业务逻辑全部在可单测的纯模块中）：
 
@@ -166,6 +177,6 @@ npm run package   # vsce 打包 vsix + verify-vsix 关卡
 - **AI 正文为纯文本流**：webview 中以 `<pre>` 渲染（escapeHtml 后进 DOM，无 markdown 渲染）；日志展示最近 200 条。
 - **无精确位置的发现**：不进 Problems（无行列可标），只进侧栏树「(无位置)」分组。
 - **扫描结果为快照语义**：本地诊断反映扫描时刻的代码；文件后续改动不会自动重校验，「✔ 已修复」徽章仅表示补丁已应用，不代表风险已被平台复验消除。
-- **E2E/冒烟脚本依赖真实平台**：单元测试（139 个）无外部依赖，可离线跑。
+- **E2E/冒烟脚本依赖真实平台**：单元与行为测试无外部依赖，可离线跑。
 - **详情 webview 首次交互**：窗口重载/详情视图首次解析后，第一次点击操作按钮可能被 webview 加载时序吞掉，重试一次即可（第二次起稳定）。
 - **mockGateway 生命周期**：`node test/mockGateway.js [port] [autoCompleteMs]`——任务 start 后 autoCompleteMs（默认 1500）自动 COMPLETED；第 3 参数可拉长 RUNNING 窗口（如 15000）供 GUI 人工测试暂停/恢复/取消；对不存在任务按真实网关口径返回 404。

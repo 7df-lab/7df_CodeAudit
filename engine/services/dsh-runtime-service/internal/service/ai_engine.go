@@ -224,7 +224,7 @@ func fetchFindingsByIDs(ids []string) []*pb.UnifiedFinding {
 	if len(ids) == 0 {
 		return out
 	}
-	conn, closeFn, err := dial(envOr("CODEAUDIT_RESULT_ADDR", "localhost:50058"))
+	conn, closeFn, err := dial(cfgAddr("result", "CODEAUDIT_RESULT_ADDR")) // ADR-212: 与持久化侧同源
 	if err != nil {
 		return out
 	}
@@ -245,7 +245,7 @@ func fetchFindingsByIDs(ids []string) []*pb.UnifiedFinding {
 // fetchFindingsByTask — 按 task 翻页取全部 findings。
 func fetchFindingsByTask(taskID string) ([]*pb.UnifiedFinding, error) {
 	out := []*pb.UnifiedFinding{}
-	conn, closeFn, err := dial(envOr("CODEAUDIT_RESULT_ADDR", "localhost:50058"))
+	conn, closeFn, err := dial(cfgAddr("result", "CODEAUDIT_RESULT_ADDR")) // ADR-212: 与持久化侧同源
 	if err != nil {
 		return out, err
 	}

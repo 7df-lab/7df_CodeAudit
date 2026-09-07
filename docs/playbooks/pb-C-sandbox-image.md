@@ -18,11 +18,12 @@
 # 1. dsh-runtime 仓：开发 + 过闸 + commit（必须 commit！）
 cd dsh-runtime && pnpm test && git add <文件> && git commit -m "…" && git push
 
-# 2. dsh-pentest-sse 仓：改配方（bridge/settings/plugins 按工作树拷贝，建议也 commit）
+# 2. dsh-pentest-sse 仓：改配方 → 过闸 → commit（未提交改动不进镜像，且门禁必跑）
 cd ../dsh-pentest-sse
+node --test test/*.test.mjs   # 48 例门禁（≈45s，含变异自检与 staging 演练；见 test/REGRESSIONS.md）
 
-# 3. 若升版本 tag，三处同步（漏一处=清单失真，LESSONS #2）：
-#    deploy.sh:16 的 IMAGE 默认 / agent-tools-sbom.json 的 "image" 字段 / 伞仓 deploy/sandbox-deploy.toml
+# 3. tag 口径：消费面一律 :latest（deploy.sh 缺省恒 :latest，版本化构建自动刷新 latest）；
+#    出新溯源 tag 时同步 agent-tools-sbom.json 的 "image" 字段（漏同步=sbom 失真，LESSONS #2）
 
 # 4. 构建+部署+冒烟（staging 组装 → pct exec 107 docker build → manager API 冒烟）
 ./deploy.sh            # 冒烟失败不阻塞镜像就位；SKIP_SMOKE=1 跳过冒烟
@@ -41,7 +42,7 @@ bash deploy/sandbox-deploy.sh check dsh-pentest-sse   # 镜像在 107 就位（t
 
 ## DoD
 
-- 镜像在 LXC 107 就位且 tag 正确（check 输出为准，不转述）；
+- 配方仓门禁绿（`node --test test/*.test.mjs`，原始输出为准）；镜像在 LXC 107 就位且 tag 正确（check 输出为准，不转述）；
 - `deploy.sh` 冒烟通过（或 `SKIP_SMOKE=1` 时在账本明确记录跳过原因）；
 - tag 若变更，三处同步完成；两仓均已 commit+push；伞仓清单与指针落账。
 

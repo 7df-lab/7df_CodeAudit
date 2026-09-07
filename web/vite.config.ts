@@ -37,5 +37,8 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test-setup.ts',
+    // 全量并发时 jsdom+antd 渲染在共享机上会被 5s 默认值误杀（绿不可信）——
+    // 超时不是行为断言，统一放宽；个别慢用例（503 退避链）已在用例级显式覆盖
+    testTimeout: 15_000,
   },
 });

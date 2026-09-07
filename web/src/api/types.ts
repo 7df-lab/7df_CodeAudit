@@ -148,3 +148,35 @@ export interface ListProjectsResponse {
   projects: Project[];
   pagination?: PaginationResponse;
 }
+
+// ===== 推理 provider/路由管理（ADR-217）：结构 = engine gateway transcode protojson 直出 =====
+
+// proto InferenceProviderInfo——凭据永不回流（服务端读路径按省略脱敏）
+export interface InferenceProvider {
+  name: string;
+  type: string;
+  config: Record<string, string>;
+}
+
+// proto InferenceRouteInfo——version uint64 → protojson 字符串
+export interface InferenceRoute {
+  provider: string;
+  model: string;
+  version: string;
+}
+
+export interface ValidatedEndpoint {
+  url: string;
+  protocol: string;
+}
+
+// proto SetInferenceRouteResponse——网关连通性验证回执逐层透传（manager→engine→前端）
+export interface SetInferenceRouteResponse extends InferenceRoute {
+  validation_performed: boolean;
+  validated_endpoints: ValidatedEndpoint[];
+}
+
+export interface UpsertInferenceProviderResponse {
+  name: string;
+  created: boolean;
+}

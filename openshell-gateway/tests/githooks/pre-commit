@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# pre-commit — U6 结构化配置 parse 静态门禁（秒级、离线）。
+# 启用：git config core.hooksPath tests/githooks
+# 全量行为级测试不进钩子：bash tests/run.sh（改 compose/TOML/脚本后手动跑）
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+exec bash "$root/tests/run.sh" --fast

@@ -939,6 +939,17 @@ service DSHRuntimeService {
   // ADR-189 交互日志订阅流：人性化流写入即推增量（字节游标语义与 GetAIInteractionLog
   // 一致；complete=true 终帧后服务端关流）
   rpc StreamAIInteractionLog(StreamAIInteractionLogRequest) returns (stream GetAIInteractionLogResponse);
+
+  // 推理 provider/路由管理（ADR-217：经 openshell-manager 透传 OpenShell 网关，权威
+  // 存储在网关 gateway.db；本服务只做管道。workspace 由 dsh-runtime 从全局配置
+  // dsh_runtime.sandbox.workspace 注入，不对外暴露；credentials 只进不出——透传
+  // manager→网关加密存储，任何响应不回流）
+  rpc ListInferenceProviders(ListInferenceProvidersRequest) returns (ListInferenceProvidersResponse);
+  rpc GetInferenceProvider(GetInferenceProviderRequest) returns (InferenceProviderInfo);
+  rpc UpsertInferenceProvider(UpsertInferenceProviderRequest) returns (UpsertInferenceProviderResponse);
+  rpc DeleteInferenceProvider(DeleteInferenceProviderRequest) returns (DeleteInferenceProviderResponse);
+  rpc GetInferenceRoute(GetInferenceRouteRequest) returns (InferenceRouteInfo);
+  rpc SetInferenceRoute(SetInferenceRouteRequest) returns (SetInferenceRouteResponse);
 }
 
 // ------------------------------------------------------------
@@ -1326,6 +1337,49 @@ message AnalysisProgressEvent { string task_id = 1; AnalysisStatus status = 2; s
 message GetSessionStatusRequest { string session_id = 1; }
 message SessionStatus { string session_id = 1; string state = 2; int64 active_sandboxes = 3; }
 message CancelAnalysisRequest { string task_id = 1; }
+
+// --- 推理 provider/路由管理（ADR-217；结构依据 manager /api/v1/inference/* 契约）---
+message InferenceProviderInfo {
+  string name = 1;
+  string type = 2;
+  map<string, string> config = 3;  // 凭据永不回流（manager 侧按省略脱敏）
+}
+message ListInferenceProvidersRequest {}
+message ListInferenceProvidersResponse { repeated InferenceProviderInfo providers = 1; }
+message GetInferenceProviderRequest { string name = 1; }
+message UpsertInferenceProviderRequest {
+  RequestMetadata metadata = 1;   // 幂等键（R4；网关为 REST 写操作生成注入；upsert 天然幂等）
+  string name = 2;
+  string type = 3;
+  map<string, string> credentials = 4;  // 只进不出：网关加密存储，响应永不回流
+  map<string, string> config = 5;
+}
+message UpsertInferenceProviderResponse { string name = 1; bool created = 2; }
+message DeleteInferenceProviderRequest {
+  RequestMetadata metadata = 1;   // 幂等键（R4；删除天然幂等）
+  string name = 2;
+}
+message DeleteInferenceProviderResponse { bool deleted = 1; }
+message GetInferenceRouteRequest {}
+message InferenceRouteInfo {
+  string provider = 1;   // 未设置路由时为空串
+  string model = 2;
+  uint64 version = 3;    // protojson 序列化为 string
+}
+message SetInferenceRouteRequest {
+  RequestMetadata metadata = 1;   // 幂等键（R4）
+  string provider = 2;
+  string model = 3;
+  bool no_verify = 4;   // true=跳过网关连通性验证（默认验证，回执带 validated_endpoints）
+}
+message ValidatedEndpoint { string url = 1; string protocol = 2; }
+message SetInferenceRouteResponse {
+  string provider = 1;
+  string model = 2;
+  uint64 version = 3;
+  bool validation_performed = 4;
+  repeated ValidatedEndpoint validated_endpoints = 5;
+}
 
 // --- AI 交互日志（ADR-168；补遗②人性化渲染）---
 // 沙箱内 DSH 经 bridge（JSON-RPC⇄SSE）的交互流：任务运行中增量可读（GUI 实时回显），

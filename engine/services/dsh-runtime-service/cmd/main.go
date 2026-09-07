@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 
+	"github.com/codeaudit/common-go/grpcrecover"
 	codeauditcfg "github.com/codeaudit/go-config"
 	pb "github.com/codeaudit/proto-gen"
 	"github.com/codeaudit/services/dsh-runtime-service/internal/service"
@@ -30,7 +31,10 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	s := grpc.NewServer()
+	s := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(grpcrecover.UnaryServerInterceptor()), // ADR-212: panic 杀请求不杀进程
+		grpc.ChainStreamInterceptor(grpcrecover.StreamServerInterceptor()),
+	)
 
 	// Register DSHRuntimeService
 	// 依据: codeaudit_common.proto L956-L973
@@ -42,6 +46,9 @@ func main() {
 	if os.Getenv("CODEAUDIT_SANDBOX_RECONCILE") != "off" {
 		service.StartSandboxReconciler()
 	}
+
+	// ADR-212: 会话过期清道夫接线（ADR-134 的 StartJanitor 此前零调用方）
+	agentService.StartSessionJanitor()
 
 	// Register CodeAnalysisService（dsh-runtime 内嵌模块，01 §4.2）
 	// 依据: codeaudit_common.proto L976-L982

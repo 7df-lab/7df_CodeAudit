@@ -80,13 +80,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "host.openshell.internal:host-gateway"
-      # pentest lab domains (2026-08-20): public DNS parks *.internal on an
-      # expired-domain page; resolve them to this host like the dev machines do.
-      - "target.internal:host-gateway"
-      - "db.internal:host-gateway"
-      - "redis.internal:host-gateway"
-      - "s3.internal:host-gateway"
-      - "gateway.internal:host-gateway"
 
     ports:
       # gRPC / control-plane API  (used by the openshell CLI and sandbox callbacks)

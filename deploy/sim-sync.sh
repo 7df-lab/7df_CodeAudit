@@ -31,14 +31,19 @@ sync_tree() {
     # 注意：work 不能 local——EXIT trap 在函数作用域外触发，set -u 下会报未绑定
     work=$(mktemp -d)
     trap 'rm -rf "$work"' EXIT
-    # engine 取子仓 HEAD（子仓内容不入伞仓 archive）；deploy 取伞仓 HEAD
+    # engine/web 取子仓 HEAD（子仓内容不入伞仓 archive）；deploy 取伞仓 HEAD。
+    # web 必须随批同步（2026-09-07 gw-f6a3523 实证）：console 容器 build context=../web，
+    # 只同步 engine 时 console 永远用残留旧树重建——前端修复不进部署产物，
+    # "修过的缺陷在 GUI 又出现"即此缺口。
     git -C engine archive --prefix=engine/ -o "$work/engine.tgz" HEAD
+    git -C web archive --prefix=web/ -o "$work/web.tgz" HEAD
     git archive -o "$work/deploy.tgz" HEAD deploy
     pct push "$VMID" "$work/engine.tgz" /tmp/sim-sync-engine.tgz
+    pct push "$VMID" "$work/web.tgz" /tmp/sim-sync-web.tgz
     pct push "$VMID" "$work/deploy.tgz" /tmp/sim-sync-deploy.tgz
     run_remote bash -c "mkdir -p '$SIM_DIR' && cd '$SIM_DIR' && \
-        tar -xzf /tmp/sim-sync-engine.tgz && tar -xzf /tmp/sim-sync-deploy.tgz && \
-        rm -f /tmp/sim-sync-engine.tgz /tmp/sim-sync-deploy.tgz && \
+        tar -xzf /tmp/sim-sync-engine.tgz && tar -xzf /tmp/sim-sync-web.tgz && tar -xzf /tmp/sim-sync-deploy.tgz && \
+        rm -f /tmp/sim-sync-engine.tgz /tmp/sim-sync-web.tgz /tmp/sim-sync-deploy.tgz && \
         echo 'sim-sync: source tree updated at $SIM_DIR'"
 }
 

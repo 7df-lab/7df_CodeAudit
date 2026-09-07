@@ -40,3 +40,6 @@ apps/web/dist/
 worktrees/
 .agents/worktrees/
 .typert-*/
+
+# 人类指令 2026-09-08: .agent(单数)过程文档目录预防性禁入 git; 上游自带 .agents/ 不受影响
+.agent/

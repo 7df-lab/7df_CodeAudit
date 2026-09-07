@@ -104,7 +104,7 @@ dsh_runtime:
     manager_url: "http://gateway.internal:18800"  # env OPENSHELL_MANAGER_URL 优先；现役=LXC 107 容器化实例（CD/openshell-manager）
     manager_token: ""               # 空=OPENSHELL_MANAGER_TOKEN > ../openshell-manager/config.json tokenFile
     workspace: "default"            # 网关工作区（须预先存在；manager 无建区接口，与引擎同源）
-    image: "dsh-pentest-sse:1.2.3"  # 沙箱镜像（构建事实源 CD/dsh-pentest-sse/；1.2.3=+SSE 断流归因诊断 ADR-200 补遗②；1.2.2=contextWindow 150000；1.2.1=+窗口校正 ADR-193）
+    image: "dsh-pentest-sse:latest"  # 沙箱镜像（人类指令 2026-09-06: 任何项目不钉固定版本, 一律最新; 构建事实源 dsh-pentest-sse/deploy.sh, 版本溯源走镜像构建史/sbom）
     wait_ready_timeout_s: 300       # 07 §8 沙箱就绪等待上界
     exec_timeout_s: 600             # 07 §8 OpenShell 沙箱执行 30m 的本地映射上界
     dsh_max_tokens: 32768              # bridge DSH_MAX_TOKENS（人类指令 2026-09-04 统一 32768，与镜像 settings.yaml models[].maxTokens 对齐——两层同值不再有覆盖歧义；实测单步最大输出 ~10K，32K 预算充裕；provider 校验上限 [1,131072]）

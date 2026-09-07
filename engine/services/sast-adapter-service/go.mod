@@ -3,6 +3,7 @@ module github.com/codeaudit/services/sast-adapter-service
 go 1.22
 
 require (
+	github.com/codeaudit/common-go v0.0.0
 	github.com/codeaudit/go-config v0.0.0
 	github.com/codeaudit/proto-gen v0.0.0
 	google.golang.org/grpc v1.65.0
@@ -18,5 +19,7 @@ require (
 )
 
 replace github.com/codeaudit/proto-gen => ../../libs/proto-gen/go
+
+replace github.com/codeaudit/common-go => ../../libs/common-go
 
 replace github.com/codeaudit/go-config => ../../libs/go-config

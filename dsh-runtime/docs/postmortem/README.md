@@ -8,6 +8,8 @@ A post-mortem is NOT an [Agent Note](../../.agents/notes/README.md) (which recor
 
 Write one when a bug is **subtle** (the mechanism is non-obvious and a careful engineer would re-derive it the hard way), **systemic** (the reason it escaped is a gap in tests/tooling/conventions, not a one-off typo), and **costly to rediscover** (it cost real debugging time, and would cost it again). Link the guardrails (tests, AGENTS.md rules, ADRs) the post-mortem motivated.
 
+Closing an incident also pins it: every post-mortem gets an entry in the [regression corpus](../../scripts/regression-corpus.manifest.json) naming its bug class and the keyless, permanently running test (or gate script) that fails when the class reintroduces — `verify-regression-corpus` rejects a post-mortem without an entry, a pin whose test was renamed or removed, and a pin whose file no longer lives in the lane it claims. `tsx scripts/verify-regression-corpus.ts --run` executes the runnable pins locally.
+
 Every post-mortem opens with an **Executive summary**: one short paragraph a busy reader can absorb in thirty seconds — what broke, the root cause in plain terms, why it escaped, and the durable lesson — before the detailed Summary / Timeline / Root cause / Guardrails sections that follow.
 
 | # | Title |

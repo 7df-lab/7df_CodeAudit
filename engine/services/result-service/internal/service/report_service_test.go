@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -19,6 +20,15 @@ type MockReportRepository struct {
 	ListTemplatesFn        func(limit int) ([]*model.ReportTemplate, error)
 	GetTemplateByIDFn      func(id string) (*model.ReportTemplate, error)
 	UpdateReportFn         func(report *model.Report) error
+	DeleteReportFn         func(id string) error
+}
+
+// DeleteReport — ADR-212: FAILED 同键重试先除旧行的桩实现。
+func (m *MockReportRepository) DeleteReport(id string) error {
+	if m.DeleteReportFn != nil {
+		return m.DeleteReportFn(id)
+	}
+	return nil
 }
 
 func (m *MockReportRepository) UpdateReport(report *model.Report) error {
@@ -273,5 +283,71 @@ func TestGetTemplate(t *testing.T) {
 	}
 	if resp.TemplateId != "tpl_default" {
 		t.Errorf("Expected template ID 'tpl_default', got '%s'", resp.TemplateId)
+	}
+}
+
+// ADR-212 回归①：ADR-135 允许 FAILED 报告同键重试，但重试沿用同一确定性 ID
+// 对主键裸 INSERT 必冲突——每次重试恒 500，"允许重试"从未真正可达。
+// 修复=先除旧行再重建，同键重试幂等于同一 report_id。
+func TestGenerateReport_FailedReportRetry_SameID(t *testing.T) {
+	var deleted []string
+	var createdIDs []string
+	repo := &MockReportRepository{
+		GetReportByRequestIDFn: func(requestID string) (*model.Report, error) {
+			// 首次返回已存在的 FAILED 报告（ADR-135：失败报告不参与重放）
+			if requestID == "req-r" {
+				return &model.Report{ID: "report_t_req-r", TaskID: "t", Status: "FAILED", RequestID: requestID}, nil
+			}
+			return nil, fmt.Errorf("not found")
+		},
+		DeleteReportFn: func(id string) error {
+			deleted = append(deleted, id)
+			return nil
+		},
+		CreateReportFn: func(report *model.Report) error {
+			createdIDs = append(createdIDs, report.ID)
+			return nil
+		},
+	}
+	s := NewReportServiceImpl(repo)
+	resp, err := s.GenerateReport(context.Background(), &pb.GenerateReportRequest{
+		Metadata: &pb.RequestMetadata{RequestId: "req-r"}, TaskId: "t",
+	})
+	if err != nil {
+		t.Fatalf("retry must succeed post-fix (pre-fix: PK conflict 500): %v", err)
+	}
+	if resp.GetResult().GetReportId() != "report_t_req-r" {
+		t.Fatalf("retry must keep deterministic report id, got %s", resp.GetResult().GetReportId())
+	}
+	if len(deleted) != 1 || deleted[0] != "report_t_req-r" {
+		t.Fatalf("FAILED row must be cleared before rebuild: %v", deleted)
+	}
+	if len(createdIDs) != 1 || createdIDs[0] != "report_t_req-r" {
+		t.Fatalf("unexpected creates: %v", createdIDs)
+	}
+}
+
+// ADR-212 回归②：Kafka 主路径 request_id 确定化——原 UnixNano 唯一键使
+// 重投递（rebalance/重放）每次都生成新报告；重复消费必须幂等重放。
+func TestHandleTaskCompleted_Redelivery_Idempotent(t *testing.T) {
+	queried := []string{}
+	repo := &MockReportRepository{
+		GetReportByRequestIDFn: func(requestID string) (*model.Report, error) {
+			queried = append(queried, requestID)
+			if requestID == "kafka_t-1" {
+				return &model.Report{ID: "report_t-1_kafka_t-1", TaskID: "t-1", Status: "COMPLETED", RequestID: requestID}, nil
+			}
+			return nil, fmt.Errorf("not found")
+		},
+		CreateReportFn: func(report *model.Report) error { return nil },
+	}
+	s := NewReportServiceImpl(repo)
+	for i := 0; i < 2; i++ {
+		if err := s.HandleTaskCompleted(context.Background(), &TaskCompletedEvent{TaskID: "t-1"}); err != nil {
+			t.Fatalf("delivery %d: %v", i, err)
+		}
+	}
+	if len(queried) != 2 || queried[0] != "kafka_t-1" || queried[1] != "kafka_t-1" {
+		t.Fatalf("request_id must be deterministic kafka_<task>, got %v", queried)
 	}
 }

@@ -199,11 +199,13 @@ func TestGetClientIP(t *testing.T) {
 			expected:   "203.0.113.1",
 		},
 		{
-			name:       "X-Forwarded-For multiple (trusted proxy)",
+			// ADR-212: XFF 追加语义——最左是客户端可伪造值，最右才是可信代理
+			// 追加的真实来源；原断言钉住的是可伪造的取最左缺陷本身。
+			name:       "X-Forwarded-For multiple (trusted proxy, rightmost entry)",
 			remoteAddr: "10.0.0.1:8080",
 			xForwarded: "203.0.113.1, 70.41.3.18, 150.172.238.178",
 			trustXFF:   true,
-			expected:   "203.0.113.1",
+			expected:   "150.172.238.178",
 		},
 		{
 			name:       "X-Forwarded-For with spaces (trusted proxy)",

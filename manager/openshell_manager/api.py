@@ -53,6 +53,26 @@ def _need(body: Dict[str, Any], *keys: str) -> None:
         raise ApiError(400, f"missing required field(s): {', '.join(missing)}")
 
 
+def _need_str(body: Dict[str, Any], *keys: str) -> None:
+    """_need 的强类型版：必填且必须是非空字符串。非字符串曾透传进 SDK/proto
+    层炸成 502（proto 对 str 字段传非 str 抛 TypeError），而 502 会被上游按
+    "网关不可达"重试/降级——客户端格式错误一律 400。"""
+    _need(body, *keys)
+    bad = [k for k in keys if not isinstance(body[k], str)]
+    if bad:
+        raise ApiError(400, f"field(s) {', '.join(bad)} must be string(s)")
+
+
+def _opt_str(body: Dict[str, Any], key: str) -> Optional[str]:
+    """可选字符串字段：缺失/None → None；存在但非字符串 → 400。"""
+    value = body.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ApiError(400, f"field {key} must be a string")
+    return value
+
+
 async def _json_body(request: Request) -> Dict[str, Any]:
     length = int(request.headers.get("Content-Length") or 0)
     if length == 0:
@@ -158,10 +178,11 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/sandboxes", dependencies=[Depends(require_token)])
     async def sandbox_create(request: Request) -> Dict[str, Any]:
         body = await _json_body(request)
-        _need(body, "workspace")
+        _need_str(body, "workspace")
+        name = _opt_str(body, "name")
         try:
             return facade.create(workspace=body["workspace"],
-                                 name=body.get("name") or "",
+                                 name=name or "",
                                  spec=body.get("spec") or {})
         except ValueError as exc:  # json_format.ParseError 是 ValueError 子类
             raise ApiError(400, f"invalid spec: {exc}") from exc
@@ -182,7 +203,7 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/sandboxes/{name}/wait-ready", dependencies=[Depends(require_token)])
     async def wait_ready(name: str, request: Request) -> Dict[str, Any]:
         body = await _json_body(request)
-        _need(body, "workspace")
+        _need_str(body, "workspace")
         raw_timeout = body.get("timeout_seconds", 300)
         try:
             timeout = float(raw_timeout)
@@ -196,12 +217,27 @@ def create_app() -> FastAPI:
     async def sandbox_exec(request: Request) -> Dict[str, Any]:
         body = await _json_body(request)
         _need(body, "sandbox_id", "command")
+        _need_str(body, "sandbox_id")
         # command 必须是字符串列表：裸字符串若被 list() 拆成单字符数组，
         # 会在沙箱里静默执行垃圾命令（如 ['e','c','h','o',…]）
         command = body["command"]
         if (not isinstance(command, list)
                 or not all(isinstance(arg, str) for arg in command)):
             raise ApiError(400, "command must be a list of strings")
+        env = body.get("env") or {}
+        if not isinstance(env, dict) or not all(
+                isinstance(k, str) and isinstance(v, str)
+                for k, v in env.items()):
+            raise ApiError(400, "env must be an object with string keys "
+                                "and string values")
+        workdir = _opt_str(body, "workdir")
+        timeout = body.get("timeout_seconds")
+        if timeout is not None:
+            try:
+                timeout = int(timeout)
+            except (TypeError, ValueError):
+                raise ApiError(400, f"invalid field timeout_seconds={timeout!r} "
+                                    "(expect integer)") from None
         stdin = None
         if body.get("stdin_b64"):
             try:
@@ -210,10 +246,10 @@ def create_app() -> FastAPI:
                 raise ApiError(400, f"invalid stdin_b64: {exc}") from exc
         return facade.exec(sandbox_id=body["sandbox_id"],
                            command=command,
-                           workdir=body.get("workdir"),
-                           environment=body.get("env") or {},
+                           workdir=workdir,
+                           environment=env,
                            stdin=stdin,
-                           timeout_seconds=body.get("timeout_seconds"))
+                           timeout_seconds=timeout)
 
     @app.get("/api/v1/sandboxes/{name}/logs", dependencies=[Depends(require_token)])
     def sandbox_logs(name: str, request: Request) -> Dict[str, Any]:
@@ -225,7 +261,8 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/sandboxes/{name}/update-config", dependencies=[Depends(require_token)])
     async def update_config(name: str, request: Request) -> Dict[str, Any]:
         body = await _json_body(request)
-        _need(body, "workspace", "policy")
+        _need(body, "policy")
+        _need_str(body, "workspace")
         try:
             return facade.update_config(name=name, workspace=body["workspace"],
                                         policy=body["policy"])
@@ -243,7 +280,8 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/sandboxes/{name}/services", dependencies=[Depends(require_token)])
     async def service_expose(name: str, request: Request) -> Dict[str, Any]:
         body = await _json_body(request)
-        _need(body, "workspace", "service", "target_port")
+        _need(body, "target_port")
+        _need_str(body, "workspace", "service")
         return facade.expose_service(sandbox=name, service=body["service"],
                                      target_port=_int_field(body, "target_port"),
                                      workspace=body["workspace"],
@@ -274,7 +312,7 @@ def create_app() -> FastAPI:
     @app.put("/api/v1/inference/route", dependencies=[Depends(require_token)])
     async def route_set(request: Request) -> Dict[str, Any]:
         body = await _json_body(request)
-        _need(body, "workspace", "provider", "model")
+        _need_str(body, "workspace", "provider", "model")
         return facade.set_route(workspace=body["workspace"],
                                 provider=body["provider"], model=body["model"],
                                 no_verify=bool(body.get("no_verify", False)))
@@ -290,11 +328,17 @@ def create_app() -> FastAPI:
     @app.put("/api/v1/inference/providers", dependencies=[Depends(require_token)])
     async def providers_upsert(request: Request) -> Dict[str, Any]:
         body = await _json_body(request)
-        _need(body, "workspace", "name", "type")
+        _need_str(body, "workspace", "name", "type")
         return facade.upsert_provider(workspace=body["workspace"],
                                       name=body["name"], type_=body["type"],
                                       credentials=body.get("credentials") or {},
                                       conf=body.get("config") or {})
+
+    @app.delete("/api/v1/inference/providers/{name}",
+                dependencies=[Depends(require_token)])
+    def provider_delete(name: str, request: Request) -> Dict[str, Any]:
+        return facade.delete_provider(name=name,
+                                      workspace=_one(request, "workspace"))
 
     return app
 

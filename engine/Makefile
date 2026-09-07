@@ -1,4 +1,4 @@
-.PHONY: all build build-go test test-go test-contract lint lint-go proto verify clean help
+.PHONY: all build build-go test test-go test-contract test-guardrails test-mutation lint lint-go proto verify clean help
 
 # 7 服务全部为 Go（dsh-runtime 唯一入口 = cmd/main.go；requirements.txt 为 FastAPI
 # 时代遗留文件，不再是构建输入）。历史 build-python/test-python/lint-python 段
@@ -19,7 +19,7 @@ build-go:
 	done
 
 # 运行测试
-test: test-go test-contract
+test: test-go test-contract test-guardrails
 
 test-go:
 	@echo "Running Go tests..."
@@ -28,12 +28,22 @@ test-go:
 		( cd services/$$svc && GOPROXY=https://goproxy.cn,direct go test ./... ) || exit 1; \
 	done
 
-# 契约测试：fixture_server 假 gRPC 服务口径
+# 契约测试：与 .agent/verify.sh G4 同一口径（fixture_server 假 gRPC 服务）
 test-contract:
 	@echo "Running contract tests..."
 	@CODEAUDIT_FIXTURE_PORT=50071 python3 -m pytest tests/contract -q --tb=short -p no:cacheprovider
 
 # 代码检查
+# 守门测试（结构级：路由表/proto覆盖/台账/端口 ↔ docs 契约三件套，REGRESSIONS.md 第二层）
+test-guardrails:
+	@echo "Running guardrail tests..."
+	@python3 -m pytest tests/test_guardrails.py -q --tb=short -p no:cacheprovider
+
+# 变异自检（反回归牙齿证明：历史 bug 等价再引入→锁定测试必须红，REGRESSIONS.md 第三层）
+test-mutation:
+	@echo "Running mutation self-check..."
+	@python3 tests/mutation/run_mutations.py
+
 lint: lint-go
 
 lint-go:
@@ -49,7 +59,7 @@ proto:
 
 # 验证（红线检查）
 verify:
-	@bash scripts/check-proto-sync.sh
+	@bash .agent/verify.sh
 
 # 清理
 clean:
@@ -66,11 +76,13 @@ help:
 	@echo "  all           - Run verify, build, and test"
 	@echo "  build         - Build all services (Go)"
 	@echo "  build-go      - Build Go services (7 services, module per service)"
-	@echo "  test          - Run all tests (Go + contract)"
+	@echo "  test           - Run all tests (Go + contract + guardrails)"
+	@echo "  test-guardrails - Run guardrail tests (docs/code structural locks)"
+	@echo "  test-mutation  - Run mutation self-check (regression teeth proof)"
 	@echo "  test-go       - Run Go tests"
 	@echo "  test-contract - Run contract tests (fixture_server, port 50071)"
 	@echo "  lint          - Run linters (Go)"
 	@echo "  proto         - Generate proto code (buf; SSOT=codeaudit_common.proto)"
-	@echo "  verify        - Run SSOT red-line checks (proto sync)"
+	@echo "  verify        - Run SSOT red-line checks (.agent/verify.sh)"
 	@echo "  clean         - Clean build artifacts"
 	@echo "  help          - Show this help"

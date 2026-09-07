@@ -786,6 +786,23 @@ func TestBuildTurnPrompt_PathBasedNoInline(t *testing.T) {
 	}
 }
 
+// ADR-211 回归锁：分批契约按补丁体量分层（gw 实证：≤4 条/批上线后，多文件大补丁
+// 单批仍触发推理代理 chunk idle timeout 截断——批次条数不是唯一变量，补丁体量才是）。
+func TestBuildTurnPrompt_BatchContractTieredByPatchMass(t *testing.T) {
+	prompt := buildTurnPrompt(Task{Assignment: "审计它"})
+	for _, want := range []string{
+		"分批提交（强制",                   // 分批不再是"发现较多时"的建议而是强制
+		"每批最多 4 条",                  // 无补丁层
+		"含 diff_patch 的发现：每批最多 2 条", // 含补丁层
+		"该批只提交这 1 条",                // 大补丁单条层
+		"上下文行在改动块上方/下方各最多 3 行",      // 上下文行上限——补丁瘦身的主杠杆
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("batch contract missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestSharedConfig_TokenFileResolution(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "config.json"),
@@ -1003,8 +1020,9 @@ func TestRun_MainTurnTransientRetry(t *testing.T) {
 	fb.mu.Lock()
 	n, last := fb.promptCount, fb.promptText
 	fb.mu.Unlock()
-	if n != 2 || !strings.Contains(last, "截断") {
-		t.Fatalf("prompts: n=%d last=%.80s（应为初始+继续指令）", n, last)
+	// ADR-211：续跑指令必须带自适应缩批要求——原批量重试=重蹈覆辙（同一断流热点再撞一次）
+	if n != 2 || !strings.Contains(last, "截断") || !strings.Contains(last, "每批 1 条") {
+		t.Fatalf("prompts: n=%d last=%.80s（应为初始+带缩批要求的继续指令）", n, last)
 	}
 	if !strings.Contains(events.String(), "ADR-192") {
 		t.Fatalf("retry event log missing:\n%s", events.String())
@@ -1145,5 +1163,32 @@ func TestRun_BatchedSubmitMergeAcrossRetry(t *testing.T) {
 	}
 	if len(res.Findings) != 4 {
 		t.Fatalf("dedup must absorb re-sent batch: got %d findings", len(res.Findings))
+	}
+}
+
+// ADR-212 回归：launch 在创建动作前注册 activeSandboxes（防对账竞态），创建
+// 失败必须注销——否则每次失败泄一条注册表记录；最坏情形（manager 实际已建但
+// 响应丢失）真孤儿沙箱被本进程注册表永久屏蔽，ADR-210 对账器永不回收。
+func TestRun_CreateFailure_DeregistersActiveEntry(t *testing.T) {
+	countActive := func() int {
+		n := 0
+		activeSandboxes.Range(func(_, _ any) bool { n++; return true })
+		return n
+	}
+	before := countActive()
+
+	fm := &fakeManager{token: "secret"} // runner 凭据错 → 创建 401 失败
+	srv := httptest.NewServer(fm.handler())
+	defer srv.Close()
+
+	r := NewManagerRunner(Config{
+		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "wrong",
+		Workspace: "w", Image: "img", WaitReadyTimeoutS: 1, ExecTimeoutS: 1,
+	})
+	if _, err := r.Run(context.Background(), Task{TaskID: "t", WorkspaceDir: newTestWorkspace(t), Assignment: "x"}); err == nil {
+		t.Fatal("create failure must surface")
+	}
+	if after := countActive(); after != before {
+		t.Fatalf("create failure leaked registry entry: before=%d after=%d", before, after)
 	}
 }

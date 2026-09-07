@@ -97,6 +97,16 @@ func (p *FusionPipeline) Execute(ctx context.Context, req *pb.FuseResultsRequest
 		fusionCtx, err = runStage(ctx, stage, fusionCtx)
 		if err != nil {
 			// 依据: 07 §10 融合失败→输出未融合原始结果
+			// ADR-212: 失败阶段（尤其 panic 恢复路径 runStage 的 nil named-return）
+			// 可能返回 nil ctx——回退必须基于非空上下文，否则 buildFallbackResult
+			// 对 nil 解引用二次 panic（ADR-133 的 panic→error 修复自身崩进程）
+			if fusionCtx == nil {
+				fusionCtx = &FusionContext{
+					TaskID:       req.GetTaskId(),
+					SASTFindings: sastFindings,
+					AIFindings:   aiFindings,
+				}
+			}
 			return p.buildFallbackResult(fusionCtx, startTime, err), nil
 		}
 	}
