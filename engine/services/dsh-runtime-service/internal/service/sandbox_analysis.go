@@ -70,12 +70,14 @@ func sandboxCfg() (*sandbox.Config, error) {
 }
 
 // interactionDir — AI 交互日志落盘根目录（ADR-168；读失败=空 → 仅内存留存）。
+// CODEAUDIT_INTERACTION_DIR 部署覆盖口：容器化后 task-service 对账探针（ADR-196）
+// 与本服务须指向同一物理目录（相对路径在各容器 CWD 下互不可见，gw-d331089f 实证）。
 func interactionDir() string {
 	cfg, err := codeauditcfg.Default()
 	if err != nil {
 		return ""
 	}
-	v, err := cfg.Str("dsh_runtime.sandbox.interaction_dir")
+	v, err := cfg.Str("dsh_runtime.sandbox.interaction_dir", "CODEAUDIT_INTERACTION_DIR")
 	if err != nil {
 		return ""
 	}
@@ -115,22 +117,21 @@ func analyzeViaSandbox(ctx context.Context, taskID, projectPath, assignment stri
 	// ADR-183 补遗②：非空但校验失败的补丁走一轮失败反馈再生成（Cline 式自纠，
 	// 失败详情含相似度+上下文预览喂回模型）；全部干净/模型未产补丁时零开销。
 	// 再生成回合复用同一 runner（每 Run 独立沙箱生命周期）。
-	res.Findings = retryFailedPatches(ctx, taskID, projectPath, res.Findings, emit, func(ctx context.Context, fixAssignment string) (string, error) {
+	// gw-d331089f（R34）：PatchFixRound=true 让 Run 按 patches 语义解析——此前套用
+	// findings 解析，模型合规提交的 submit_patches 批次被 "no JSON in DSH output"
+	// 整轮判废，工具参数提取（ADR-184）从未生效。
+	res.Findings = retryFailedPatches(ctx, taskID, projectPath, res.Findings, emit, func(ctx context.Context, fixAssignment string) ([]sandbox.PatchFix, error) {
 		fixRes, fixErr := r.Run(ctx, sandbox.Task{
-			TaskID:       taskID + "-fix",
-			WorkspaceDir: projectPath,
-			Assignment:   fixAssignment,
-			Timeout:      10 * time.Minute, // 07 §8 单次推理执行 10m
+			TaskID:        taskID + "-fix",
+			WorkspaceDir:  projectPath,
+			Assignment:    fixAssignment,
+			Timeout:       10 * time.Minute, // 07 §8 单次推理执行 10m
+			PatchFixRound: true,
 		})
 		if fixErr != nil {
-			return "", fixErr
+			return nil, fixErr
 		}
-		// ADR-184：submit_patches 工具参数（原生 function-calling）优先；
-		// ParsePatches 对裸 JSON 走括号区间提取，参数原文可直接喂入。
-		if args, ok := sandbox.LastToolCallArgs(fixRes.ToolCalls, sandbox.SubmitPatchesTool); ok {
-			return args, nil
-		}
-		return fixRes.FinalText, nil
+		return fixRes.Patches, nil
 	})
 	return mapSandboxFindings(taskID, projectPath, res.Findings), nil
 }

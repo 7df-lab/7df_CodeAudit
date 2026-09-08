@@ -43,7 +43,7 @@
 
 ### 1.4 `GET /v1/projects`
 
-- **输入**：无参数。
+- **输入**：`pagination={page_size:100,cursor}` JSON 风格分页参数（自动翻页累积，同 listFindings 口径——网关缺省 page_size=20/上限 100，裸调只拿首页）。
 - **预期输出**：`{ projects: Project[] }`；`projects` 缺失时返回 `[]`。`Project` 形状见 [types.ts](../src/types.ts)。
 - **锁定测试**：`apiClient.test.ts › 401 触发单飞刷新并重放原请求`（借道断言响应形状）。
 
@@ -53,9 +53,9 @@
 
 ### 1.6 `GET /v1/tasks?project_id=<id>`
 
-- **输入**：`project_id` 标量参数（缺省时无 query）。
+- **输入**：`project_id` 标量参数（缺省时无 query）+ `pagination`（自动翻页累积，同 1.4——网关缺省 20/上限 100）。
 - **预期输出**：`{ tasks: TaskSummary[] }`，缺失回 `[]`；平台口径为创建时间倒序，插件取首个 `TASK_STATUS_COMPLETED` 作为「最近完成」（`latestCompletedTask`）。
-- **锁定测试**：extension 行为测试 `extension.test.ts › 恢复链路`（见 data-flows.md §4.4）。
+- **锁定测试**：`apiClient.test.ts › listTasks 翻页累积`；extension 行为测试 `extension.test.ts › 恢复链路`（见 data-flows.md §4.4）。
 
 ### 1.7 `POST /v1/tasks`
 

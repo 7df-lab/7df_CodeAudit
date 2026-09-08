@@ -60,6 +60,7 @@ task:
   max_auto_retries: 2               # proto L174 "FAILED→QUEUED 自动重试≤2次"
   repos_dir: data/repos            # ADR-163: 仓库拉取模式 git clone 根目录（项目配 repo_url 时启动前置 clone）
   clone_timeout_s: 300             # ADR-163: 单次 git clone 上限
+  pg_dsn: ""                       # R-31: 空=内存档诚实降级；env CODEAUDIT_TASK_PG_DSN 优先（compose 部署档指向 codeaudit_task 库）
 
 result:
   page_size_default: 20             # proto L227 "每页大小，默认20"

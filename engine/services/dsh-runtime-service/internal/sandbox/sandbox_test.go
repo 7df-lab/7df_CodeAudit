@@ -576,6 +576,58 @@ func (w *syncwriter) String() string {
 	return w.buf.String()
 }
 
+// R34 回归锁（gw-d331089f 实证）：补丁再生成回合（PatchFixRound）按契约分批调用
+// submit_patches、正文无 JSON——Run 曾套用审计回合的 findings 语义解析，报
+// "no JSON in DSH output" 判废整轮，模型合规提交的 4 批补丁全被丢弃（9 分钟
+// 再生成沙箱白跑）。修复后 Run 按 patches 语义合并工具批次产出。
+func TestRun_PatchFixRoundToolBatchesMerged(t *testing.T) {
+	patchCall := func(seq, idx string) string {
+		args := `{"patches":[{"index":` + idx + `,"diff_patch":"*** Begin Patch\n*** Update File: a.py\n@@ print('x')\n-print('x')\n+print('fixed-` + idx + `')\n*** End Patch"}]}`
+		return "event: session.event\ndata: " + `{"sessionId":"main","event":{"type":"tool/call","seq":` + seq +
+			`,"data":{"turn":1,"step":1,"callId":"c-` + seq + `","name":"submit_patches","arguments":"` + jsEscape(args) + `"}}}` + "\n\n"
+	}
+	seg := []string{
+		"event: session.status\ndata: {\"sessionId\":\"main\",\"status\":\"running\"}\n\n",
+		"event: session.event\ndata: {\"sessionId\":\"main\",\"event\":{\"type\":\"turn/start\",\"seq\":10,\"data\":{\"turn\":1}}}\n\n",
+		patchCall("11", "0"), patchCall("12", "1"), patchCall("13", "2"), patchCall("14", "0" /*重发同 index：后批覆盖*/),
+		// 最终消息：纯正文无任何 JSON（真实回合形态，gw-d331089f .ai.log 实证）
+		"event: session.event\ndata: " + `{"sessionId":"main","event":{"type":"assistant/message","seq":20,"data":{"message":{"content":[{"type":"text","text":"` + jsEscape("全部 13 项已重新生成并分批提交，根因是路径前缀。") + `"}]}}}}` + "\n\n",
+		"event: session.event\ndata: " + `{"sessionId":"main","event":{"type":"turn/end","seq":30,"data":{"turn":1,"reason":{"kind":"completed"}}}}` + "\n\n",
+		"event: session.status\ndata: {\"sessionId\":\"main\",\"status\":\"idle\"}\n\n",
+	}
+	fb := &fakeBridge{script: seg}
+	bridgeSrv := httptest.NewServer(fb.handler())
+	defer bridgeSrv.Close()
+	fm := &fakeManager{token: "tok-1", bridgeURL: bridgeSrv.URL + "/"}
+	srv := httptest.NewServer(fm.handler())
+	defer srv.Close()
+	r := NewManagerRunner(Config{
+		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1",
+		Workspace: "codeaudit", Image: "dsh-pentest-sse:1.2.1",
+		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 32768,
+		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
+	})
+	res, err := r.Run(context.Background(), Task{
+		TaskID: "t-fix", WorkspaceDir: newTestWorkspace(t), Assignment: "重出补丁", Timeout: 10 * time.Second,
+		PatchFixRound: true,
+	})
+	if err != nil {
+		t.Fatalf("patch-fix round must parse via patches semantics (R34), got: %v", err)
+	}
+	if !res.OK {
+		t.Fatal("res.OK must be true")
+	}
+	if len(res.Patches) != 3 {
+		t.Fatalf("batches must merge by index with last-wins (0 duplicated): got %d", len(res.Patches))
+	}
+	if res.Patches[0].Index != 0 || !strings.Contains(res.Patches[0].DiffPatch, "fixed-0") {
+		t.Fatalf("later batch must win for same index: %+v", res.Patches[0])
+	}
+	if res.Patches[1].Index != 1 || res.Patches[2].Index != 2 {
+		t.Fatalf("indexes must be ascending: %+v", res.Patches)
+	}
+}
+
 func TestRun_TeardownEvenOnTurnError(t *testing.T) {
 	fb := &fakeBridge{script: frames_TurnError()}
 	bridgeSrv := httptest.NewServer(fb.handler())
@@ -786,14 +838,15 @@ func TestBuildTurnPrompt_PathBasedNoInline(t *testing.T) {
 	}
 }
 
-// ADR-211 回归锁：分批契约按补丁体量分层（gw 实证：≤4 条/批上线后，多文件大补丁
-// 单批仍触发推理代理 chunk idle timeout 截断——批次条数不是唯一变量，补丁体量才是）。
+// ADR-211/ADR-220 回归锁：分批契约按补丁体量分层（gw 实证：条数不是唯一变量，补丁体量
+// 才是——大补丁单条层与上下文行上限不变；ADR-220 依 gw-d331089f 实证放宽条数层：
+// 6.5KB 参数流全程无断流，而历史断流批为万级 token 巨型批）。
 func TestBuildTurnPrompt_BatchContractTieredByPatchMass(t *testing.T) {
 	prompt := buildTurnPrompt(Task{Assignment: "审计它"})
 	for _, want := range []string{
 		"分批提交（强制",                   // 分批不再是"发现较多时"的建议而是强制
-		"每批最多 4 条",                  // 无补丁层
-		"含 diff_patch 的发现：每批最多 2 条", // 含补丁层
+		"每批最多 8 条",                  // 无补丁层（ADR-220: 4→8）
+		"含 diff_patch 的发现：每批最多 4 条", // 含补丁层（ADR-220: 2→3→4，人类指令 2026-09-08 再放宽）
 		"该批只提交这 1 条",                // 大补丁单条层
 		"上下文行在改动块上方/下方各最多 3 行",      // 上下文行上限——补丁瘦身的主杠杆
 	} {
@@ -936,6 +989,50 @@ func TestLastToolCallArgs(t *testing.T) {
 	}
 	if _, ok := LastToolCallArgs(calls, "absent"); ok {
 		t.Fatal("absent tool must be ok=false")
+	}
+}
+
+// R34：补丁再生成回合结果源选择——工具参数优先分批合并（同 index 后批覆盖），
+// 围栏降级，空 patches 合法（与 parseAuditResult 零发现口径同源）。
+func TestParsePatchFixResult(t *testing.T) {
+	batch := func(idxs ...int) string {
+		items := make([]string, 0, len(idxs))
+		for _, i := range idxs {
+			items = append(items, `{"index":`+fmt.Sprintf("%d", i)+`,"diff_patch":"*** Begin Patch\n*** Update File: a.py\n@@ x\n-x\n+y`+fmt.Sprintf("%d", i)+`\n*** End Patch"}`)
+		}
+		return `{"patches":[` + strings.Join(items, ",") + `]}`
+	}
+	calls := []ToolCall{
+		{Name: SubmitPatchesTool, Arguments: batch(0, 1)},
+		{Name: SubmitPatchesTool, Arguments: batch(2)},
+	}
+	ps, ch, err := parsePatchFixResult("正文无关", calls)
+	if err != nil || ch != SubmitPatchesTool || len(ps) != 3 || ps[0].Index != 0 || ps[2].Index != 2 {
+		t.Fatalf("tool batches must merge ascending: ch=%s n=%d err=%v", ch, len(ps), err)
+	}
+	// 同 index 后批覆盖（模型自纠重发以最新为准）
+	calls2 := []ToolCall{
+		{Name: SubmitPatchesTool, Arguments: batch(0)},
+		{Name: SubmitPatchesTool, Arguments: batch(0)},
+	}
+	ps, _, err = parsePatchFixResult("x", calls2)
+	if err != nil || len(ps) != 1 {
+		t.Fatalf("same index must dedup: n=%d err=%v", len(ps), err)
+	}
+	// 工具损坏 → 围栏降级
+	fence := "```json\n{\"patches\":[{\"index\":5,\"diff_patch\":\"p\"}]}\n```"
+	ps, ch, err = parsePatchFixResult(fence, []ToolCall{{Name: SubmitPatchesTool, Arguments: "{broken}"}})
+	if err != nil || ch != "text-fence" || len(ps) != 1 || ps[0].Index != 5 {
+		t.Fatalf("fence fallback must engage: ch=%s err=%v", ch, err)
+	}
+	// 工具提交空列表=合法零产出（不落围栏）
+	ps, ch, err = parsePatchFixResult("正文", []ToolCall{{Name: SubmitPatchesTool, Arguments: `{"patches":[]}`}})
+	if err != nil || ch != SubmitPatchesTool || len(ps) != 0 {
+		t.Fatalf("empty patches via tool is valid: ch=%s n=%d err=%v", ch, len(ps), err)
+	}
+	// 两代通道皆空 → 报错
+	if _, _, err := parsePatchFixResult("无 JSON", nil); err == nil {
+		t.Fatal("no channel must error")
 	}
 }
 

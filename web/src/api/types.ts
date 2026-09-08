@@ -47,8 +47,8 @@ export interface TaskLogs {
 export interface TaskSnapshot {
   task: ScanTask;
   progress?: TaskProgress | null;
-  logs?: { logs: TaskLogEntry[] };
-  ai?: { chunk: string; next_cursor: string | number; complete: boolean; total_bytes: string | number };
+  logs?: TaskLogs;
+  ai?: AIInteractionLog;
 }
 
 // AI 交互日志（ADR-168 补遗②）：按 event type 人性化渲染的交互流；字节游标增量

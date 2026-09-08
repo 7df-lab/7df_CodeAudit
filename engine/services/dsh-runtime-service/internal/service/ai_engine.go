@@ -210,14 +210,6 @@ func filepathWalkLite(root string, fn func(path string, lines int32, lang string
 	return walkFn(root, fn)
 }
 
-// envOr 局部复制（service 包内已有一份全局的在此不可见时兜底）
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
-}
-
 // fetchFindingsByIDs — 从 result-service 逐条取 finding 实体（09 §2: findings 权威存储）。
 func fetchFindingsByIDs(ids []string) []*pb.UnifiedFinding {
 	out := []*pb.UnifiedFinding{}

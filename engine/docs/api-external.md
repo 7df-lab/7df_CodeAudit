@@ -72,9 +72,9 @@ gateway 是**唯一外部入口**（纯 HTTP，无 gRPC 服务端；7 服务中�
 | DeadlineExceeded | 504 | 调用超时（`gateway.grpc_call_timeout_s`=30s） |
 | 其他（Internal 等） | 500 | 兜底 |
 
-网关自身状态码分布：400（body/multipart 非法、超 25MB、坏 query）· 401（JWT 层）·
+网关自身状态码分布：400（body/multipart 非法、超 100MB、坏 query）· 401（JWT 层）·
 403（`admin role required`）· 404（未知路由/资源不存在/通知非本人）· 405（方法不符）·
-409 · 413（source-file >2MiB）· 415（二进制源文件）· 429 · 500 ·
+409 · 413（source-file >5MiB）· 415（二进制源文件）· 429 · 500 ·
 **501（未映射 `/v1/<域>`，诚实降级）** · 502（storage 上传流失败/通知归属核验失败）·
 503（后端连接未配置）· 504。
 
@@ -166,7 +166,7 @@ gateway 是**唯一外部入口**（纯 HTTP，无 gRPC 服务端；7 服务中�
 
 ### 3.3 POST /v1/uploads/archive
 
-- 输入：`multipart/form-data`，字段名 `file`；扩展名白名单 `.zip/.tar.gz/.tgz`；上限 25MB
+- 输入：`multipart/form-data`，字段名 `file`；扩展名白名单 `.zip/.tar.gz/.tgz`；上限 100MB
   （MaxBytesReader + 计数双保险）。
 - 行为：multipart 流式解析（gateway 零落盘）→ 64KiB 分块直传 storage `UploadFile` 客户端流，
   首块带 `FilePath=uploads/up-<hex><ext>` 与 ContentType；上传 ctx 120s。
@@ -226,7 +226,7 @@ gateway 是**唯一外部入口**（纯 HTTP，无 gRPC 服务端；7 服务中�
   输出 `{"path","content","total_lines","bytes","root_via","resolved_via"}`。
   根解析四流：①`repos_dir/<task_id>`（repo 流）①b `repos_dir/uploads-<task_id>/unpacked`+剥壳
   ②上传链接文件 ③project config project_path ④唯一内容回退（mtime 最新）——`root_via` 如实披露。
-  错误：400 缺 path；404 任务不存在/根不可解析/文件未找到；413 >2MiB；415 前 8KB 含 NUL。
+  错误：400 缺 path；404 任务不存在/根不可解析/文件未找到；413 >5MiB；415 前 8KB 含 NUL。
   安全：safeJoin 穿越拒绝 + EvalSymlinks 根内校验 + 软链拒绝 + `.codeaudit-task-` 标记文件拒读。
 - **GET {id}/context**：输出 `{"task_id","project_config_json","cpg_storage_path","sast_finding_ids"}`；
   任务未完成/未知 → 404。

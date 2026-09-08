@@ -41,13 +41,6 @@ func (g *PauseGate) Resume() {
 	}
 }
 
-// Paused — 当前是否挂起。
-func (g *PauseGate) Paused() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.paused
-}
-
 // Wait — 暂停中则阻塞直至恢复或 ctx 取消。
 func (g *PauseGate) Wait(ctx context.Context) error {
 	g.mu.Lock()

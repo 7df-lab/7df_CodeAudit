@@ -36,7 +36,6 @@ sys.path.insert(0, str(SERVICE_ROOT))
 
 from openshell_manager import api  # noqa: E402 — 须先挂 SERVICE_ROOT（直跑模式）
 from openshell_manager import config  # noqa: E402
-from openshell_manager import http_api  # noqa: E402
 import openshell_manager.gateway as gw  # noqa: E402
 from openshell_manager.gateway import GatewayFacade  # noqa: E402
 
@@ -241,7 +240,7 @@ def make_app(token_env, client=None):
     facade._inference_stub = lambda: INFERENCE_FAKE  # test seam
     gw.pb_grpc_stub = lambda client: FakeAdminStub()
     FakeAdminStub.SERVICES.clear()
-    api.facade = facade  # ADR-174: FastAPI 架构（http_api 为旧实现参照）
+    api.facade = facade  # ADR-174: FastAPI 架构
 
     app = api.create_app()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0,
@@ -738,7 +737,8 @@ def test_multipart_rejected_on_other_endpoints():
 
 
 def test_upload_large_streaming_file():
-    """A 32MiB upload — 4x the old 8MiB JSON cap — must stream through."""
+    """A 32MiB upload — beyond the 20MiB JSON cap — must stream through
+    (the cap only bounds JSON endpoints; uploads are streamed)."""
     server, req = make_app(token_env=None)
     try:
         import random

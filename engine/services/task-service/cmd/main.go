@@ -67,7 +67,9 @@ func main() {
 	// 存储适配器 = TaskServiceImpl（GetRunningTasks/UpdateTaskStatus）。
 	// ADR-196: 活跃度探针——AI 交互日志（interaction_dir，与 dsh-runtime-service 同宿主同 CWD 部署）
 	// 任一 .ai.log/.sse.log 有更新 mtime 即视为任务活跃，updated_at 陈旧不判死。
-	interactionDir, err := cfg.Str("dsh_runtime.sandbox.interaction_dir")
+	// 容器化部署两服务 CWD 相对路径不落同一卷（gw-d331089f 实证：探针恒 miss →
+	// 长审计任务被误判 TIMEOUT），compose 注入 CODEAUDIT_INTERACTION_DIR 指向共享卷。
+	interactionDir, err := cfg.Str("dsh_runtime.sandbox.interaction_dir", "CODEAUDIT_INTERACTION_DIR")
 	if err != nil {
 		log.Fatalf("load interaction_dir: %v", err)
 	}

@@ -69,7 +69,10 @@ mode_fix() {
     return 0
   fi
   local sed_expr="" k
-  for k in "${!MAP[@]}"; do sed_expr+="; s/${k//./\\.}/${MAP[$k]}/g"; done
+  # 按键长降序构造：长键必须先替换，否则短键（如裸号）会先吃掉长键（如邮箱）的一部分
+  local keys
+  mapfile -t keys < <(printf '%s\n' "${!MAP[@]}" | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2-)
+  for k in "${keys[@]}"; do sed_expr+="; s/${k//./\\.}/${MAP[$k]}/g"; done
   # NUL 分隔直接管道给 xargs（经 $() 捕获会丢 NUL 字节，勿改回）
   grep -rlIZ -E "$regex" --exclude-dir=.git --exclude="$SELF" . 2>/dev/null \
     | xargs -0 -r sed -i "${sed_expr#;}"

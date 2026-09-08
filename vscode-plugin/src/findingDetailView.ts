@@ -4,6 +4,8 @@
 // + 机器补丁 + 操作按钮（打开位置 / AI 修复 / 回滚修复）。
 // 安全口径：全部字段 escapeHtml 后进 DOM，绝不 innerHTML 原文拼接。
 // 操作按钮经 postMessage({type:'action',...}) 回传插件侧执行对应命令。
+import { SEVERITY_LABEL } from './diagnosticsMapper';
+import { escapeHtml } from './htmlEscape';
 import type { UnifiedFinding } from './types';
 
 export interface FindingDetailData {
@@ -12,23 +14,6 @@ export interface FindingDetailData {
   /** 该发现的修复已应用（树上的 ✔ 已修复状态） */
   fixed: boolean;
 }
-
-export function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-const SEVERITY_LABEL: Record<string, string> = {
-  SEVERITY_CRITICAL: '严重',
-  SEVERITY_HIGH: '高危',
-  SEVERITY_MEDIUM: '中危',
-  SEVERITY_LOW: '低危',
-  SEVERITY_INFO: '提示',
-};
 
 const VERDICT_LABEL: Record<string, string> = {
   AI_VERDICT_LIKELY_TRUE: 'AI 判定：大概率真实',

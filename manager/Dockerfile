@@ -14,8 +14,7 @@ USER root
 RUN pip3 install --no-index --find-links=/tmp/wheels fastapi uvicorn \
     && rm -rf /tmp/wheels
 
-# FastAPI 服务层（api.py）+ name→UUID 解析与分块对齐修复的 gateway.py；
-# http_api.py 旧 stdlib 实现随包保留作参照
+# FastAPI 服务层（api.py）+ name→UUID 解析与分块对齐修复的 gateway.py
 COPY openshell_manager /app/openshell_manager
 
 WORKDIR /app

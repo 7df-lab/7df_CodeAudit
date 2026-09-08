@@ -4,7 +4,7 @@ package handler
 // 解包/穿越防护随通道迁至 task-service（archive.go），此处锁:
 //   - happy: 200 + file_id/file_path(uploads/ 前缀) + size_bytes 与输入一致
 //   - 类型白名单: 非 .zip/.tar.gz/.tgz → 400
-//   - 超限: >25MB → 400
+//   - 超限: >100MB → 400
 
 import (
 	"bytes"

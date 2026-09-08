@@ -6,6 +6,7 @@ require (
 	github.com/codeaudit/common-go v0.0.0
 	github.com/codeaudit/go-config v0.0.0
 	github.com/codeaudit/proto-gen v0.0.0
+	github.com/lib/pq v1.10.9
 	github.com/segmentio/kafka-go v0.4.47
 	google.golang.org/grpc v1.65.0
 	google.golang.org/protobuf v1.34.2

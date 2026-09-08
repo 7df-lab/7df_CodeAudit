@@ -424,9 +424,9 @@ func TestRetryFailedPatches_SelfCorrectionCycle(t *testing.T) {
 		{Title: "干净项", FilePath: "vuln_fix_demo.py", StartLine: 4, DiffPatch: vulnFixDemoPatch},
 	}
 	var assignment string
-	round := func(ctx context.Context, a string) (string, error) {
+	round := func(ctx context.Context, a string) ([]sandbox.PatchFix, error) {
 		assignment = a
-		return "```json\n{\"patches\": [{\"index\": 0, \"diff_patch\": " + jsonQuote(vulnFixDemoPatch) + "}]}\n```", nil
+		return []sandbox.PatchFix{{Index: 0, DiffPatch: vulnFixDemoPatch}}, nil
 	}
 	got := retryFailedPatches(context.Background(), "t-retry", dir, findings, func(level, msg string) {}, round)
 	// 反馈任务指令包含失败详情与格式规范
@@ -448,8 +448,8 @@ func TestRetryFailedPatches_StillFailsAfterRetry(t *testing.T) {
 	dir := writeDemoWs(t, vulnFixDemo)
 	badPatch := strings.Replace(vulnFixDemoPatch, "-    cursor.execute(query)", "-    cursor.execute( bad )", 1)
 	findings := []sandbox.Finding{{Title: "SQL 注入", FilePath: "vuln_fix_demo.py", StartLine: 6, DiffPatch: badPatch}}
-	round := func(ctx context.Context, a string) (string, error) {
-		return "```json\n{\"patches\": [{\"index\": 0, \"diff_patch\": " + jsonQuote(badPatch) + "}]}\n```", nil
+	round := func(ctx context.Context, a string) ([]sandbox.PatchFix, error) {
+		return []sandbox.PatchFix{{Index: 0, DiffPatch: badPatch}}, nil
 	}
 	got := retryFailedPatches(context.Background(), "t-retry", dir, findings, func(level, msg string) {}, round)
 	if got[0].DiffPatch != badPatch {
@@ -461,7 +461,7 @@ func TestRetryFailedPatches_RoundFailureKeepsOriginal(t *testing.T) {
 	dir := writeDemoWs(t, vulnFixDemo)
 	badPatch := strings.Replace(vulnFixDemoPatch, "-    cursor.execute(query)", "-    cursor.execute( bad )", 1)
 	findings := []sandbox.Finding{{Title: "SQL 注入", FilePath: "vuln_fix_demo.py", StartLine: 6, DiffPatch: badPatch}}
-	round := func(ctx context.Context, a string) (string, error) { return "", fmt.Errorf("sandbox down") }
+	round := func(ctx context.Context, a string) ([]sandbox.PatchFix, error) { return nil, fmt.Errorf("sandbox down") }
 	got := retryFailedPatches(context.Background(), "t-retry", dir, findings, nil, round)
 	if got[0].DiffPatch != badPatch {
 		t.Fatal("round failure must keep original raw (dropped later by mapping)")
@@ -475,10 +475,86 @@ func TestRetryFailedPatches_NoFailuresNoRound(t *testing.T) {
 		{Title: "未产补丁", FilePath: "vuln_fix_demo.py"}, // raw 为空：不参与（模型主动不给≠写坏）
 	}
 	called := false
-	round := func(ctx context.Context, a string) (string, error) { called = true; return "", nil }
+	round := func(ctx context.Context, a string) ([]sandbox.PatchFix, error) { called = true; return nil, nil }
 	retryFailedPatches(context.Background(), "t-retry", dir, findings, nil, round)
 	if called {
 		t.Fatal("no failures → no retry round (零开销)")
+	}
+}
+
+// ---- R34 回归锁（gw-d331089f 实证）：沙箱挂载视角路径容错 ----
+// 模型在沙箱内看到的项目根是 /sandbox/project，产出补丁把段路径写成挂载视角
+// （"project/x" / "sandbox/project/x"），校验端按工作区根解析 → 13/13 补丁全拒。
+// 容错=原路径不存在且剥挂载前缀后存在时改写段路径；产出补丁同步改写。
+
+func TestNormalizeDiffPatch_SandboxMountPrefixRewrite(t *testing.T) {
+	ws := t.TempDir()
+	nested := filepath.Join(ws, "librawspeed", "src")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "void f() {\n    bad();\n}\n"
+	if err := os.WriteFile(filepath.Join(nested, "x.cpp"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(path string) string {
+		return "*** Begin Patch\n*** Update File: " + path + "\n void f() {\n-    bad();\n+    good();\n*** End Patch"
+	}
+	// "project/" 挂载前缀：校验通过，产出路径改写为工作区相对形态
+	out, err := NormalizeDiffPatch(mk("project/librawspeed/src/x.cpp"), ws)
+	if err != nil {
+		t.Fatalf("sandbox-mount-relative path must resolve: %v", err)
+	}
+	if !strings.Contains(out, "*** Update File: librawspeed/src/x.cpp\n") {
+		t.Fatalf("rewritten patch must carry workspace-relative path:\n%s", out)
+	}
+	// 双重前缀形态（绝对路径 /sandbox/project/x 经段清洗后）
+	if _, err := NormalizeDiffPatch(mk("sandbox/project/librawspeed/src/x.cpp"), ws); err != nil {
+		t.Fatalf("double-prefixed form must resolve: %v", err)
+	}
+	// 产出补丁（已改写路径）可再规范化且路径不再改写（幂等）
+	if _, err := NormalizeDiffPatch(out, ws); err != nil {
+		t.Fatalf("rewritten output must re-normalize: %v", err)
+	}
+}
+
+func TestNormalizeDiffPatch_GenuineProjectDirNotStripped(t *testing.T) {
+	// 工作区真有顶层 project/ 目录：原路径存在 → 不剥（防误伤合法仓结构）
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "project"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "project", "real.py"), []byte("x = 1\ny = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := "*** Begin Patch\n*** Update File: project/real.py\n x = 1\n-y = 2\n+y = 3\n*** End Patch"
+	out, err := NormalizeDiffPatch(p, ws)
+	if err != nil {
+		t.Fatalf("genuine project/ dir must keep original path: %v", err)
+	}
+	if !strings.Contains(out, "*** Update File: project/real.py\n") {
+		t.Fatalf("original path must be preserved:\n%s", out)
+	}
+}
+
+func TestNormalizeDiffPatch_AddFileWithMountPrefix(t *testing.T) {
+	// Add File 目标必须不存在，容错以"父目录存在"为准：剥前缀后父目录在 → 改写
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := "*** Begin Patch\n*** Add File: project/pkg/new.py\n+print('n')\n*** End Patch"
+	out, err := NormalizeDiffPatch(p, ws)
+	if err != nil {
+		t.Fatalf("add with mount prefix must resolve via parent dir: %v", err)
+	}
+	if !strings.Contains(out, "*** Add File: pkg/new.py\n") {
+		t.Fatalf("add path must be rewritten:\n%s", out)
+	}
+	// 两边父目录都不存在 → 原样保留，错误携带原路径（失败反馈保真）
+	_, err = NormalizeDiffPatch("*** Begin Patch\n*** Update File: project/no/such.py\n ctx\n-a\n+b\n*** End Patch", ws)
+	if err == nil || !strings.Contains(err.Error(), "project/no/such.py") {
+		t.Fatalf("unresolvable path must error with original path, got: %v", err)
 	}
 }
 
@@ -604,5 +680,156 @@ def get_user(user_id):
 		"*** End Patch"
 	if _, err := NormalizeDiffPatch(raw, dir); err == nil {
 		t.Fatal("middle-line indent drift must stay rejected")
+	}
+}
+
+// ---- R37 回归锁（gw-61200b8b/gw-5a7393ed 实证）：@@ 锚点对齐 Cline 摄入语义 ----
+// Cline apply-patch-parser：@@ defStr 是寻位指令（canonTrim/trim 容错匹配文件行），
+// 不物化为 hunk 内容；锚定只依赖显式上下文/删除行。此前引擎把 defStr 物化为首条
+// 上下文行 + 1 空格去重，模型三种自然书写形态（丢缩进双写/夹新增双写/锚点幻觉）
+// 整补丁被拒。
+
+// r37ws — gw-61200b8b 真实工作区（7 行 app.py）。
+const r37ws = `import sqlite3
+def get_user(uid):
+    conn = sqlite3.connect("app.db")
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE id = '%s'" % uid)  # SQL 注入
+    return cur.fetchone()
+API_TOKEN = "hunter2-hardcoded-secret"  # 硬编码凭据
+`
+
+// 形态一（gw-61200b8b 实证 2/2）：锚点丢缩进 + 显式重复同一行。
+func TestNormalizeDiffPatch_AnchorDoubleWriteUnindented(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte(r37ws), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := "*** Begin Patch\n" +
+		"*** Update File: app.py\n" +
+		"@@ cur = conn.cursor()\n" + // 锚点裸写（丢 4 格缩进）
+		"     cur = conn.cursor()\n" + // 显式上下文重复（含缩进）
+		"-    cur.execute(\"SELECT * FROM users WHERE id = '%s'\" % uid)  # SQL 注入\n" +
+		"+    cur.execute(\"SELECT * FROM users WHERE id = ?\", (uid,))\n" +
+		"*** End Patch"
+	out, err := NormalizeDiffPatch(p, dir)
+	if err != nil {
+		t.Fatalf("double-written unindented anchor must resolve (Cline defStr semantics): %v", err)
+	}
+	// 重建补丁 @@ 承载真实文件行（含缩进）——消费端 fuzz=0 契约不变
+	if !strings.Contains(out, "@@     cur = conn.cursor()\n") {
+		t.Fatalf("rebuilt @@ must carry verbatim file line:\n%s", out)
+	}
+}
+
+// 形态一·EOF 档（gw-61200b8b 第 2 项）：同形态 + *** End of File。
+func TestNormalizeDiffPatch_AnchorDoubleWriteUnindentedEof(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte(r37ws), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := "*** Begin Patch\n" +
+		"*** Update File: app.py\n" +
+		"@@ return cur.fetchone()\n" +
+		"     return cur.fetchone()\n" +
+		"-API_TOKEN = \"hunter2-hardcoded-secret\"  # 硬编码凭据\n" +
+		"+API_TOKEN = os.environ[\"API_TOKEN\"]\n" +
+		"*** End of File\n" +
+		"*** End Patch"
+	if _, err := NormalizeDiffPatch(p, dir); err != nil {
+		t.Fatalf("double-write + EOF hunk must resolve: %v", err)
+	}
+}
+
+// 形态二（gw-5a7393ed 实证）：锚点 + 中间夹 +新增 + 显式重复（插入式双写）。
+func TestNormalizeDiffPatch_AnchorDoubleWriteWithAddition(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte(r37ws), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := "*** Begin Patch\n" +
+		"*** Update File: app.py\n" +
+		"@@ import sqlite3\n" +
+		"+import os\n" +
+		" import sqlite3\n" +
+		"@@     return cur.fetchone()\n" +
+		"-API_TOKEN = \"hunter2-hardcoded-secret\"  # 硬编码凭据\n" +
+		"+API_TOKEN = os.environ[\"API_TOKEN\"]\n" +
+		"*** End Patch"
+	out, err := NormalizeDiffPatch(p, dir)
+	if err != nil {
+		t.Fatalf("insertion-style double-write must resolve: %v", err)
+	}
+	if !strings.Contains(out, "+import os\n") {
+		t.Fatalf("insertion must be preserved:\n%s", out)
+	}
+}
+
+// 形态三：锚点幻觉（defStr 在文件中不存在）但显式上下文自足 → 内容锚定兜底通过。
+func TestNormalizeDiffPatch_AnchorHallucinatedHintIgnored(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte(r37ws), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := "*** Begin Patch\n" +
+		"*** Update File: app.py\n" +
+		"@@ def process(uid):\n" + // 文件中不存在此行
+		"-    cur.execute(\"SELECT * FROM users WHERE id = '%s'\" % uid)  # SQL 注入\n" +
+		"+    cur.execute(\"SELECT * FROM users WHERE id = ?\", (uid,))\n" +
+		"*** End Patch"
+	if _, err := NormalizeDiffPatch(p, dir); err != nil {
+		t.Fatalf("hallucinated defStr must degrade to content anchoring: %v", err)
+	}
+}
+
+// 形态三反面：纯新增 hunk 无 defStr（位置不可锚定）仍拒绝；defStr 可用则允许。
+func TestNormalizeDiffPatch_PureAdditionAnchoring(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte(r37ws), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 裸 @@ + 纯新增：无任何锚定依据 → 拒绝（位置歧义，不编造）
+	p := "*** Begin Patch\n*** Update File: app.py\n@@\n+import os\n*** End Patch"
+	if _, err := NormalizeDiffPatch(p, dir); err == nil {
+		t.Fatal("bare-@@ pure addition must stay rejected (no anchor)")
+	}
+	// defStr 给出位置 → 插入锚定到真实行
+	p2 := "*** Begin Patch\n*** Update File: app.py\n@@ import sqlite3\n+import os\n*** End Patch"
+	out, err := NormalizeDiffPatch(p2, dir)
+	if err != nil {
+		t.Fatalf("defStr-anchored pure addition must resolve: %v", err)
+	}
+	if !strings.Contains(out, "@@ import sqlite3\n+import os\n") {
+		t.Fatalf("insertion anchored at defStr line:\n%s", out)
+	}
+}
+
+// 形态四（gw-2ff81ebf 实证 2/4）：文件顶（idx==0）带删除行——@@ 即被删首行，
+// 重建 @@ 承载首条变更行本身（消费端插件经全文回扫兜底层应用）。
+func TestNormalizeDiffPatch_AnchorAtFileTopDeletion(t *testing.T) {
+	dir := t.TempDir()
+	ws := "import os\n\ndef rm(p):\n    os.system(\"rm -rf \" + p)\n"
+	if err := os.WriteFile(filepath.Join(dir, "utils.py"), []byte(ws), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := "*** Begin Patch\n" +
+		"*** Update File: utils.py\n" +
+		"@@ import os\n" +
+		"-import os\n" +
+		"+import os\n" +
+		"+import subprocess\n" +
+		"@@ def rm(p):\n" +
+		"-    os.system(\"rm -rf \" + p)\n" +
+		"+    subprocess.run([\"rm\", \"-rf\", \"--\", p], check=True)\n" +
+		"*** End Patch"
+	out, err := NormalizeDiffPatch(p, dir)
+	if err != nil {
+		t.Fatalf("file-top deletion with @@ as deleted line must resolve: %v", err)
+	}
+	if !strings.Contains(out, "@@ import os\n") {
+		t.Fatalf("rebuilt @@ must carry the first changed line:\n%s", out)
+	}
+	if !strings.Contains(out, "-import os\n+import os\n+import subprocess\n") {
+		t.Fatalf("replacement semantics must be preserved:\n%s", out)
 	}
 }

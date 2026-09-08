@@ -319,6 +319,66 @@ MUTANTS = [
         "module": "services/result-service",
         "run": "TestFindingRepoReasoningWired",
     },
+    {
+        "id": "M28", "bug": "R32: CreateProject 包装键校验短路 → 缺 project 键静默创建全空项目（201 空壳）",
+        "file": "services/project-service/internal/handler/project.go",
+        "edits": [(
+            'if req.GetProject() == nil || strings.TrimSpace(req.GetProject().GetName()) == "" {',
+            'if false && (req.GetProject() == nil || strings.TrimSpace(req.GetProject().GetName()) == "") {',
+        )],
+        "module": "services/project-service",
+        "run": "TestCreateProjectRejectsMissingProject",
+    },
+    {
+        "id": "M29", "bug": "R33: archiveExt 丢 .tar.gz 双段后缀 → 落盘名 archive-<ts>.gz 不满足解包 switch，.tar.gz 上传 prepare 必挂（gw-e295b637）",
+        "file": "services/task-service/internal/service/archive.go",
+        "edits": [(
+            'case strings.HasSuffix(name, ".tar.gz"):',
+            'case strings.HasSuffix(name, ".tar.gz") && false:',
+        )],
+        "module": "services/task-service",
+        "run": "TestFetchUploadArchive_TarGzFullChain",
+    },
+    {
+        "id": "M30", "bug": "R34: Run 无视 PatchFixRound 套用 findings 解析 → 修复轮 submit_patches 合规提交被 no JSON 判废（gw-d331089f）",
+        "file": "services/dsh-runtime-service/internal/sandbox/sandbox.go",
+        "edits": [(
+            'if t.PatchFixRound {',
+            'if false && t.PatchFixRound {',
+        )],
+        "module": "services/dsh-runtime-service",
+        "run": "TestRun_PatchFixRoundToolBatchesMerged",
+    },
+    {
+        "id": "M31", "bug": "R35: resolveSectionPath 无沙箱挂载前缀容错 → 补丁段路径 project/… 全拒（gw-d331089f）",
+        "file": "services/dsh-runtime-service/internal/service/fixpatch.go",
+        "edits": [(
+            'if !exists(path) && exists(trimmed) {',
+            'if false && !exists(path) && exists(trimmed) {',
+        )],
+        "module": "services/dsh-runtime-service",
+        "run": "TestNormalizeDiffPatch_SandboxMountPrefixRewrite",
+    },
+    {
+        "id": "M32", "bug": "R36: interaction_dir 丢失部署覆盖口 → 探针指向本容器 CWD 相对路径恒 miss，长审计误判 TIMEOUT（gw-d331089f）",
+        "file": "services/dsh-runtime-service/internal/service/sandbox_analysis.go",
+        "edits": [(
+            'v, err := cfg.Str("dsh_runtime.sandbox.interaction_dir", "CODEAUDIT_INTERACTION_DIR")',
+            'v, err := cfg.Str("dsh_runtime.sandbox.interaction_dir")',
+        )],
+        "module": "services/dsh-runtime-service",
+        "run": "TestInteractionDir_EnvOverrideWins",
+    },
+    {
+        "id": "M33", "bug": "R37: @@ 定义行重新物化为上下文行 → 锚点双写/丢缩进形态整补丁被拒（gw-61200b8b/gw-5a7393ed）",
+        "file": "services/dsh-runtime-service/internal/service/fixpatch.go",
+        "edits": [(
+            'hunk.defStr = strings.TrimPrefix(ln, "@@ ")',
+            'hunk.defStr = strings.TrimPrefix(ln, "@@ "); hunk.lines = append(hunk.lines, patchLine{kind: lineCtx, text: strings.TrimPrefix(ln, "@@ ")})',
+        )],
+        "module": "services/dsh-runtime-service",
+        "run": "TestNormalizeDiffPatch_AnchorDoubleWriteUnindented",
+    },
 ]
 
 

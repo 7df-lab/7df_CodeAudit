@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { groupFindingsByFile, mapFinding, severityRank } from '../src/diagnosticsMapper';
+import { mapFinding, severityRank } from '../src/diagnosticsMapper';
 import type { UnifiedFinding } from '../src/types';
 
 function finding(over: Partial<UnifiedFinding> = {}): UnifiedFinding {
@@ -55,15 +55,5 @@ describe('diagnosticsMapper', () => {
     assert.ok(m!.message.includes('CWE-79'));
     assert.ok(m!.message.includes('AI:AI_VERDICT_CONFIRMED'));
     assert.strictEqual(m!.code, 'CWE-79');
-  });
-
-  it('groupFindingsByFile：反斜杠归一 + 组内按严重级降序', () => {
-    const byFile = groupFindingsByFile([
-      finding({ location: { file_path: 'src\\a.ts', start_line: 1 } }),
-      finding({ severity: 'SEVERITY_CRITICAL', title: 'B', location: { file_path: 'src/a.ts', start_line: 2 } }),
-      finding({ severity: 'SEVERITY_INFO', title: 'C', location: { file_path: 'src/a.ts', start_line: 3 } }),
-    ]);
-    assert.deepStrictEqual([...byFile.keys()], ['src/a.ts']);
-    assert.deepStrictEqual(byFile.get('src/a.ts')!.map((f) => f.title), ['B', 'XSS', 'C']);
   });
 });

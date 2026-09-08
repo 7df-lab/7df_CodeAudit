@@ -35,15 +35,17 @@ func TestLiveRetryFailedPatchesRealSandbox(t *testing.T) {
 		DiffPatch: badPatch,
 	}}
 	r := sandbox.NewManagerRunner(*cfg)
-	round := func(ctx context.Context, assignment string) (string, error) {
+	round := func(ctx context.Context, assignment string) ([]sandbox.PatchFix, error) {
 		res, rerr := r.Run(ctx, sandbox.Task{
 			TaskID: "live-fixretry", WorkspaceDir: ws, Assignment: assignment,
 			Timeout: 10 * time.Minute, // 07 §8
+			// R34：修复轮按 patches 语义解析（Run 内提取 submit_patches 工具参数）
+			PatchFixRound: true,
 		})
 		if rerr != nil {
-			return "", rerr
+			return nil, rerr
 		}
-		return res.FinalText, nil
+		return res.Patches, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()

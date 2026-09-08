@@ -11,7 +11,7 @@
 4. 分块上限：UPLOAD_CHUNK_BYTES 必须 3 字节对齐且编码后 < 网关 1MiB 收包上限
    （2026-09-06 实测 OUT_OF_RANGE；调大分块 = 上传全链 502）；
 5. 静态红线：token 比较必须走 hmac.compare_digest（时序侧信道）；
-6. JSON body 上限 8 MiB 是对外契约（网关/引擎按此预算请求体）；
+6. JSON body 上限 20 MiB 是对外契约（网关/引擎按此预算请求体）；
 7. vendored SDK 子树在库（fresh clone 构建输入，1e02c20 教训）；
 8. REGRESSIONS.md 引用的锁定测试必须真实存在（档案不腐烂）。
 
@@ -129,9 +129,9 @@ def test_token_comparison_is_constant_time():
         "token check must stay constant-time (timing side channel)"
 
 
-def test_json_body_cap_is_8mib():
-    assert api.MAX_BODY_BYTES == 8 * 1024 * 1024, \
-        "8 MiB JSON cap is a published contract (docs/api-external.md §2)"
+def test_json_body_cap_is_20mib():
+    assert api.MAX_BODY_BYTES == 20 * 1024 * 1024, \
+        "20 MiB JSON cap is a published contract (docs/api-external.md §2)"
 
 
 def test_vendored_sdk_tree_present():

@@ -4,7 +4,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import TaskDetailPage from '../pages/tasks/TaskDetailPage';
 import { httpError, useFakeGateway } from '../testsupport/fakeGateway';
 import type { TaskSnapshot } from '../api/types';
@@ -142,5 +142,30 @@ describe('E-23 WS 帧路径（250ms 聚合推帧与轮询同构吸收；live 徽
     } finally {
       delete (globalThis as { WebSocket?: unknown }).WebSocket;
     }
+  });
+});
+
+// 收束即补拉（gw-d331089f 报障回归锁）：终态帧早于发现落库的异常序列下（长任务被
+// 对账器误判超时后阶段仍收敛），发现列表以空结果入缓存且不再触发——终态+AI 收束
+// 帧到达时必须失效一次 findings/fusion/review 查询，晚到数据不再需要手动刷新页面。
+describe('收束即补拉（终态+AI 收束 → 失效产出类查询，一次性）', () => {
+  it('收束帧到达 → invalidate findings（幂等：重复收束帧不重复失效）', async () => {
+    const { qc } = renderDetail();
+    // 模拟"过早查询"：发现列表已在缓存（空列表，发现尚未落库时的查询结果）
+    qc.setQueryData(['findings', 't-9', ''], { findings: [], pagination: { next_cursor: '', total: '0' } });
+    const spy = vi.spyOn(qc, 'invalidateQueries');
+    snapHandler = () => snap({
+      task: { ...RUNNING_TASK, status: 'TASK_STATUS_COMPLETED' },
+      ai: { chunk: '', next_cursor: '0', complete: true, total_bytes: '0' },
+    });
+    await act(() => qc.refetchQueries({ queryKey: ['task-snapshot', 't-9'] }));
+    await waitFor(() =>
+      expect(spy.mock.calls.some((c) => (c[0] as { queryKey: string[] }).queryKey[0] === 'findings')).toBe(true),
+    );
+    expect(spy.mock.calls.some((c) => (c[0] as { queryKey: string[] }).queryKey[0] === 'fusion-findings')).toBe(true);
+    // 二次收束帧（重复终态推送）不重复失效
+    await act(() => qc.refetchQueries({ queryKey: ['task-snapshot', 't-9'] }));
+    const findingsCalls = spy.mock.calls.filter((c) => (c[0] as { queryKey: string[] }).queryKey[0] === 'findings');
+    expect(findingsCalls.length).toBe(1);
   });
 });

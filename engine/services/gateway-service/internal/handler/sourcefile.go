@@ -22,9 +22,9 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// 源码全文读取上限（ADR-195）：2MiB——覆盖常规源码文件；超限如实 413，
+// 源码全文读取上限（ADR-195；2026-09-08 用户指令上调）：5MiB——覆盖常规源码文件；超限如实 413，
 // 前端降级回 ADR-143 扫描时捕获的 ±10 行片段。
-const maxSourceFileBytes = 2 << 20
+const maxSourceFileBytes = 5 << 20
 
 // ReposDir — 仓库拉取流的任务源根（ADR-195: gateway.repos_dir，与 task.repos_dir
 // 同值；repo 流 clone 目的地=<repos_dir>/<task_id>，task-service 内存态重启后仍可回查）。

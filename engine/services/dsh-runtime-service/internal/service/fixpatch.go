@@ -1,7 +1,10 @@
 // fixpatch — ADR-183: diff_patch 服务端校验与规范化。
 //
 // 沙箱 DSH 产出的 apply_patch 补丁文本经本模块校验重建后才允许进入 UnifiedFinding.diff_patch：
-//   - Update File 段按"顺序游标 + first-hit + NFC canonicalize 全等"锚定（与插件锚定引擎
+//   - Update 段 "@@ 定义行"按 Cline apply-patch-parser 语义作寻位指令（canonTrim/trim
+//     容错匹配，不物化为 hunk 内容——R37 对齐插件 applyPatch.ts 逐字移植的上游行为），
+//     hunk 锚定依赖显式上下文/删除行；
+//   - Update 段按"顺序游标 + first-hit + NFC canonicalize 全等"锚定（与插件锚定引擎
 //     findContext fuzz=0 同语义），上下文/删除行以工作区真实文件行逐字重建——
 //     人类格式规范 §3"上下文行与删除行必须从工作区快照逐字复制，禁止凭记忆改写"的服务端强制；
 //   - 新增行 NFC 归一 + 智能引号→ASCII + 不间断空格→空格（规范 §3 内容质量）；
@@ -38,10 +41,15 @@ type patchLine struct {
 }
 
 // patchHunk — 一个改动块。
-// @@ 锚点行并入首位上下文行（Cline 同款：锚点行即首条上下文行）。
+// defStr — "@@ <行>" 的定义行内容（Cline apply-patch-parser 语义：寻位指令，不物化为
+// hunk 内容；锚定只依赖显式上下文/删除行——R37 对齐插件 applyPatch.ts 逐字移植的上游行为）。
 type patchHunk struct {
-	lines   []patchLine
-	eofMark bool // *** End of File：本 hunk 须锚定文件末尾
+	defStr string         // "@@ " 后的原文；bare "@@" 为空串
+	lines  []patchLine    // 交错保留位置序
+	eofMark bool          // *** End of File：本 hunk 须锚定文件末尾
+	// anchorLine — 重建时显式写出的 @@ 行（规范化路径设置：带删除行 hunk 取变更块
+	// 上一行；文件顶改动取首条变更行本身）。空=沿用 lines[0] 首条上下文行惯例。
+	anchorLine string
 }
 
 // oldLines — hunk 的原文件行（上下文+删除，按序）。
@@ -49,17 +57,6 @@ func (h *patchHunk) oldLines() []string {
 	out := make([]string, 0, len(h.lines))
 	for _, l := range h.lines {
 		if l.kind != lineAdd {
-			out = append(out, l.text)
-		}
-	}
-	return out
-}
-
-// newLines — hunk 的新行（上下文+新增，按序）。
-func (h *patchHunk) newLines() []string {
-	out := make([]string, 0, len(h.lines))
-	for _, l := range h.lines {
-		if l.kind != lineDel {
 			out = append(out, l.text)
 		}
 	}
@@ -116,6 +113,9 @@ func NormalizeDiffPatch(raw, workspaceDir string) (string, error) {
 	if len(secs) == 0 {
 		return "", fmt.Errorf("empty patch: no file sections")
 	}
+	for i := range secs {
+		secs[i].path = resolveSectionPath(workspaceDir, secs[i].path)
+	}
 	var out strings.Builder
 	out.WriteString("*** Begin Patch\n")
 	for _, sec := range secs {
@@ -151,9 +151,14 @@ func NormalizeDiffPatch(raw, workspaceDir string) (string, error) {
 // writeHunk — 重建后的 hunk 回写：@@ 锚点（=首条上下文行的真实文件行）+ 交错行序。
 // @@ 行承载首条上下文行，不再重复输出该行（消费端把 @@ 内容作为上下文行，重复即错切）。
 func writeHunk(out *strings.Builder, h *patchHunk) {
+	if h.anchorLine != "" {
+		// anchorLine 路径（idx==0 形态，lines[0] 是删除行）——@@ 显式写出，
+		// 首条 ctx 行不再并入 @@（下方条件以 anchorLine == "" 为前提，防双写）
+		out.WriteString("@@ " + h.anchorLine + "\n")
+	}
 	for i, l := range h.lines {
 		switch {
-		case i == 0 && l.kind == lineCtx:
+		case i == 0 && l.kind == lineCtx && h.anchorLine == "":
 			out.WriteString("@@ " + l.text + "\n")
 		case l.kind == lineAdd:
 			out.WriteString(string(lineAdd) + cleanAddedLine(l.text) + "\n")
@@ -200,20 +205,16 @@ func parseApplyPatch(raw string) ([]patchSection, error) {
 			hunk.eofMark = true
 			hunk = nil
 		case ln == "@@" || strings.HasPrefix(ln, "@@ "):
-			// Cline parser 同款：裸 "@@" 也是合法小节标记（无锚内容，块上下文自锚定）——
-			// GLM 实测产出该形态（evidence 15_glm_schema_test_args.json）
+			// Cline apply-patch-parser 语义（R37 对齐插件 applyPatch.ts 逐字移植）：
+			// @@ 定义行只作寻位（defStr），不物化为 hunk 内容——锚定只依赖显式
+			// 上下文/删除行；锚点丢缩进/双写/夹新增等模型自然书写形态不再整补丁被拒。
 			if cur == nil || cur.kind != "update" {
 				return nil, fmt.Errorf("@@ anchor outside Update File section (line %d)", i+1)
 			}
 			cur.hunks = append(cur.hunks, patchHunk{})
 			hunk = &cur.hunks[len(cur.hunks)-1]
-			if ln == "@@" {
-				break // 裸 @@：无锚内容，hunk 由后续上下文/±行自锚定
-			}
-			anchor := strings.TrimPrefix(ln, "@@ ")
-			// 锚点行=首条上下文行（Cline 同款）；后随显式同文上下文行不重复（LLM 常见双写）
-			if !(len(lines) > i+1 && strings.TrimPrefix(lines[i+1], " ") == anchor && strings.HasPrefix(lines[i+1], " ")) {
-				hunk.lines = append(hunk.lines, patchLine{kind: lineCtx, text: anchor})
+			if ln != "@@" {
+				hunk.defStr = strings.TrimPrefix(ln, "@@ ")
 			}
 		default:
 			if cur == nil {
@@ -334,8 +335,58 @@ func safeWsPath(rel string) (string, error) {
 	return rel, nil
 }
 
+// sandboxPathPrefixes — 沙箱挂载视角的路径前缀（按前缀长度降序：先剥长前缀）。
+// 模型在沙箱内看到的项目根是 /sandbox/project，产出补丁时常把段路径写成该挂载视角
+// （"/sandbox/project/x" 经 sectionPath 清洗后形如 "sandbox/project/x"，或直接 "project/x"），
+// 而校验与消费两侧都按工作区根（=项目根）解析（gw-d331089f 实证 13/13 补丁因此被拒）。
+var sandboxPathPrefixes = []string{"sandbox/project/", "project/"}
+
+// resolveSectionPath — 段路径的沙箱视角容错：原路径在工作区不存在且带挂载前缀时，
+// 改写为剥前缀形态（产出补丁同步改写，消费端按工作区根应用）。
+//   - update/delete：以"目标文件存在"为准（原路径存在=真有该目录，不动——防误剥合法
+//     顶层 project/ 目录的仓）；
+//   - add：目标必须不存在，改以"父目录存在"为准；
+//   - 全部候选都不存在时原样返回，让后续锚定错误携带原路径（失败反馈保真）。
+func resolveSectionPath(workspaceDir, path string) string {
+	if workspaceDir == "" || path == "" {
+		return path
+	}
+	trimmed := path
+	for _, pfx := range sandboxPathPrefixes {
+		if strings.HasPrefix(trimmed, pfx) {
+			trimmed = strings.TrimPrefix(trimmed, pfx)
+			break
+		}
+	}
+	if trimmed == path {
+		return path // 无挂载前缀（或恰为剥净后的空串），无容错余地
+	}
+	exists := func(rel string) bool {
+		_, err := os.Stat(filepath.Join(workspaceDir, filepath.FromSlash(rel)))
+		return err == nil
+	}
+	parentExists := func(rel string) bool {
+		dir := filepath.Dir(filepath.Join(workspaceDir, filepath.FromSlash(rel)))
+		fi, err := os.Stat(dir)
+		return err == nil && fi.IsDir()
+	}
+	if !exists(path) && exists(trimmed) {
+		return trimmed
+	}
+	// add 语义：两个目标都不存在时，父目录在者胜（原路径父目录在=模型本意即原路径）
+	if !exists(path) && !exists(trimmed) && parentExists(trimmed) && !parentExists(path) {
+		return trimmed
+	}
+	return path
+}
+
 // anchorAndUpdate — Update File 段校验：逐 hunk 内容锚定（fuzz=0），
-// 上下文/删除行以工作区真实行逐字替换（@@ 锚点行=首条上下文行，随真实行重建）。
+// 上下文/删除行以工作区真实行逐字替换。
+// defStr 语义对齐 Cline（插件 applyPatch.ts 逐字移植）：先三级容错寻位（canonTrim/trim，
+// 兼容锚点丢缩进），游标推进到命中行（INCLUSIVE——双写形态的显式上下文行就是 defStr
+// 行本身）；defStr 未命中不判死，降级为纯内容锚定（显式行自足时照常通过）。
+// 纯新增 hunk（无显式上下文/删除行）：defStr 命中行后插入（重建为 canonical
+// "@@ 真实行 + 新增"形态）；无 defStr 则位置歧义，如实拒绝。
 func anchorAndUpdate(sec patchSection, workspaceDir string) ([]patchHunk, error) {
 	rel, err := safeWsPath(sec.path)
 	if err != nil {
@@ -351,7 +402,38 @@ func anchorAndUpdate(sec patchSection, workspaceDir string) ([]patchHunk, error)
 		h := sec.hunks[i]
 		old := h.oldLines()
 		if len(old) == 0 {
-			return nil, fmt.Errorf("hunk #%d has no anchorable lines (need @@ anchor, context, or deletion)", i+1)
+			// 纯新增 hunk：defStr 提供插入位置
+			if strings.TrimSpace(h.defStr) == "" {
+				return nil, fmt.Errorf("hunk #%d has no anchorable lines (need @@ anchor with content, context, or deletion)", i+1)
+			}
+			idx, ok := seekDefStr(fileLines, h.defStr, cursor)
+			if !ok {
+				return nil, fmt.Errorf("hunk #%d pure addition: @@ anchor %q not found in %s", i+1, h.defStr, rel)
+			}
+			if h.eofMark {
+				// 插入点须在文件尾（同 del/ctx hunk 的 EOF 口径，容忍合成空末元素）
+				at := idx + 1
+				atEof := at == len(fileLines) ||
+					(at == len(fileLines)-1 && fileLines[at] == "")
+				if !atEof {
+					return nil, fmt.Errorf("hunk #%d marked *** End of File but insertion lands at line %d of %d",
+						i+1, at, len(fileLines))
+				}
+			}
+			ins := make([]patchLine, 0, len(h.lines)+1)
+			ins = append(ins, patchLine{kind: lineCtx, text: fileLines[idx]}) // 重建 canonical "@@ 真实行 + 新增"
+			ins = append(ins, h.lines...)
+			h.lines = ins
+			cursor = idx + 1
+			out = append(out, h)
+			continue
+		}
+		// defStr 寻位（hint，尽力而为）：双写/丢缩进场景显式行起始于 defStr 行本身
+		if strings.TrimSpace(h.defStr) != "" {
+			if j, ok := seekDefStr(fileLines, h.defStr, cursor); ok {
+				cursor = j
+			}
+			// 未命中：defStr 幻觉不判死——显式行内容锚定自足（R37 形态三）
 		}
 		idx, best := findExactContext(fileLines, old, cursor)
 		if idx < 0 {
@@ -369,8 +451,12 @@ func anchorAndUpdate(sec patchSection, workspaceDir string) ([]patchHunk, error)
 				if len(preview) > 200 {
 					preview = preview[:200] + "..."
 				}
-				return nil, fmt.Errorf("hunk #%d context not found in %s (scanned from line %d; content anchoring, fuzz=0 only; best similarity %.2f). Context:\n%s",
-					i+1, rel, cursor+1, best, preview)
+				hintNote := ""
+				if strings.TrimSpace(h.defStr) != "" {
+					hintNote = fmt.Sprintf("; @@ anchor %q not matched either", h.defStr)
+				}
+				return nil, fmt.Errorf("hunk #%d context not found in %s (scanned from line %d; content anchoring, fuzz=0 only; best similarity %.2f%s). Context:\n%s",
+					i+1, rel, cursor+1, best, hintNote, preview)
 			}
 		}
 		// 逐字重建：hunk 内第 k 条非新增行 = 真实文件第 idx+k 行
@@ -392,10 +478,61 @@ func anchorAndUpdate(sec patchSection, workspaceDir string) ([]patchHunk, error)
 					i+1, end, len(fileLines))
 			}
 		}
+		// 规范化重建（R37）：defStr 不再物化为上下文行后，纯 del/add hunk 无 ctx 首行，
+		// writeHunk 会丢 @@——分两形态：
+		//   a) 纯插入（无删除行）且新增行在显式上下文之前（gw-5a7393ed 实证形态）：语义=
+		//      紧邻锚定行插入，重建为 canonical "@@ 锚定真实行 + 新增"（消费端 seek 后
+		//      纯插入，落点一致；ctx 回声行随真实行重建不再重复）；
+		//   b) 其余（含删除行）：从真实文件取变更块上一行前置（消费端 seek 过该行恰落 idx）。
+		// idx==0 且带删除行（文件顶改动且无上下文）在该补丁语法下不可表达，如实拒绝。
+		if h.lines[0].kind != lineCtx {
+			hasDel := false
+			for _, l := range h.lines {
+				if l.kind == lineDel {
+					hasDel = true
+					break
+				}
+			}
+			switch {
+			case !hasDel:
+				ins := []patchLine{{kind: lineCtx, text: fileLines[idx]}}
+				for _, l := range h.lines {
+					if l.kind == lineAdd {
+						ins = append(ins, l)
+					}
+				}
+				h.lines = ins
+			case idx == 0:
+				// 文件顶改动无"上一行"可前置：@@ 直接承载首条变更行本身
+				// （gw-2ff81ebf 实证形态；消费端插件 findContext 全文回扫兜底层覆盖）
+				h.anchorLine = fileLines[idx]
+			default:
+				h.lines = append([]patchLine{{kind: lineCtx, text: fileLines[idx-1]}}, h.lines...)
+			}
+		}
 		cursor = idx + len(old)
 		out = append(out, h)
 	}
 	return out, nil
+}
+
+// seekDefStr — @@ 定义行寻位（Cline defStr 三级匹配的平台侧两级收敛）：
+// canonTrim 全等（锚点裸写丢缩进即精确命中）→ 文件行 trim 后全等（缩进漂移容错）。
+// 自 cursor 起扫，未命中回退全文（锚点幻觉/乱序段不判死，调用方降级内容锚定）。
+// 返回命中行下标——INCLUSIVE：双写形态的显式上下文行就是 defStr 行本身。
+func seekDefStr(fileLines []string, defStr string, cursor int) (int, bool) {
+	want := canonicalize(strings.TrimSpace(defStr))
+	if want == "" {
+		return 0, false
+	}
+	for _, from := range []int{cursor, 0} {
+		for i := from; i < len(fileLines); i++ {
+			if canonicalize(fileLines[i]) == want || canonicalize(strings.TrimSpace(fileLines[i])) == want {
+				return i, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // findExactContext — 顺序 first-hit 精确锚定（canonicalize 全等；插件 findContext fuzz=0 同语义）。

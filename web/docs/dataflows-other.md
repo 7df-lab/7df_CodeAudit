@@ -79,7 +79,7 @@ Shell 与 LoginPage 双处消费防闪烁。锚点：session.test.tsx。
 浏览器 ──同源──> [dev/preview: Vite proxy /v1 → CODEAUDIT_GATEWAY_URL (ws:true)]
               └─[容器: nginx /v1 → CODEAUDIT_GATEWAY_UPSTREAM]
                     ├─ Upgrade/Connection 头映射（WS 升级透传，ADR-172）
-                    ├─ client_max_body_size 30m（25MB 上传 + multipart 余量）
+                    ├─ client_max_body_size 100m（100MB 上传 + multipart 余量）
                     ├─ proxy_read/send_timeout 300s + proxy_buffering off（长响应）
                     ├─ /assets/ 30d immutable；index.html no-cache；gzip JS/CSS/JSON/SVG
                     └─ 非 /v1 路径 try_files → index.html（SPA history 路由回退）

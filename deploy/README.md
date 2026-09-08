@@ -71,6 +71,9 @@ bash deploy/production-deploy.sh status | stop | down [-v]
   与宿主重叠（给跳位建议）；最后汇总参数确认才开工。
   `--yes`（或 `PROD_DEPLOY_ASSUME_YES=1`）或 stdin 非终端（CI/管道）自动跳过问答按现值执行。
   LLM provider 不在部署期配置——部署成功后按完成横幅指引自行注册管理。
+- **console 五层验收门**（2026-09-08 扩，dind 实测驱动）：部署收尾对 web console 断言
+  `/v1` 401 透传、SPA 深链回退+静态产物可达、nginx WS 升级头、经 console 源登录+带认证
+  200（admin 口令已改则自动跳过，保幂等重跑）、上传体上限（2MB 放行 / 31MB 反代层 413）。
 - **沙箱构建素材免下载**（2026-09-08 增）：`pdtools/nuclei-templates/agent-tools` 等 gitignored
   大件部署前先 `fetch.sh --verify` 离线复核（sbom sha256 逐项），**在位即零下载**；缺失/漂移
   才全量拉取（需网络出口，离线主机按 sandbox-artifacts/README 手工补件）；`check` 命令只报
@@ -79,8 +82,8 @@ bash deploy/production-deploy.sh status | stop | down [-v]
   端口/网段/Kafka 广播地址全部 env 化，改后重跑 deploy 即收敛。**联动键自动重算**：
   manager→网关端点与沙箱拨号随 `OPENSHELL_PORT`、console `/v1` 反代随 `CODEAUDIT_HOST_GATEWAY`
   ——改一个端口键全链跟随（dind 实测的反代 404 手误由此根治）；**manager 是内部面非交互面**：
-  `OPENSHELL_MANAGER_URL` 恒为内部常量 `host.docker.internal:18800`（hosts 别名解析，零 DNS、
-  零用户输入，2026-09-08 起与访问 IP 解耦）；沙箱镜像 tag 经 `DSH_IMAGE` 可调（缺省 `:latest`）。
+  `OPENSHELL_MANAGER_URL` 恒为内部常量 `http://host.docker.internal:18800`（带 scheme——引擎拿它当
+  REST 基址；hosts 别名解析，零 DNS、零用户输入，2026-09-08 起与访问 IP 解耦）；沙箱镜像 tag 经 `DSH_IMAGE` 可调（缺省 `:latest`）。
 - **解析机制（全新安装零 DNS 依赖，2026-09-08 代码实证）**：用户不需要提供任何 DNS——
   同 compose 网络内服务互访（`project:50052`、`kafka:9092` 等）走 **docker 内嵌 DNS**（127.0.0.11，
   dockerd 自带，与用户环境无关）；跨栈各跳走 `host.docker.internal` hosts 别名（`extra_hosts: host-gateway`
@@ -196,7 +199,7 @@ repo_url 填 `git://10.10.210.1:19418/sample-sast.git`（分支 main）；跑完
 3. **密钥文件交接**：gitignore 的本地单一事实源（`../manager/deploy/env`）
    不跟仓走，fresh clone 即缺。丢失时从现役实例拉回重建：
    ```bash
-   pct exec 107 -- cat /root/os-deploy/deploy/openshell-manager/.env \
+   pct exec <CTID> -- cat /root/os-deploy/deploy/openshell-manager/.env \
        > manager/deploy/env && chmod 600 manager/deploy/env
    ```
 4. **compose 接管注意**：若现役容器曾被绕过 deploy.sh 手工操作（compose

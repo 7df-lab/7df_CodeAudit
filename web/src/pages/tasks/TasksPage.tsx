@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Button, Select, Space, Table, Tag, Typography } from 'antd';
 import { Link, useNavigate } from 'react-router-dom';
 import { useState } from 'react';
-import { api } from '../../api/client';
+import { api, getProjects } from '../../api/client';
 import type { PaginationResponse, ScanTask } from '../../api/types';
 import { SCAN_MODE, TASK_STATUS, zh } from '../../dict';
 import { isTerminal } from '../../tasks/stateMachine';
@@ -32,7 +32,7 @@ export default function TasksPage() {
 
   const { data: projects } = useQuery({
     queryKey: ['projects'],
-    queryFn: async () => (await api.get('/v1/projects')).data as { projects: { project_id: string; name: string }[] },
+    queryFn: () => getProjects(),
   });
 
   // 任务分页（ADR-142 曾改"加载更多"绕开游标不生效；ADR-155 修复游标序列化后，

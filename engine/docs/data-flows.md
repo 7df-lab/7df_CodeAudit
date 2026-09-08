@@ -57,14 +57,14 @@ Kafka task.completed ──> result-service(自动 GenerateReport, 幂等键 kaf
 ## 2. 文件上传与任务源树管道
 
 ```
-前端 ──multipart──> gateway(零落盘,25MB 白名单) ──64KiB 客户端流──> storage UploadFile
+前端 ──multipart──> gateway(零落盘,100MB 白名单) ──64KiB 客户端流──> storage UploadFile
                                                                      │ MinIO uploads 桶
 StartTask(config.upload_file_id) ──> task-service FetchUploadArchive:
   GetFileInfo(取扩展名) → DownloadFile 流 → scratch → 解包到 <repos_dir>/uploads-<task_id>/unpacked/
   → 删归档原件 → ResolveProjectRoot 剥壳(唯一子目录逐层降入,封顶3层)
 ```
 
-- 解包防护：safeJoin 穿越/软链拒绝、200MB/3000 文件上限；解压失败 → 任务 FAILED
+- 解包防护：safeJoin 穿越/软链拒绝、500MB/10 万文件上限；解压失败 → 任务 FAILED
   （错误文案带"压缩包下载/解压失败"阶段语义）。
 - **共享卷 `agent_repos` → `/data/repos`**：task-service（写：解包/clone）、gateway
   （读：source-file）、dsh-runtime（读：沙箱上传前）三方共用同一任务源树。
@@ -74,7 +74,7 @@ StartTask(config.upload_file_id) ──> task-service FetchUploadArchive:
 - source-file 读取链四流：①`repos_dir/<task_id>` ①b `repos_dir/uploads-<task_id>/unpacked`+剥壳
   ②上传链接文件 `.codeaudit-task-<task_id>`（CreateScanTask 后 gateway 写，仅当
   project_path 位于 uploads_dir 内）③project config project_path ④唯一内容回退（mtime 最新，
-  覆盖无链接存量任务）。文件解析 exact > suffix > basename；2MiB/二进制/穿越/软链拒绝。
+  覆盖无链接存量任务）。文件解析 exact > suffix > basename；5MiB/二进制/穿越/软链拒绝。
 
 ## 3. 扫描执行流（dsh-runtime ↔ openshell-manager 沙箱）
 
@@ -99,10 +99,10 @@ dsh-runtime ──HTTP/JSON──> openshell-manager(:18800, LXC107) ──> dsh
   或归属标签，且不在活跃注册表（ADR-212⑫：标签键值曾混用致第二重圈定恒不命中）。
   `CODEAUDIT_SANDBOX_RECONCILE=off` 可关。
 - **项目上传**：tar.gz（排除 .git/node_modules）→ manager files 端点（Content-Length 必带）→
-  沙箱内 `/sandbox/project`；40MB 上限。
+  沙箱内 `/sandbox/project`；100MB 上限。
 - **回合语义**：收敛只认主会话 idle（子任务 idle 不算，ADR-190）；瞬态断流续跑 ≤2 轮
-  （ADR-192）；submit_findings 分批提交跨回合累积、按补丁体量分层（无 diff ≤4 条/批、含 diff
-  ≤2 条/批、多文件大补丁 1 条/批，ADR-194/211）；空列表=合法零发现（干净审计不误判报废）。
+  （ADR-192）；submit_findings 分批提交跨回合累积、按补丁体量分层（无 diff ≤8 条/批、含 diff
+  ≤4 条/批、多文件大补丁 1 条/批，ADR-194/211/220）；空列表=合法零发现（干净审计不误判报废）。
 - **沙箱服务路由**：沙箱内 bridge 经 `gateway_dial_addr`(gateway.internal:8080) 直拨 + Host 头
   路由（沙箱服务域无 DNS 通配）。
 - **AI 交互日志**：人性化中文流 → 内存条目 + `.ai.log`；原始 SSE 帧 → 仅 `.sse.log`；回调接线
@@ -182,7 +182,7 @@ FuseResults 五阶段: ①FP过滤(ai_verdict=FP 且 conf>0.8) ②位置合并(f
 |---|---|---|
 | `<repos_dir>/<task_id>/`（repo clone） | task | gateway(source-file)、dsh(沙箱上传前) |
 | `<repos_dir>/uploads-<task_id>/unpacked/`（拉包解包+剥壳） | task | 同上 |
-| `data/ai-interaction/<task>.ai.log/.sse.log` | dsh-runtime | gateway(ai-log 兜底)、**task reconciler（mtime 判活）** |
+| `<interaction_dir>/<task>.ai.log/.sse.log`（yaml 相对=本地；容器=`CODEAUDIT_INTERACTION_DIR`=/data/repos/ai-interaction 共享卷，R36——两容器 CWD 相对路径互不可见曾致探针恒 miss 误判 TIMEOUT） | dsh-runtime | gateway(ai-log 兜底)、**task reconciler（mtime 判活）** |
 | `<project>/.codeaudit/cpg.json` | dsh-runtime(AnalyzeCode) | dsh-runtime(QueryCPG) |
 | `.agent/evidence/exports/` | result(ExportFindings) | 运维 |
 

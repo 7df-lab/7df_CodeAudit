@@ -92,6 +92,18 @@ describe('ProjectsPage', () => {
     );
   });
 
+  it('100MB 本地预检：超限文件不发起上传请求（2026-09-08 限额批次）', async () => {
+    renderWith();
+    await waitFor(() => expect(screen.getByText('Demo')).toBeTruthy());
+    await openModal();
+    const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const big = new File(['zip'], 'big.zip', { type: 'application/zip' });
+    Object.defineProperty(big, 'size', { value: 101 * 1024 * 1024 }); // jsdom 免真分配 100MB
+    fireEvent.change(fileInput, { target: { files: [big] } });
+    await screen.findByText(/仅支持 zip\/tar\.gz，≤100MB/);
+    expect(gateway.requests.some((r) => r.url === '/v1/uploads/archive')).toBe(false);
+  });
+
   it('ADR-203: 仓库通道回归——不传包时 repo_url 可独立建项目（自动 clone）', async () => {
     renderWith();
     await waitFor(() => expect(screen.getByText('Demo')).toBeTruthy());

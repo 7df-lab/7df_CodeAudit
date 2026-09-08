@@ -32,7 +32,7 @@ manager 是**纯传输薄层**：只执行、只观测、绝不裁决；不持�
 - **Base URL**：开发态 `http://127.0.0.1:18800`；生产现役 `http://gateway.internal:18800`。
 - **鉴权**：`/healthz` 豁免；`/api/*` 全部要求 `Authorization: Bearer <token>`
   （严格前缀 `Bearer `，大小写敏感；无 token 配置且环回绑定时豁免）。错误 = 401。
-- **请求体**：JSON 端点 `Content-Type: application/json`，body 上限 **8 MiB**（`MAX_BODY_BYTES`，
+- **请求体**：JSON 端点 `Content-Type: application/json`，body 上限 **20 MiB**（`MAX_BODY_BYTES`，
   超限 413）；唯一例外 `POST …/files` 只收 `multipart/form-data` 且**必须带 Content-Length**。
 - **错误契约**：所有错误响应统一单键 `{"error": <msg>}`（含 404/405/411/413/415/502）。
   客户端格式错误一律 **400**，绝不泄漏成 502（502 会被上游按"网关不可达"重试/降级）。
@@ -48,7 +48,7 @@ manager 是**纯传输薄层**：只执行、只观测、绝不裁决；不持�
 | 404 | 未知路由（`no route for METHOD /path`）/ 沙箱或 provider 不存在 | `no route for GET /api/v1/nope` |
 | 405 | 路径存在但方法不匹配（Starlette detail 透传，仍 `{"error":…}` 形态） | `Method Not Allowed` |
 | 411 | 上传缺 Content-Length | `Content-Length required for file upload` |
-| 413 | JSON body > 8 MiB；上传超 `maxUploadBytes` | `body too large (N bytes)` |
+| 413 | JSON body > 20 MiB；上传超 `maxUploadBytes` | `body too large (N bytes)` |
 | 415 | 上传端点非 multipart | `content-type must be multipart/form-data …` |
 | 502 | 南向 SDK/gRPC 异常、未捕获兜底 | `RuntimeError: gateway unreachable` |
 

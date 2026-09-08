@@ -645,8 +645,3 @@ func (h *SASTFusionHandler) GenerateComparisonReport(ctx context.Context, req *p
 		VennDataUrl: "", // 诚实留空: 无真实可取用资源不返回 URL（ADR-129）
 	}, nil
 }
-
-// RegisterFinding stores a finding for later use.
-func (h *SASTFusionHandler) RegisterFinding(f *pb.UnifiedFinding) {
-	h.findingStore.Store(f.GetFindingId(), f)
-}

@@ -13,8 +13,8 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # 上传代码压缩包 ≤25MB（gateway UploadArchive 上限 25MB + multipart 开销余量）
-    client_max_body_size 30m;
+    # 上传代码压缩包 ≤100MB（gateway UploadArchive 上限 100MB + multipart 开销余量）
+    client_max_body_size 100m;
 
     # gzip：antd/react 产物体积大头是 JS，压缩比显著
     gzip on;

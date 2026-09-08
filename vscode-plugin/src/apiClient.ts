@@ -4,6 +4,7 @@
 import type {
   FindingsPage,
   LoginResponse,
+  PaginationResponse,
   Project,
   ScanTask,
   TaskSnapshot,
@@ -95,17 +96,38 @@ export class CodeAuditClient {
     return !!this.tokens.getAccessToken() || !!this.tokens.getRefreshToken();
   }
 
+  // 项目/任务列表：自动翻页累积（page_size=100，同 listFindings 口径）——
+  // 网关缺省 page_size=20/上限 100（proto L244），不带分页裸调只拿首页，条目多时静默截断
   async listProjects(): Promise<Project[]> {
-    const data = await this.requestJson<{ projects: Project[] }>('GET', '/v1/projects');
-    return data.projects ?? [];
+    const all: Project[] = [];
+    let cursor = '';
+    for (let i = 0; i < 50; i++) {
+      const page = await this.requestJson<{ projects?: Project[]; pagination?: PaginationResponse }>('GET', '/v1/projects', undefined, {
+        query: { pagination: { page_size: 100, cursor } },
+      });
+      all.push(...(page.projects ?? []));
+      if (!page.pagination?.has_next) break;
+      cursor = page.pagination.next_cursor;
+    }
+    return all;
   }
 
   /** 任务列表（按创建时间倒序）；projectId 缺省时返回全部项目任务 */
   async listTasks(projectId?: string): Promise<TaskSummary[]> {
-    const data = await this.requestJson<{ tasks: TaskSummary[] }>('GET', '/v1/tasks', undefined, {
-      query: projectId ? { project_id: projectId } : undefined,
-    });
-    return data.tasks ?? [];
+    const all: TaskSummary[] = [];
+    let cursor = '';
+    for (let i = 0; i < 50; i++) {
+      const page = await this.requestJson<{ tasks?: TaskSummary[]; pagination?: PaginationResponse }>('GET', '/v1/tasks', undefined, {
+        query: {
+          ...(projectId ? { project_id: projectId } : {}),
+          pagination: { page_size: 100, cursor },
+        },
+      });
+      all.push(...(page.tasks ?? []));
+      if (!page.pagination?.has_next) break;
+      cursor = page.pagination.next_cursor;
+    }
+    return all;
   }
 
   async listTools(): Promise<ToolInfo[]> {

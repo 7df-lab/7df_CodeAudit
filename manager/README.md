@@ -30,11 +30,10 @@ token，否则拒绝启动（`config.py validate()`）；`/api/*` 全部 Bearer 
 | 路径 | 职责 |
 |---|---|
 | `openshell_manager/__main__.py` | `python3 -m openshell_manager` 入口 → `api.serve()` |
-| `openshell_manager/api.py` | FastAPI app 工厂：全部路由、鉴权依赖注入（`/healthz` 豁免）、统一错误契约 `{"error": msg}`、流式上传端点；JSON body 上限 8 MiB（`MAX_BODY_BYTES`） |
+| `openshell_manager/api.py` | FastAPI app 工厂：全部路由、鉴权依赖注入（`/healthz` 豁免）、统一错误契约 `{"error": msg}`、流式上传端点；JSON body 上限 20 MiB（`MAX_BODY_BYTES`） |
 | `openshell_manager/gateway.py` | `GatewayFacade`：懒加载 vendored SDK、南向 gRPC 全操作、沙箱 name→UUID 解析（ADR-173） |
 | `openshell_manager/upload.py` | 手写流式 multipart 解析器：720 KiB 分块（3 字节对齐 base64，编码后 960KiB < 网关 gRPC 实测 1 MiB 收包上限）经 exec stdin 写入沙箱，先建父目录再写 `.part` 后原子 mv，失败自清理 |
 | `openshell_manager/config.py` | 配置解析（env > config.json > 内置默认）+ `validate()` 绑定纪律 |
-| `openshell_manager/http_api.py` | 旧 stdlib 实现，**不再接线**，保留作行为参照 |
 | `tests/test_contract.py` | 47 条契约测试（假 SDK 门面 + 真 HTTP 层，离线无需网关）；可 pytest 或直跑 |
 | `tests/test_guardrails.py` | 守门测试：鉴权全覆盖/路由快照/README 文档实测化/分块上限/常量时间比较/SDK 在库/档案完整 |
 | `REGRESSIONS.md` | 缺陷档案：R1…R12 每条缺陷绑定具名锁定测试 + 修复流程纪律（先红后修再记档） |
@@ -130,7 +129,7 @@ pct exec 107 -- bash -c 'mkdir -p /root/om-build && tar -xzf /tmp/om_ctx.tgz -C 
 | `POST /api/v1/sandboxes/exec` | 执行命令 `{sandbox_id, command, env?, workdir?, stdin_b64?, timeout_seconds?}`。**sandbox_id 必须传创建响应的 UUID `id` 字段，传沙箱名会 NOT_FOUND**；`command` 必须是字符串列表（裸字符串/混合类型 400，不触达网关）；`stdin_b64` 非法 base64 → 400 |
 | `GET /api/v1/sandboxes/{name}/logs?workspace=&lines=&since_ms=` | 日志（lines 默认 2000） |
 | `POST /api/v1/sandboxes/{name}/update-config` | 热更新策略 `{workspace, policy}` |
-| `POST /api/v1/sandboxes/{name}/files` | 流式上传，**仅 multipart/form-data**（否则 415）、**必带 Content-Length**（否则 411）：表单字段 `path`（绝对路径必填，父目录自动 `mkdir -p`，含空格/通配符路径安全）、`mode`（八进制可选如 `0755`）+ 文件部分 `file` → `{path,bytes,chunks}`；`?workspace=` 缺省 default。流式转发：边收边按 720 KiB 分块经 exec stdin 写沙箱（网关收包上限实测 1 MiB），内存恒定 <1 MiB，单请求大小不限（仅受 `maxUploadBytes` 约束；8 MiB 的 `MAX_BODY_BYTES` 只管 JSON 接口） |
+| `POST /api/v1/sandboxes/{name}/files` | 流式上传，**仅 multipart/form-data**（否则 415）、**必带 Content-Length**（否则 411）：表单字段 `path`（绝对路径必填，父目录自动 `mkdir -p`，含空格/通配符路径安全）、`mode`（八进制可选如 `0755`）+ 文件部分 `file` → `{path,bytes,chunks}`；`?workspace=` 缺省 default。流式转发：边收边按 720 KiB 分块经 exec stdin 写沙箱（网关收包上限实测 1 MiB），内存恒定 <1 MiB，单请求大小不限（仅受 `maxUploadBytes` 约束；20 MiB 的 `MAX_BODY_BYTES` 只管 JSON 接口） |
 | `POST /api/v1/sandboxes/{name}/services` | ExposeService：沙箱端口暴露为网关服务 `{workspace, service, target_port, domain?=false}` → `{name,sandbox_id,sandbox_name,target_port,domain,url}`；重暴露同名即更新 |
 | `GET /api/v1/sandboxes/{name}/services` | 该沙箱暴露服务清单（`?all_workspaces=true` 免 workspace；`limit`/`offset` 分页） |
 | `DELETE /api/v1/sandboxes/{name}/services/{service}?workspace=` | 删除暴露；不存在也返回 `{deleted:false}` |
@@ -149,7 +148,7 @@ pct exec 107 -- bash -c 'mkdir -p /root/om-build && tar -xzf /tmp/om_ctx.tgz -C 
   **字符串字段收非字符串**/env 非"字符串到字符串"映射/command 非字符串列表/
   stdin_b64 非法/spec·policy 未知字段）、
   401、404（含 `no route for METHOD /path`）、405（也是 `{"error":…}` 形态）、
-  411（上传缺 Content-Length）、413（JSON > 8 MiB 或超 `maxUploadBytes`）、
+  411（上传缺 Content-Length）、413（JSON > 20 MiB 或超 `maxUploadBytes`）、
   415（上传非 multipart）、
   502（南向异常/未捕获兜底）。客户端格式错误一律 400，绝不泄漏成 502
   （502 会被上游按"网关不可达"重试/降级）——该红线由

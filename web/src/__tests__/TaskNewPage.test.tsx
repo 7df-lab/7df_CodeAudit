@@ -134,6 +134,18 @@ describe('TaskNewPage 上传件与扫描路径（ADR-202 回归）', () => {
     expect(pathInput().disabled).toBe(true);
   });
 
+  it('100MB 本地预检：超限文件提示且不发起上传请求（2026-09-08 限额批次）', async () => {
+    const { container } = renderWizard();
+    await gotoParamsStep();
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const big = new File(['PK\x03\x04'], 'big.zip', { type: 'application/zip' });
+    Object.defineProperty(big, 'size', { value: 101 * 1024 * 1024 }); // jsdom 免真分配 100MB
+    Object.defineProperty(input, 'files', { value: [big], configurable: true });
+    fireEvent.change(input);
+    await screen.findByText(/仅支持 zip\/tar\.gz，≤100MB/);
+    expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/uploads/archive')).toBe(false);
+  });
+
   it('移除已上传件后路径恢复手填模式：重新启用且必填', async () => {
     const { container } = renderWizard();
     await gotoParamsStep();

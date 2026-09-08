@@ -94,7 +94,7 @@
 
 | 符号 | 预期输入 → 预期输出 | 关键语义 | 锁定测试 |
 |---|---|---|---|
-| `aiContextView.escapeHtml` | 串 | `& < > " '` 五元全转义 | `aiContextView.test.ts › 五个 HTML 元字符全转义` |
+| `htmlEscape.escapeHtml` | 串 | `& < > " '` 五元全转义（aiContextView/findingDetailView 渲染共用件） | `aiContextView.test.ts › 五个 HTML 元字符全转义` |
 | `buildViewUpdate(state)` | ProgressState → `AiViewUpdate` | `{type:'update', h1Html, percent(钳 0~100), chipsHtml, logsHtml, aiHtml}`；日志取尾 200；AI 正文超 256KB 保尾；空态给说明文案不空白 | `› buildViewUpdate…`、`› 超长 AI 正文…` |
 | `renderAiContextHtml({state,title?})` | state=null → 空态页；否则整页 HTML | CSP `default-src 'none'`；日志窗在上 AI 主区在下；页内脚本：贴底跟随（nearBottom<48px）、增量 message 按 type 消费 | `› 无任务空态…`、`› 分区布局…` |
 | `renderFindingDetailHtml(data)` | `{finding\|null, fixed}` | null → 引导空态；头部严重级徽章/标题/✔徽章 + 元信息表 + 操作按钮（fixed→回滚，否则修复）+ 描述/AI 分析/修复建议/补丁分区（空内容区块不渲染）；全部字段转义 | `findingDetailView.test.ts` 4 例 |
@@ -107,9 +107,8 @@
 |---|---|---|---|
 | `treeModel.buildTree(findings)` | UnifiedFinding[] → TreeNode[]（扁平：file 后跟其 findings） | 按 file_path（反斜杠归一）分组；路径 localeCompare 升序；组内 severityRank 降序；无位置 → 末尾「(无位置)」组 | `treeModel.test.ts` 3 例 |
 | `treeModel.findingLabel / findingDescription` | finding | label=`{严重级}{ [CWE]} {title\|file:line 兜底}`；desc=`{工具}{ · AI:结论}` | `› findingLabel/Description…` |
-| `diagnosticsMapper.mapFinding(f)` | finding → MappedDiagnostic\|null | 无 file_path 或 start_line → null（不进 Problems）；1-based → 0-based；end=max(start, ⌊end_line??start⌋-1)；code 优先 cwe_id | `diagnosticsMapper.test.ts` 5 例 |
+| `diagnosticsMapper.mapFinding(f)` | finding → MappedDiagnostic\|null | 无 file_path 或 start_line → null（不进 Problems）；1-based → 0-based；end=max(start, ⌊end_line??start⌋-1)；code 优先 cwe_id | `diagnosticsMapper.test.ts` 4 例 |
 | `severityRank(sev)` | 枚举名 | CRITICAL/HIGH=3、MEDIUM=2、LOW=1（未知回退）、INFO=0、UNSPECIFIED=1 | `› severity 枚举名映射…` |
-| `groupFindingsByFile(findings)` | findings → Map | 空路径跳过；组内 severity 降序 + title 升序 | `› groupFindingsByFile…` |
 | `lowRiskApply.selectLowRiskFixCandidates(findings, excludeIds)` | findings + 登记表已知 ID 集 | 同时满足：severity∈{LOW,INFO} ∧ ai_confidence≥0.9 ∧ 有 diff_patch ∧ 未登记过；阈值含边界（≥0.9 精确命中） | `lowRiskApply.test.ts` 3 例 |
 
 ## 8. 存储抽象（fs 注入，可单测）

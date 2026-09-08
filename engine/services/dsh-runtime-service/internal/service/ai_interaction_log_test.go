@@ -216,3 +216,23 @@ func TestWireAILog_DisabledModeNoEntry(t *testing.T) {
 		t.Fatalf("disabled mode leaked an entry")
 	}
 }
+
+// R36 回归锁（gw-d331089f 实证）：interaction_dir 的部署覆盖口——容器化后
+// task-service 对账探针（ADR-196）与本服务各持 CWD 相对路径，互不可见 → 探针恒
+// miss，长审计任务被误判 TIMEOUT。修复=CODEAUDIT_INTERACTION_DIR env 优先，
+// compose 注入共享卷路径；yaml 相对路径仅本地开发缺省。
+func TestInteractionDir_EnvOverrideWins(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "codeaudit.yaml")
+	fixture := "dsh_runtime:\n  sandbox:\n    interaction_dir: \"data/ai-interaction-local\"\n"
+	if err := os.WriteFile(cfgPath, []byte(fixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEAUDIT_CONFIG", cfgPath)
+	t.Setenv("CODEAUDIT_INTERACTION_DIR", "/data/repos/ai-interaction")
+	// 注：Default() 为 sync.Once 进程级缓存，此处不断言 yaml 缺省回退（属 go-config
+	// 行为且受缓存序影响）——只锁"部署覆盖口必须生效"这一回归面。
+	if got := interactionDir(); got != "/data/repos/ai-interaction" {
+		t.Fatalf("env override must win: got %q", got)
+	}
+}

@@ -27,8 +27,8 @@ import (
 // 导出供 service 层在 prompt 中告知 DSH 项目位置（ADR-173）。
 const ProjectSandboxPath = "/sandbox/project"
 
-// maxProjectArchiveBytes — 上传压缩包上限（与网关用户上传 25MB 同量级；超限如实报错）。
-const maxProjectArchiveBytes = 40 << 20
+// maxProjectArchiveBytes — 上传压缩包上限（与网关用户上传 100MB 同量级；超限如实报错）。
+const maxProjectArchiveBytes = 100 << 20
 
 // SessionTask — 一次多轮沙箱会话（ADR-173）。
 type SessionTask struct {

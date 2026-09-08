@@ -67,7 +67,7 @@ npm run preview         # 本地预览生产构建（/v1 代理配置与 dev 相
 |------|------|------|
 | `/login` | 登录 | `POST /v1/auth/login`；未登录访问其余路由自动跳转至此 |
 | `/` | — | 重定向到 `/projects` |
-| `/projects` | 项目列表 | 服务端翻页；创建项目；上传代码压缩包（zip/tar.gz ≤25MB，multipart 直传 `/v1/uploads/archive`，网关零落盘转 storage，`file_id` 写入项目 `config.upload_file_id`） |
+| `/projects` | 项目列表 | 服务端翻页；创建项目；上传代码压缩包（zip/tar.gz ≤100MB，multipart 直传 `/v1/uploads/archive`，网关零落盘转 storage，`file_id` 写入项目 `config.upload_file_id`） |
 | `/projects/:id` | 项目详情 | 项目信息 + 源码来源只读展示（上传件或仓库地址）+ 关联任务列表 + 删除 |
 | `/tasks` | 任务列表 | 服务端游标翻页 + 项目/模式筛选 |
 | `/tasks/new` | 任务创建向导 | 五种扫描模式（A 纯SAST / B 纯AI / C SAST+AI融合（推荐）/ D AI增强SAST / E SAST+AI对比；两个旧模式仅历史兼容）；SAST 工具多选；压缩包上传（任务级覆盖）；创建成功自动发起启动（审批流已废除） |
@@ -151,7 +151,7 @@ CODEAUDIT_GATEWAY_UPSTREAM=gateway.internal:8080 docker compose up -d
 
 - `/`：SPA `try_files` 回退（react-router history 模式）
 - `/v1/`：反代网关，`Upgrade/Connection` 头透传 WebSocket（任务详情页 `/v1/tasks/{id}/ws` 推送）
-- `client_max_body_size 30m`：代码压缩包上传 ≤25MB（网关 UploadArchive 上限）+ multipart 余量
+- `client_max_body_size 100m`：代码压缩包上传 ≤100MB（网关 UploadArchive 上限，前端 file.size 预检）+ multipart 余量
 - `proxy_read/send_timeout 300s` + `proxy_buffering off`：报告下载/日志聚合等长响应余量
 - `/assets/` 产物 hash 长缓存 30d（immutable）；`index.html` 不缓存（发版即生效）；gzip JS/CSS/JSON/SVG
 

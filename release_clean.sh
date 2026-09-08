@@ -28,7 +28,7 @@ MODE="${1:-}"
 #    - 深度2 的 .git（子仓 git 指针文件，随 GitLab 同步反复回来；根 ./.git 是本仓，不删）
 # ============================================================
 # 目录名精确匹配（-name），避免 find Emacs 正则的管道符转义坑
-ARTIFACT_DIR_NAMES='.agent .agents .zcode archive'
+ARTIFACT_DIR_NAMES='.agent .agents .zcode .claude .cursor .aider .trae archive'
 
 scan_artifacts() {
   local dir_tests=""
@@ -188,15 +188,18 @@ for p in changed:
 if not changed:
     print('[remarks] 全部干净')
 
-# ---- 第二阶段: 保留文档里的 .agent 死链修补（docs/ 与各仓 REGRESSIONS.md）----
-# engine/.agent 已被 artifacts 删除，保留文档中对它的引用改为发布副本的真实入口
-REF_TARGETS = sorted(glob.glob("docs/*.md") + glob.glob("*/REGRESSIONS.md"))
+# ---- 第二阶段: 保留文档里的 .agent 死链修补 + 基建运维语中性化 ----
+# engine/.agent 已被 artifacts 删除，保留文档中对它的引用改为发布副本的真实入口；
+# pct exec 107 揭示生产宿主管理路径，中性化（经验：deploy/ 系文档含运维命令，需覆盖）
+REF_TARGETS = sorted(glob.glob("docs/*.md") + glob.glob("*/REGRESSIONS.md") +
+                     glob.glob("deploy/*.md") + glob.glob("deploy/*/*.md"))
 REF_RULES = [
     (r'`bash \.agent/verify\.sh`', '`make verify`'),
     (r'`\.agent/verify\.sh`', '`make verify`'),
     (r'bash \.agent/verify\.sh', 'make verify'),
     (r'、`\.agent/test-gates\.md`', ''),
     (r'、`\.agent/[^`*]+`', ''),
+    (r'pct exec 107', 'pct exec <CTID>'),
 ]
 ref_changed = []
 for path in REF_TARGETS:

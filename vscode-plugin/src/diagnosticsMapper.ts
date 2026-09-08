@@ -62,18 +62,3 @@ export function mapFinding(f: UnifiedFinding, lineOverride?: number): MappedDiag
     source: 'CodeAudit',
   };
 }
-
-export function groupFindingsByFile(findings: UnifiedFinding[]): Map<string, UnifiedFinding[]> {
-  const byFile = new Map<string, UnifiedFinding[]>();
-  for (const f of findings) {
-    const key = f.location?.file_path?.replace(/\\/g, '/') ?? '';
-    if (!key) continue;
-    const list = byFile.get(key);
-    if (list) list.push(f);
-    else byFile.set(key, [f]);
-  }
-  for (const list of byFile.values()) {
-    list.sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || a.title.localeCompare(b.title));
-  }
-  return byFile;
-}

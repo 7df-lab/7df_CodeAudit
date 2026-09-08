@@ -106,7 +106,7 @@ PAUSED <──> RUNNING         （无 DEAD→QUEUED 状态机边；RetryScanTas
   项目级 upload_file_id（GetProjectConfig 兜底+快照回写）> 项目 repo_url clone（守卫必须含
   `r.Prepare == nil`，否则低优先级闭包覆盖高优先级——ADR-209 回归）。全部缺失 → FAILED
   （不空跑）。拉包解压失败 → 任务 FAILED + `FailedPrecondition`（错误文案带"压缩包下载/解压
-  失败"）；解包防护：25MB 包/200MB 解包/3000 文件上限、zip-slip 与软链拒绝。编排协程异步执行。
+  失败"）；解包防护：100MB 包/500MB 解包/10 万文件上限、zip-slip 与软链拒绝。编排协程异步执行。
 - `FailTask`：retryable 且 retry_count<`task.max_auto_retries`(2) → FAILED→QUEUED；耗尽 → DEAD
   （仍发 `task.completed`，payload.status=DEAD）。
 - `PauseTask/ResumeTask`：Pause **先**调 dsh `PauseAnalysis`（闸门先扣，fail-safe）再转 PAUSED；
@@ -171,7 +171,9 @@ PAUSED <──> RUNNING         （无 DEAD→QUEUED 状态机边；RetryScanTas
 - `GetSessionStatus`：session 不存在不报错，返回 `state="not_found"`。
 - `PauseAnalysis/ResumeAnalysis`：task_id 必填；无活动会话也接受"预约"（闸门注册表）。
 - `GetAIInteractionLog/StreamAIInteractionLog`：字节游标增量；内存 miss 回查磁盘
-  `data/ai-interaction/<task>.ai.log|.sse.log`（进程重启可读）；条目未出现时 complete=false
+  `<interaction_dir>/<task>.ai.log|.sse.log`（进程重启可读；yaml 相对路径=本地开发，
+  容器部署经 `CODEAUDIT_INTERACTION_DIR` 指向共享卷 `/data/repos/ai-interaction`，R36）；
+  条目未出现时 complete=false
   诚实等待（非错误）。读 RPC 无幂等键。sharedAILogs 内存态 LRU 双上限（64 条/256MB，
   ADR-215）。
 - `WatchAnalysisProgress` **显式 Unimplemented**。

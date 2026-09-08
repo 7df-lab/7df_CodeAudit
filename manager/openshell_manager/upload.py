@@ -48,14 +48,6 @@ class StreamingMultipartParser:
         self._delimiter = b"\r\n--" + boundary
         self._max_field_bytes = max_field_bytes
         self._buffer = b""
-        self._read_total = 0
-
-    @property
-    def bytes_consumed(self) -> int:
-        """Body bytes consumed so far (read minus still-buffered). The HTTP
-        layer uses this to drain the unread remainder of a Content-Length
-        body so the keep-alive connection stays usable."""
-        return self._read_total - len(self._buffer)
 
     def parse(self) -> Tuple[Dict[str, bytes], Iterator[bytes]]:
         fields: Dict[str, bytes] = {}
@@ -88,7 +80,6 @@ class StreamingMultipartParser:
         more = self._stream.read(READ_CHUNK)
         if not more:
             return False
-        self._read_total += len(more)
         self._buffer += more
         return True
 

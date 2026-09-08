@@ -14,6 +14,7 @@ import {
   createProject,
   createTask,
   getProjects,
+  MAX_ARCHIVE_UPLOAD_BYTES,
   updateProjectConfig,
   uploadArchive,
 } from '../api/client';
@@ -165,13 +166,17 @@ export default function ProjectsPage() {
           </Form.Item>
           {/* ADR-203: 零落盘直传——multipart 经 gateway 流式转发 storage（MinIO），
               不再有"解包目录/解包文件数"概念（旧 res.dir/res.files 契约已死，勿复活） */}
-          <Form.Item label="代码压缩包（.zip/.tar.gz，≤25MB）">
+          <Form.Item label="代码压缩包（.zip/.tar.gz，≤100MB）">
             <Upload.Dragger
               accept=".zip,.tgz,.tar.gz"
               maxCount={1}
               fileList={fileList}
               disabled={uploading}
               beforeUpload={async (file) => {
+                if (file.size > MAX_ARCHIVE_UPLOAD_BYTES) {
+                  message.error('上传失败（仅支持 zip/tar.gz，≤100MB）');
+                  return Upload.LIST_IGNORE; // 100MB 本地预检：超限不发起请求（nginx 413 兜底）
+                }
                 setUploading(true);
                 try {
                   const res = await uploadArchive(file);

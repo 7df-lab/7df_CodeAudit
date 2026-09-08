@@ -100,15 +100,6 @@ func GetParser(toolID string) (Parser, error) {
 	return p, nil
 }
 
-// ListTools returns all registered tool ids.
-func ListTools() []string {
-	out := make([]string, 0, len(Registry))
-	for k := range Registry {
-		out = append(out, k)
-	}
-	return out
-}
-
 // BuildToolScanResult is a helper to build normalized result.
 func BuildToolScanResult(toolName string, findings []UnifiedFinding, duration time.Duration, scannedFiles int32) ToolScanResult {
 	bySeverity := map[string]int32{}

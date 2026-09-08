@@ -6,8 +6,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Card, Descriptions, Popconfirm, Table, Tag, Typography, message } from 'antd';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api } from '../api/client';
-import type { Project, ScanTask } from '../api/types';
+import { api, getProject, getProjectConfig } from '../api/client';
+import type { ScanTask } from '../api/types';
 import { SCAN_MODE, TASK_STATUS, zh } from '../dict';
 
 export default function ProjectDetailPage() {
@@ -17,13 +17,11 @@ export default function ProjectDetailPage() {
 
   const { data: project, isLoading } = useQuery({
     queryKey: ['project', id],
-    queryFn: async () => (await api.get(`/v1/projects/${id}`)).data as Project, // proto L890: 裸 Project
+    queryFn: () => getProject(id), // proto L890: 裸 Project
   });
   const { data: config } = useQuery({
     queryKey: ['project-config', id],
-    queryFn: async () => (await api.get(`/v1/projects/${id}/config`)).data as {
-      project_id: string; config: Record<string, string>;
-    }, // proto L894: 裸 ProjectConfig（ADR-203: upload_file_id 只读展示）
+    queryFn: () => getProjectConfig(id), // proto L894: 裸 ProjectConfig（ADR-203: upload_file_id 只读展示）
   });
   // 关联任务（ADR-160 project_id 过滤；列表口径与任务页一致）
   const { data: tasks, isLoading: tasksLoading } = useQuery({

@@ -20,7 +20,8 @@
 #
 # 交互口径：deploy/configure 在终端里运行时会与部署人员确认个性化关键信息
 #   （访问入口 IP、端口冲突改配、网段重叠建议），并汇总确认后才开工；
-#   --yes（或 PROD_DEPLOY_ASSUME_YES=1）或 stdin 非终端（CI/管道）自动跳过问答按现值执行。
+#   --yes（或 PROD_DEPLOY_ASSUME_YES=1）或 stdin 非终端（CI/管道）跳过问答：
+#   端口冲突不问人、自动改空闲口落 env；manager 固定口 18800 被占则 fail-loud。
 #   LLM provider 不在部署期配置——部署成功后按完成横幅指引自行注册管理。
 #
 # 参数：deploy/production.env（gitignored；缺失时自动按 production.env.template 生成，
@@ -28,8 +29,9 @@
 #       联动键（manager 地址/网关端点/沙箱拨号/console 反代）每次运行按端口与
 #       访问 IP 自动重算回写，手改无效——改 OPENSHELL_PORT 即全链联动。
 #
-# 前置（check 会逐项核验）：
-#   - docker + compose 插件；bash/curl/openssl/python3
+# 前置（check 会逐项核验；curl/python3/git/openssl/compose 插件/PyYAML 缺失时
+#       脚本经包管理器自举，apt/apk/dnf/yum 自适应，非 root 自动借 sudo）：
+#   - docker + bash（运行前提，不可自举）
 #   - 子仓就位（engine/web/manager/openshell-gateway/dsh-runtime/dsh-pentest-sse，
 #     clone 须带 --recurse-submodules 或先 make update）
 #   - engine/services/sast-adapter-service/tools/opengrep（gitignored 大件；
@@ -96,7 +98,15 @@ port_listening() {  # ss(Git Bash 无) → netstat 回退；都无=按空闲处�
 }
 
 port_is_ours() {  # 端口是否由本栈既有容器发布（复用而非冲突）
-    docker ps --format '{{.Ports}}' 2>/dev/null | grep -qE ":$1->"
+    # 生产栈四类容器：engine(codeaudit-*)/web(codeaudit-console)/gateway
+    # (docker-gateway-*)/manager(openshell-manager)，排除 codeaudit-sim-* 模拟栈。
+    # 107 实测：pentest-redis 占 6379 曾被旧判据误判"自己人"→沿用冲突口；
+    # 自家 gateway/manager 残留也曾因不带 codeaudit- 前缀被误判外人→18800 误停。
+    # docker ps 对范围发布渲染为 ":8080-8081->"，单口正则 ":$1->" 匹配不上
+    # （十跑实测 8080 被误判外人）——边界用 (->|-) 双后缀兼收，且不误吞 80800。
+    docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null \
+        | grep -E "^codeaudit-|^docker-gateway-|^openshell-manager|^openshell-gateway-" \
+        | grep -v "^codeaudit-sim-" | grep -qE ":$1(->|-)"
 }
 
 pick_free_port() {  # pick_free_port <被替换端口> —— 从 +1 起找空闲口，避开本栈计划口
@@ -105,7 +115,7 @@ pick_free_port() {  # pick_free_port <被替换端口> —— 从 +1 起找空�
         key="${spec%%:*}"; rest="${spec#*:}"; def="${rest%%:*}"
         planned="$planned|${!key:-$def}"
     done
-    planned="${planned}|18800"
+    planned="${planned}${PORT_FRESH:-}|18800"   # PORT_FRESH=同轮已改口，防双键撞同新口
     while :; do
         p=$((p + 1))
         port_listening "$p" && continue
@@ -157,10 +167,12 @@ converge_env() {  # 联动键按「两个网关发布口」重算回写（模板
     #   manager 是内部面非交互面：OPENSHELL_MANAGER_URL 恒为内部常量（经 hosts 别名解析，
     #   零 DNS、零用户输入）——用户确认的访问 IP 只存 CODEAUDIT_ACCESS_IP 供横幅/汇总
     #   显示，不参与任何内部接线（2026-09-08，原"manager 地址随访问 IP"的耦合已拆除）。
+    #   必须带 http:// scheme：引擎 dsh-runtime 把它当 REST 基址直接拼路径
+    #   （dind 实测：裸 host:port → unsupported protocol scheme → 推理管理链 503）。
     local gw eng
     gw="${OPENSHELL_PORT:-8080}"
     eng="${CODEAUDIT_HOST_GATEWAY:-8090}"
-    set_env_kv "OPENSHELL_MANAGER_URL" "host.docker.internal:18800"
+    set_env_kv "OPENSHELL_MANAGER_URL" "http://host.docker.internal:18800"
     set_env_kv "OPENSHELL_GATEWAY_ENDPOINT" "host.docker.internal:${gw}"
     set_env_kv "CODEAUDIT_GATEWAY_DIAL_ADDR" "host.docker.internal:${gw}"
     set_env_kv "CODEAUDIT_GATEWAY_UPSTREAM" "host.docker.internal:${eng}"
@@ -174,7 +186,7 @@ print_summary() {
     say "访问入口(显示) : ${ip:-<自动>} ——仅用于下方 URL 呈现，内部接线不依赖此值"
     say "控制台         : http://${ip:-<IP>}:${CODEAUDIT_CONSOLE_PORT:-8088}  (初始账号 admin/admin，登录后请立即改密)"
     say "网关 API       : http://${ip:-<IP>}:${CODEAUDIT_HOST_GATEWAY:-8090}/v1  (JWT Bearer)"
-    say "manager(内部面) : host.docker.internal:18800（容器互访；宿主机排障经 http://127.0.0.1:18800；token 指纹 ${OPENSHELL_MANAGER_TOKEN:+$(fp "$OPENSHELL_MANAGER_TOKEN")})"
+    say "manager(内部面) : http://host.docker.internal:18800（容器互访；宿主机排障经 http://127.0.0.1:18800；token 指纹 ${OPENSHELL_MANAGER_TOKEN:+$(fp "$OPENSHELL_MANAGER_TOKEN")})"
     say "openshell 网关 : 发布 ${OPENSHELL_PORT:-8080}(gRPC) / ${OPENSHELL_HEALTH_PORT:-8081}(health)    沙箱路由域: ${ROUTING_DOMAIN:-sandbox.codeaudit.internal}(纯路由键,不解析)"
     say "中间件宿主口   : PG ${CODEAUDIT_HOST_PG:-5432} / Redis ${CODEAUDIT_HOST_REDIS:-6379} / MinIO ${CODEAUDIT_HOST_MINIO_API:-9000},${CODEAUDIT_HOST_MINIO_CONSOLE:-9001} / Kafka ${CODEAUDIT_HOST_KAFKA:-9092}"
     say "Kafka 广播     : ${CODEAUDIT_KAFKA_ADVERTISED:-kafka}    引擎网段: ${CODEAUDIT_ENGINE_SUBNET:-10.10.110.0/24}"
@@ -186,6 +198,66 @@ print_summary() {
 }
 
 # ---- 交互确认（deploy/configure 共用；任何一步改动都落盘 production.env）------
+
+resolve_port_conflicts() {  # 端口冲突解析：交互档问人，非交互档自动改口。
+    # 107 实测（2026-09-08 清空重部署）：pentest-redis/pentest-minio 分占 6379/9000，
+    # --yes 原样用缺省口 → compose 绑定必炸；且 cmd_deploy 非交互档原本根本
+    # 不进 interact_config——本函数必须独立成档、deploy/configure 双入口都调。
+    local choice ip cands n spec key rest def cur desc ans newp used cfg_prefix sugg
+    # 端口冲突：异己占用才处理（本栈旧容器占用=复用）；18800 固定口单列。
+    #    非交互档（--yes/CI）不问、直接自动改口：缺省口撞宿主存量服务时
+    #    compose 绑定必炸（107 实测：pentest-redis 占 6379），必须预检期自愈。
+    local nonint=0; interactive || nonint=1
+    PORT_FRESH="|"
+    for spec in "${PORT_KEYS[@]}"; do
+        key="${spec%%:*}"; rest="${spec#*:}"; def="${rest%%:*}"; desc="${rest#*:}"
+        cur="${!key:-$def}"
+        port_listening "$cur" || continue
+        if port_is_ours "$cur"; then
+            say "△ 端口 ${cur}(${desc}) 由本栈既有容器占用 —— 沿用复用"
+            continue
+        fi
+        newp=$(pick_free_port "$cur")
+        if [ "$nonint" = "1" ]; then
+            set_env_kv "$key" "$newp"
+            PORT_FRESH="${PORT_FRESH}${newp}|"
+            say "△ 端口 ${cur}(${desc}) 被其他程序监听 —— 非交互档自动改用 ${newp}"
+            continue
+        fi
+        ask "端口 ${cur}(${desc}) 已被其他程序监听：回车=改用 ${newp} / 输入其它端口 / s=停止部署: "
+        IFS= read -r ans
+        case "$ans" in
+            s|S) return 1 ;;
+            '') set_env_kv "$key" "$newp"; PORT_FRESH="${PORT_FRESH}${newp}|"; say "  ${key} → ${newp}" ;;
+            *)  set_env_kv "$key" "$ans";  PORT_FRESH="${PORT_FRESH}${ans}|";  say "  ${key} → ${ans}" ;;
+        esac
+    done
+    # 历史落盘重复口自愈（上轮 pick 两次同值的旧账：如 8082/8082、9002/9002）
+    local seen="|" dup=0
+    for spec in "${PORT_KEYS[@]}"; do
+        key="${spec%%:*}"; rest="${spec#*:}"; def="${rest%%:*}"; desc="${rest#*:}"
+        cur="${!key:-$def}"
+        dup=0
+        case "|$seen|" in *"|$cur|"*) dup=1 ;; esac
+        if [ "$dup" = "1" ]; then
+            newp=$(pick_free_port "$cur")
+            set_env_kv "$key" "$newp"
+            PORT_FRESH="${PORT_FRESH}${newp}|"
+            say "△ 端口重复(${desc})：${cur} 已由同批端口键占用 —— 改用 ${newp}"
+            cur="$newp"
+        fi
+        seen="${seen}${cur}|"
+    done
+    if port_listening 18800 && ! port_is_ours 18800; then
+        if [ "$nonint" = "1" ]; then
+            say "✗ manager 固定发布 18800 且被其他程序占用（非交互档无法改口）——请腾出 18800 后重试"
+            return 1
+        fi
+        ask "manager 固定发布 18800 且被其他程序占用：回车=停止部署(去腾口) / c=强行继续(将失败): "
+        IFS= read -r ans
+        case "$ans" in c|C) say "  继续部署（18800 冲突将在 manager 健康门失败）" ;; *) return 1 ;; esac
+    fi
+}
 
 interact_config() {
     local choice ip cands n spec key rest def cur desc ans newp used cfg_prefix sugg
@@ -216,29 +288,7 @@ interact_config() {
     ask "沙箱服务路由域（回车=缺省 ${ROUTING_DOMAIN:-sandbox.codeaudit.internal} / 输入自定义域名）: "
     IFS= read -r choice
     [ -n "$choice" ] && set_env_kv "ROUTING_DOMAIN" "$choice"
-    # 3) 端口冲突：异己占用才问（本栈旧容器占用=复用）；18800 固定口单列
-    for spec in "${PORT_KEYS[@]}"; do
-        key="${spec%%:*}"; rest="${spec#*:}"; def="${rest%%:*}"; desc="${rest#*:}"
-        cur="${!key:-$def}"
-        port_listening "$cur" || continue
-        if port_is_ours "$cur"; then
-            say "△ 端口 ${cur}(${desc}) 由本栈既有容器占用 —— 沿用复用"
-            continue
-        fi
-        newp=$(pick_free_port "$cur")
-        ask "端口 ${cur}(${desc}) 已被其他程序监听：回车=改用 ${newp} / 输入其它端口 / s=停止部署: "
-        IFS= read -r ans
-        case "$ans" in
-            s|S) return 1 ;;
-            '') set_env_kv "$key" "$newp"; say "  ${key} → ${newp}" ;;
-            *)  set_env_kv "$key" "$ans";  say "  ${key} → ${ans}" ;;
-        esac
-    done
-    if port_listening 18800 && ! port_is_ours 18800; then
-        ask "manager 固定发布 18800 且被其他程序占用：回车=停止部署(去腾口) / c=强行继续(将失败): "
-        IFS= read -r ans
-        case "$ans" in c|C) say "  继续部署（18800 冲突将在 manager 健康门失败）" ;; *) return 1 ;; esac
-    fi
+    resolve_port_conflicts || return 1
     # 4) 引擎网段与宿主/常驻网段重叠检测（重叠 compose 建网会失败；给跳位建议）
     cfg_prefix="${CODEAUDIT_ENGINE_SUBNET:-10.10.110.0/24}"; cfg_prefix="${cfg_prefix%%/*}"; cfg_prefix="${cfg_prefix%.*}"
     used="|$(host_ip_candidates | sed 's/\.[0-9]*$//' | tr '\n' '|')"
@@ -318,10 +368,13 @@ cmd_check() {
     local fail=0
     say "== 预检 =="
     check_tool docker || fail=1
-    docker compose version >/dev/null 2>&1 || { say "✗ docker compose 插件不可用"; fail=1; }
-    for t in bash curl openssl python3; do check_tool "$t" || fail=1; done
-    for d in engine web manager openshell-gateway dsh-runtime dsh-pentest-sse; do
-        [ -e "$d/.git" ] || { say "✗ 子仓缺失: $d/（clone 加 --recurse-submodules 或 make update）"; fail=1; }
+    check_tool bash || fail=1
+    ensure_core_deps || fail=1
+    # 子仓在位性按内容标记判（.git 在发布 tar 中按清源纪律剥离，不可作判据）；
+    # 兼容 git clone（--recurse-submodules）与 release tar 解包两种来源。
+    for d in engine/docker-compose.yml web/package.json manager/openshell_manager/__init__.py \
+             openshell-gateway/docker-compose.yml dsh-runtime/package.json dsh-pentest-sse/Dockerfile; do
+        [ -e "$d" ] || { say "✗ 子仓缺失: $d（clone 加 --recurse-submodules/make update，或用完整发布包）"; fail=1; }
     done
     [ -f "$ENV_FILE" ] && say "✓ $ENV_FILE 在位" || say "△ $ENV_FILE 不存在（deploy 时自动生成）"
     if [ -f engine/services/sast-adapter-service/tools/opengrep ]; then
@@ -351,10 +404,13 @@ cmd_check() {
 cmd_check_deploy() {
     local fail=0
     say "== 预检（deploy 口径，不含端口表）=="
-    for t in docker bash curl openssl python3; do check_tool "$t" || fail=1; done
-    docker compose version >/dev/null 2>&1 || { say "✗ docker compose 插件不可用"; fail=1; }
-    for d in engine web manager openshell-gateway dsh-runtime dsh-pentest-sse; do
-        [ -e "$d/.git" ] || { say "✗ 子仓缺失: $d/（clone 加 --recurse-submodules 或 make update）"; fail=1; }
+    check_tool docker || fail=1
+    check_tool bash || fail=1
+    ensure_core_deps || fail=1
+    # 子仓在位性按内容标记判（与 cmd_check 同口径：发布 tar 无 .git）
+    for d in engine/docker-compose.yml web/package.json manager/openshell_manager/__init__.py \
+             openshell-gateway/docker-compose.yml dsh-runtime/package.json dsh-pentest-sse/Dockerfile; do
+        [ -e "$d" ] || { say "✗ 子仓缺失: $d（clone 加 --recurse-submodules/make update，或用完整发布包）"; fail=1; }
     done
     ensure_pyyaml
     "$PYTHON" deploy/check-yaml-dups.py engine/docker-compose.yml deploy/prod/docker-compose.deploy.yml \
@@ -365,14 +421,85 @@ cmd_check_deploy() {
 
 check_tool() { command -v "$1" >/dev/null 2>&1 && { say "✓ $1"; return 0; } || { say "✗ 缺工具: $1"; return 1; } }
 
-ensure_pyyaml() {  # 配置审计两脚本依赖 PyYAML；全新机器常缺——pip 用户级自装，失败给发行版指引
+# ---- 系统依赖自举（2026-09-08 dind 全新环境实测：发现的缺口脚本自己解决，而非人工预装）----
+PKG=""
+pkg_detect() {
+    [ -n "$PKG" ] && return 0
+    if command -v apt-get >/dev/null 2>&1; then PKG=apt
+    elif command -v apk >/dev/null 2>&1; then PKG=apk
+    elif command -v dnf >/dev/null 2>&1; then PKG=dnf
+    elif command -v yum >/dev/null 2>&1; then PKG=yum
+    fi
+}
+
+pkg_install() {  # pkg_install <apt名> <apk名> <dnf/yum名>（传空=该发行版不提供，跳过）
+    pkg_detect; [ -n "$PKG" ] || return 1
+    local name=""
+    case "$PKG" in
+        apt)     name="$1" ;;
+        apk)     name="$2" ;;
+        dnf|yum) name="$3" ;;
+    esac
+    [ -n "$name" ] || return 1
+    if [ "$(id -u)" = "0" ]; then
+        run_root() { "$@"; }
+    elif command -v sudo >/dev/null 2>&1; then
+        run_root() { sudo -n "$@" 2>/dev/null || sudo "$@"; }
+    else
+        run_root() { "$@"; }
+    fi
+    say "  → ($PKG) install $name ..."
+    case "$PKG" in
+        apt)     run_root apt-get update -qq >/dev/null 2>&1 || true
+                 run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$name" >/dev/null 2>&1 ;;
+        apk)     run_root apk add --no-cache --quiet "$name" >/dev/null 2>&1 ;;
+        dnf|yum) run_root "$PKG" install -y -q "$name" >/dev/null 2>&1 ;;
+    esac
+}
+
+ensure_tool() {  # ensure_tool <cmd> <apt> <apk> <dnf> —— 缺则经包管理器自装
+    command -v "$1" >/dev/null 2>&1 && return 0
+    say "△ 缺 $1 —— 尝试包管理器自装..."
+    pkg_install "$2" "$3" "$4"
+    if command -v "$1" >/dev/null 2>&1; then say "✓ $1 已自装"; return 0; fi
+    say "✗ 缺 $1（自动安装失败，请手工安装后重跑）"; return 1
+}
+
+ensure_compose() {  # compose v2 插件：docker 就绪但插件常缺（dind/极简安装实测）
+    docker compose version >/dev/null 2>&1 && return 0
+    say "△ docker compose 插件不可用 —— 尝试包管理器自装..."
+    pkg_install docker-compose-plugin docker-cli-compose docker-compose-plugin
+    if docker compose version >/dev/null 2>&1; then say "✓ docker compose 插件已自装"; return 0; fi
+    say "✗ docker compose 插件不可用（官方源=apt install docker-compose-plugin；Alpine=apk add docker-cli-compose）"; return 1
+}
+
+ensure_iproute() {  # 端口探测 ss/netstat 二选一即可；都缺尽力补 iproute2（非致命：compose 绑定失败 fail-loud 兜底）
+    command -v ss >/dev/null 2>&1 && return 0
+    command -v netstat >/dev/null 2>&1 && return 0
+    pkg_install iproute2 iproute2 iproute || true
+    return 0
+}
+
+ensure_core_deps() {  # bash(脚本解释器)/docker(引擎) 属运行前提，调用方先行 check_tool
+    ensure_tool curl    curl    curl    curl    || return 1
+    ensure_tool python3 python3 python3 python3  || return 1
+    ensure_tool openssl openssl openssl openssl    || return 1
+    ensure_tool git      git     git     git     || return 1
+    ensure_iproute
+    ensure_compose || return 1
+    ensure_pyyaml   || return 1
+    return 0
+}
+
+ensure_pyyaml() {  # 配置审计两脚本依赖 PyYAML；全新机器常缺——pip 用户级 → 发行版包，失败给指引
     "$PYTHON" -c 'import yaml' >/dev/null 2>&1 && return 0
     say "△ Python 缺 PyYAML —— 尝试用户级 pip 安装..."
     "$PYTHON" -m pip install -q --user pyyaml >/dev/null 2>&1 \
         || "$PYTHON" -m pip install -q --user --break-system-packages pyyaml >/dev/null 2>&1 || true
-    if "$PYTHON" -c 'import yaml' >/dev/null 2>&1; then
-        say "✓ PyYAML 就绪（用户级）"; return 0
-    fi
+    "$PYTHON" -c 'import yaml' >/dev/null 2>&1 && { say "✓ PyYAML 就绪（用户级）"; return 0; }
+    say "△ pip 不可用/安装失败 —— 尝试发行版包..."
+    pkg_install python3-yaml py3-yaml python3-pyyaml
+    "$PYTHON" -c 'import yaml' >/dev/null 2>&1 && { say "✓ PyYAML 就绪（发行版包）"; return 0; }
     die "缺 PyYAML：Debian/Ubuntu=apt install python3-yaml；Alpine=apk add py3-yaml；或 pip3 install --user pyyaml 后重试"
 }
 
@@ -422,8 +549,13 @@ prepull_images() {
 
 deploy_gateway() {
     say "== [1/5] openshell-gateway（本机 compose + ensure 自足：JWT 密钥/supervisor 镜像自举）=="
+    # 端口两键必须显式传给 lifecycle→compose 插值：compose_gateway() 之外这是
+    # 唯一不经 --env-file 的部署路径（107 实测：env 改 8082 而网关容器纹丝不动
+    # 钉在 8080，manager/dsh-runtime 按 8082 接线 → 沙箱链 UNAVAILABLE）。
     (cd openshell-gateway && REMOTE="" VMID="" DEPLOY_DIR="$ROOT/openshell-gateway" \
         ROUTING_DOMAIN="${ROUTING_DOMAIN:-sandbox.codeaudit.internal}" \
+        OPENSHELL_PORT="${OPENSHELL_PORT:-8080}" \
+        OPENSHELL_HEALTH_PORT="${OPENSHELL_HEALTH_PORT:-8081}" \
         ./gateway_lifecycle.sh ensure)
 }
 
@@ -463,6 +595,12 @@ JSON
 
 deploy_engine() {
     say "== [3/5] codeaudit engine（7 服务+4 中间件构建）=="
+    # 先清场再起：上轮失败残留的半起容器/网络是"无端点容器"温床（107 实测：
+    # postgres/minio/redis 带 NetworkMode 却零网络端点，下游 DNS 全哑）。
+    # down 不带 -v：PG/Redis/Kafka/MinIO 数据卷保留，重部署不丢任务与文件。
+    docker compose --env-file "$ROOT/$ENV_FILE" -f engine/docker-compose.yml \
+        -f "$ROOT/deploy/prod/docker-compose.deploy.yml" \
+        --project-directory engine down --remove-orphans >/dev/null 2>&1 || true
     (cd engine && docker compose --env-file "$ROOT/$ENV_FILE" \
         -f docker-compose.yml -f "$ROOT/deploy/prod/docker-compose.deploy.yml" up -d --build)
     say "等待 postgres healthy → 建 3 空库（服务自迁移，不建表）..."
@@ -475,6 +613,87 @@ deploy_engine() {
         "SELECT 'CREATE DATABASE ' || d || ' OWNER postgres;' FROM (VALUES ('codeaudit_project'),('codeaudit_task'),('codeaudit_result')) AS v(d) WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = v.d)" \
         | docker exec -i codeaudit-postgres psql -U postgres >/dev/null
     wait_http "engine gateway" "http://127.0.0.1:${CODEAUDIT_HOST_GATEWAY:-8090}/health" 420 'ok'
+    # 服务面门带一轮自愈：僵尸端点态清场重起一次（down 不带 -v，数据卷保留），
+    # 仍不过才 fail-loud——宿主 CI/常驻栈网络 churn 下的 daemon 竞态不该让人工重跑。
+    if ! gate_service_plane; then
+        say "△ 服务面异常 —— 清场重起一轮自愈（down 保留数据卷 → up）..."
+        docker compose --env-file "$ROOT/$ENV_FILE" -f engine/docker-compose.yml \
+            -f "$ROOT/deploy/prod/docker-compose.deploy.yml" \
+            --project-directory engine down --remove-orphans >/dev/null 2>&1 || true
+        (cd engine && docker compose --env-file "$ROOT/$ENV_FILE" \
+            -f docker-compose.yml -f "$ROOT/deploy/prod/docker-compose.deploy.yml" up -d)
+        gate_service_plane || die "服务面健康门未通过（自愈重起后仍异常，见上方容器点名）"
+    fi
+    ensure_notification_chain
+}
+
+gate_service_plane() {  # 服务面健康门（返回 0/1，不直接 die）：running+网络端点在位。
+    # 107 实测教训：daemon 在宿主高频网络 churn 下端点编程会静默跳过——容器
+    # "healthy"却零网络端点、宿主口也不发布（僵尸态），下游 DNS 全哑、症状远隔
+    # （金丝雀门只报通知不通）。此处就地判杀并点名肇事容器。
+    local bad="" c deadline=$(( $(date +%s) + 180 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        bad=""
+        for c in codeaudit-gateway codeaudit-project codeaudit-task codeaudit-storage \
+                 codeaudit-result codeaudit-sast-adapter codeaudit-dsh-runtime \
+                 codeaudit-postgres codeaudit-redis codeaudit-kafka codeaudit-minio; do
+            [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = "true" ] \
+                || { bad="$bad $c(not-running)"; continue; }
+            [ -n "$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}} {{end}}' "$c" 2>/dev/null | tr -d ' ')" ] \
+                || bad="$bad $c(no-endpoint)"
+        done
+        [ -z "$bad" ] && { say "✓ 服务面健康门：11 容器 running 且网络端点在位"; return 0; }
+        sleep 5
+    done
+    local name
+    for c in $bad; do
+        name="${c%%(*}"
+        say "✗ 服务面异常: $name"
+        docker logs "$name" --tail 5 2>&1 | sed 's/^/    /' | head -6
+    done
+    return 1
+}
+
+ensure_notification_chain() {  # 通知消费链金丝雀自愈门（dind 全新环境实测）：storage 消费者在
+    # broker 就绪窗口 join 的首代可能静默不 fetch——连接 ESTABLISHED、组稳定、无任何错误
+    # 日志，重启 reader 即自愈并 FirstOffset 回放。探测=产 task.completed 金丝雀→轮询 admin
+    # 通知回环；两轮未达才判失败。admin 口令已改则跳过（幂等重跑口径）。
+    local tok canary="deploy-canary-$(date +%s)" round i ncount=0
+    tok=$(curl -s -m 8 -X POST "http://127.0.0.1:${CODEAUDIT_HOST_GATEWAY:-8090}/v1/auth/login" \
+        -H 'content-type: application/json' -d '{"username":"admin","password":"admin"}' \
+        | "$PYTHON" -c 'import json,sys;print(json.load(sys.stdin).get("access_token",""))' 2>/dev/null || true)
+    if [ -z "$tok" ]; then say "△ admin 口令已非缺省 —— 跳过通知链金丝雀验证"; return 0; fi
+    for round in 1 2; do
+        printf '{"created_by":"user-001","status":"TASK_STATUS_COMPLETED","task_id":"%s","project_id":"canary","completed_at":%s}\n' \
+            "$canary-$round" "$(date +%s)" \
+            | docker exec -i codeaudit-kafka /opt/bitnami/kafka/bin/kafka-console-producer.sh \
+                --bootstrap-server localhost:9092 --topic task.completed \
+            || die "通知链金丝雀产出失败（kafka-console-producer）"
+        for i in $(seq 1 10); do
+            sleep 3
+            ncount=$("$PYTHON" - <<PYEOF
+import json, urllib.request
+req = urllib.request.Request(
+    "http://127.0.0.1:${CODEAUDIT_HOST_GATEWAY:-8090}/v1/notifications?user_id=user-001",
+    headers={"Authorization": "Bearer $tok"})
+try:
+    ns = json.load(urllib.request.urlopen(req, timeout=8)).get("notifications", [])
+    print(len([n for n in ns if "deploy-canary" in n.get("body", "")]))
+except Exception:
+    print(0)
+PYEOF
+            )
+            [ "${ncount:-0}" -ge 1 ] && break
+        done
+        [ "${ncount:-0}" -ge 1 ] && break
+        if [ "$round" = "1" ]; then
+            say "△ 通知消费链金丝雀未回环（已知 kafka-go join 竞态：首代静默不 fetch）—— 重启 storage 自愈..."
+            docker restart codeaudit-storage >/dev/null
+            sleep 20
+        fi
+    done
+    [ "${ncount:-0}" -ge 1 ] && say "✓ 通知消费链 OK（金丝雀回环，第 $round 轮）" \
+        || die "通知消费链未回环（金丝雀两轮未达）——docker logs codeaudit-storage/codeaudit-kafka 定位"
 }
 
 deploy_sandbox_image() {
@@ -489,12 +708,64 @@ deploy_web() {
     say "== [5/5] web console（nginx SPA + /v1 反代）=="
     (cd web && docker compose --project-directory "$ROOT/web" -f "$ROOT/web/docker-compose.yml" \
         --env-file "$ROOT/$ENV_FILE" up -d --build)
-    local port="${CODEAUDIT_CONSOLE_PORT:-8088}"
-    wait_http "console" "http://127.0.0.1:${port}/" 240 ''
-    local code
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${port}/v1/projects" || echo 000)
+    local port="${CODEAUDIT_CONSOLE_PORT:-8088}"   # 拆两条：同条 local 里 ${port} 自引用，set -u 下 nounset 炸（dind 实测）
+    local base="http://127.0.0.1:${port}"
+    wait_http "console" "${base}/" 240 ''
+    local code body asset
+
+    # ① 认证透传（未认证必须 401=反代指对网关且认证链在位）
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${base}/v1/projects" || echo 000)
     [ "$code" = "401" ] || die "console /v1 反代异常（HTTP $code，期望 401 透传）"
     say "console /v1 反代 OK（401 透传）"
+
+    # ② SPA 深链回退（history 路由断链时首页仍 200——必须连真实路由与不存在路由一起验）
+    for path in / /projects /tasks /definitely-not-a-route; do
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${base}${path}" || echo 000)
+        [ "$code" = "200" ] || die "console SPA 路由回退异常（GET $path → $code，期望 200）"
+    done
+
+    # ③ 静态产物真实可达（防"首页 200 但包没构建出来"）
+    body=$(curl -s --max-time 8 "${base}/")
+    echo "$body" | grep -q 'id="root"' || die "console 首页非 SPA 挂载点（缺 id=root）"
+    asset=$(echo "$body" | grep -oE '/assets/[^"]+\.js' | head -1)
+    [ -n "$asset" ] || die "console 首页未引用打包产物（/assets/*.js）"
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "${base}${asset}" || echo 000)
+    [ "$code" = "200" ] || die "console 打包产物不可达（GET $asset → $code）"
+    say "console SPA 深链回退 + 静态产物 OK"
+
+    # ④ WebSocket 升级头在位（渲染后的 nginx 配置断言；行为级由 sim 侧 ui_check 流式门禁覆盖）
+    docker exec codeaudit-console sh -c "grep -q 'proxy_set_header Upgrade' /etc/nginx/conf.d/default.conf" 2>/dev/null \
+        || die "console nginx 缺 WS 升级头（任务流式将断）"
+    say "console nginx WS 升级头 OK"
+
+    # ⑤ 认证正向链路 + 上传体上限（需 admin 缺省口令；口令已被改则跳过——保幂等重跑收敛）
+    local token
+    token=$(curl -s -m 8 -X POST "http://127.0.0.1:${CODEAUDIT_HOST_GATEWAY:-8090}/v1/auth/login" \
+        -H 'content-type: application/json' -d '{"username":"admin","password":"admin"}' \
+        | "$PYTHON" -c 'import json,sys;print(json.load(sys.stdin).get("access_token",""))' 2>/dev/null || true)
+    if [ -z "$token" ]; then
+        say "△ admin 口令已非缺省 —— 跳过经 console 的登录链/上传上限验证（幂等重跑口径）"
+        return 0
+    fi
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 8 "${base}/v1/projects" -H "Authorization: Bearer $token" || echo 000)
+    [ "$code" = "200" ] || die "console 反代带认证访问异常（HTTP $code，期望 200）"
+    say "console 反代正向链路 OK（经 console 源登录+带认证 200）"
+
+    # 上传体上限行为断言：nginx client_max_body_size 100m——2MB 必须放行（防限值丢失回落
+    # nginx 缺省 1m），101MB 必须反代层 413（不经代理打穿后端；2026-09-08 用户指令上传 100MB）
+    local small big
+    small=$(mktemp) big=$(mktemp)
+    head -c 2097152 /dev/zero > "$small"; head -c 105906177 /dev/zero > "$big"
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST "${base}/v1/uploads" \
+        -H "Authorization: Bearer $token" -H 'content-type: application/octet-stream' \
+        --data-binary @"$small" || echo 000)
+    [ "$code" != "413" ] || { rm -f "$small" "$big"; die "console 上传体上限回落缺省 1m（2MB 被拒 413）"; }
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 60 -X POST "${base}/v1/uploads" \
+        -H "Authorization: Bearer $token" -H 'content-type: application/octet-stream' \
+        --data-binary @"$big" || echo 000)
+    rm -f "$small" "$big"
+    [ "$code" = "413" ] || die "console 上传体上限异常（101MB → $code，期望反代层 413）"
+    say "console 上传体上限 OK（2MB 放行 / 101MB 反代层 413）"
 }
 
 wait_http() {  # wait_http <名称> <url> <timeout_s> <须含子串，空=只看 2xx>
@@ -519,8 +790,10 @@ cmd_deploy() {
     converge_env
     if interactive; then
         interact_config || die "已按部署人员要求停止"
-        converge_env   # 吸收问答改动（端口/IP 变了，联动键跟随）
+    else
+        resolve_port_conflicts || die "非交互档端口冲突解析失败"
     fi
+    converge_env   # 吸收问答/自动改口改动（端口/IP 变了，联动键跟随）
     print_summary
     if interactive; then
         ask "按以上参数开始部署？(回车=开始 / n=中止): "
@@ -538,13 +811,14 @@ cmd_deploy() {
     deploy_web
     local ip
     ip=$(env_access_ip)
+    say "== 全量部署完成 =="   # 机器可读完成标记（横幅是裸 heredoc，看门狗 grep 不到）
     cat <<EOF
 
 ============================================================
 部署完成。访问入口（IP+端口直访，无需任何 DNS）：
   控制台   http://${ip:-<宿主IP>}:${CODEAUDIT_CONSOLE_PORT:-8088}   （admin / admin，登录后请立即改密）
   网关 API http://${ip:-<宿主IP>}:${CODEAUDIT_HOST_GATEWAY:-8090}/v1  （JWT Bearer）
-  manager（内部面，无需对用户暴露）容器互访 host.docker.internal:18800；宿主机排障 http://127.0.0.1:18800（Bearer token 见 $ENV_FILE）
+  manager（内部面，无需对用户暴露）容器互访 http://host.docker.internal:18800；宿主机排障 http://127.0.0.1:18800（Bearer token 见 $ENV_FILE）
 运维：bash deploy/production-deploy.sh status|stop|down
       （WSL2 部署时 Windows 本机用 localhost 访问；局域网设备经 deploy/windows/expose-lan.ps1）
 说明：AI 全链需在网关注册推理 provider（LLM key，一次性步骤，配法见
@@ -558,7 +832,18 @@ EOF
 # ---- status / stop / down ---------------------------------------------------
 
 compose_engine() { docker compose --env-file "$ROOT/$ENV_FILE" -f engine/docker-compose.yml -f deploy/prod/docker-compose.deploy.yml "$@"; }
-compose_manager() { docker compose --env-file "$ROOT/$ENV_FILE" --project-directory manager/deploy -f manager/deploy/docker-compose.yml "$@"; }
+# manager 运行态在 deploy/.manager-stage（deploy_manager 装配产物，compose 项目名
+# 归一为 manager-stage）；manager/deploy 只是构建源——按它做 stop/down/status 会
+# 项目名错位漏删运行容器（107 实测：down 报完成但 manager 容器仍在，后续部署撞名）。
+# 未部署过（stage 缺失）时静默跳过，保证首跑前的 down/status 不炸。
+compose_manager() {
+    local stage="$ROOT/deploy/.manager-stage"
+    if [ ! -f "$stage/docker-compose.yml" ]; then
+        say "manager：未部署（$stage 缺失），跳过"
+        return 0
+    fi
+    docker compose --env-file "$ROOT/$ENV_FILE" --project-directory "$stage" -f "$stage/docker-compose.yml" "$@"
+}
 compose_web()     { docker compose --env-file "$ROOT/$ENV_FILE" --project-directory web -f web/docker-compose.yml "$@"; }
 compose_gateway() { docker compose --project-directory openshell-gateway -f openshell-gateway/docker-compose.yml "$@"; }
 
@@ -569,8 +854,10 @@ cmd_configure() {  # 只确认参数不部署：生成/核对 production.env 后
     converge_env
     if interactive; then
         interact_config || die "已按部署人员要求停止"
-        converge_env
+    else
+        resolve_port_conflicts || die "非交互档端口冲突解析失败"
     fi
+    converge_env
     print_summary
     say "参数已确认并落盘 $ENV_FILE；执行 bash deploy/production-deploy.sh deploy 开始部署。"
 }

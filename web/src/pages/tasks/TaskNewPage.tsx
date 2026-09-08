@@ -8,7 +8,7 @@ import { autoRunTask } from '../../tasks/stateMachine';
 import { UploadOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { createTask, getProject, getProjects, getTools, uploadArchive } from '../../api/client';
+import { createTask, getProject, getProjects, getTools, MAX_ARCHIVE_UPLOAD_BYTES, uploadArchive } from '../../api/client';
 import { SCAN_MODE, REVIEW_DEPTH, zh } from '../../dict';
 
 // ADR-186 五模式矩阵（人类决策 2026-09-03）：每模式需要的参数分支（向导分支覆盖的单一来源）
@@ -167,20 +167,24 @@ export default function TaskNewPage() {
             fileList={uploadList}
             accept=".zip,.tgz,.tar.gz"
             beforeUpload={async (file) => {
+              if (file.size > MAX_ARCHIVE_UPLOAD_BYTES) {
+                message.error('上传失败（仅支持 zip/tar.gz，≤100MB）');
+                return false; // 100MB 本地预检：超限不发起请求（nginx 413 兜底）
+              }
               try {
                 const res = await uploadArchive(file);
                 setUploadFileId(res.file_id); // ADR-200: file_id → config.upload_file_id（task 从 storage 拉回解包）
                 setUploadList([{ uid: res.file_id, name: file.name, status: 'done' }]);
                 message.success(`已上传至存储（${(res.size_bytes / 1024).toFixed(1)} KB），启动时自动解包`);
               } catch {
-                message.error('上传失败（仅支持 zip/tar.gz，≤25MB）');
+                message.error('上传失败（仅支持 zip/tar.gz，≤100MB）');
               }
               return false; // 阻止 antd 默认上传
             }}
             // ADR-202: 移除已上传件必须同步清 file_id，否则任务仍按 storage 通道创建（路径模式失效）
             onRemove={() => { setUploadFileId(''); setUploadList([]); }}
           >
-            <Button icon={<UploadOutlined />}>选择 zip / tar.gz（≤25MB）</Button>
+            <Button icon={<UploadOutlined />}>选择 zip / tar.gz（≤100MB）</Button>
           </Upload>
         </Form.Item>
         <Form.Item

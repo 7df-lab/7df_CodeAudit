@@ -48,7 +48,7 @@
 
 | ID | 端点 | 预期输入 | 预期输出（200） | 错误语义 | 锚点 |
 |----|------|----------|----------------|----------|------|
-| E-11 | `POST /v1/uploads/archive` | **multipart/form-data**，字段名 `file`（File 对象）；timeout 120s；≤25MB（zip/tar.gz）；nginx `client_max_body_size 30m` | `{upload_id, file_id, file_path, size_bytes}`——`file_id` 是唯一下游消费字段（→ 项目 config.upload_file_id 或任务 config.upload_file_id；网关零落盘转 storage，ADR-200） | 4xx/5xx → 上传失败文案（「上传失败（仅支持 zip/tar.gz，≤25MB）」/「上传失败：<详情>」）；**响应形状变更必须显式修 file_id 消费链**（ADR-200 改形状无一测试报红的历史教训 → 本契约行即锚） | clientContract.test.ts「uploadArchive…」；ProjectsPage.test.tsx、TaskNewPage.test.tsx |
+| E-11 | `POST /v1/uploads/archive` | **multipart/form-data**，字段名 `file`（File 对象）；timeout 120s；≤100MB（zip/tar.gz；前端 file.size 预检，超限本地拒绝不发请求）；nginx `client_max_body_size 100m` | `{upload_id, file_id, file_path, size_bytes}`——`file_id` 是唯一下游消费字段（→ 项目 config.upload_file_id 或任务 config.upload_file_id；网关零落盘转 storage，ADR-200） | 4xx/5xx → 上传失败文案（「上传失败（仅支持 zip/tar.gz，≤100MB）」/「上传失败：<详情>」）；**响应形状变更必须显式修 file_id 消费链**（ADR-200 改形状无一测试报红的历史教训 → 本契约行即锚） | clientContract.test.ts「uploadArchive…」；ProjectsPage.test.tsx、TaskNewPage.test.tsx |
 
 ### 1.4 项目
 

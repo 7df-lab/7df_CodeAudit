@@ -65,6 +65,7 @@ type TaskServiceImpl struct {
 	sm           *statemachine.StateMachine
 	orch         *orchestrator.Orchestrator
 	hub          *taskWatchHub // ADR-189 任务变更通知（StreamTaskSnapshot 推流源）
+	pgStore      *pgTaskStore  // 任务实体 PG 写穿镜像（nil=内存档；R-31 持久化）
 	projectAddr  string        // project-service 地址（project_path 兜底查询，ADR-148）
 	reposDir     string        // 仓库拉取 clone 根目录（ADR-163）
 	cloneTimeout time.Duration // 单次 git clone 上限（ADR-163）
@@ -104,7 +105,7 @@ func NewTaskService() *TaskServiceImpl {
 	// step_timeouts_s 已整体撤销（ADR-191 补遗，人类指令"都撤掉"）：编排步骤无外层时限。
 	reposDir := must(cfg.Str("task.repos_dir", "CODEAUDIT_TASK_REPOS_DIR"))               // ADR-163
 	cloneTimeout := time.Duration(mustInt(cfg.Int("task.clone_timeout_s"))) * time.Second // ADR-163
-	return &TaskServiceImpl{
+	s := &TaskServiceImpl{
 		tasks:        make(map[string]*pb.ScanTask),
 		idem:         make(map[string]*idemRecord),
 		stgIdm:       make(map[string]string),
@@ -124,6 +125,24 @@ func NewTaskService() *TaskServiceImpl {
 			ResultAddr:      resultAddr,
 		}),
 	}
+	// R-31: 任务实体 PG 持久化——DSN 非空即启用写穿镜像 + 启动回放；空=内存档（诚实降级）。
+	// DSN 已配置但 PG 不可用属 fail-loud（与 ADR-137 配置 panic 同口径）。
+	if dsn := must(cfg.Str("task.pg_dsn", "CODEAUDIT_TASK_PG_DSN")); dsn != "" {
+		st, err := newPGTaskStore(dsn)
+		if err != nil {
+			panic(fmt.Sprintf("task-service pg store: %v (R-31)", err))
+		}
+		s.pgStore = st
+		replayed, err := st.hydrateTasks()
+		if err != nil {
+			panic(fmt.Sprintf("task-service pg hydrate: %v (R-31)", err))
+		}
+		for _, t := range replayed {
+			s.tasks[t.GetTaskId()] = t
+		}
+		log.Printf("[task-store] PG 持久化启用：回放 %d 个历史任务", len(replayed))
+	}
+	return s
 }
 
 // envOr 保留给项目路径等非配置键场景（CODEAUDIT_PROJECT_REPO_PATH）。
@@ -146,7 +165,19 @@ func (s *TaskServiceImpl) transitionLocked(task *pb.ScanTask, to pb.TaskStatus, 
 	task.UpdatedAt = timestamppb.Now()
 	s.appendLogLocked(task.GetTaskId(), pb.TaskLogLevel_TASK_LOG_LEVEL_INFO, "task",
 		fmt.Sprintf("状态流转 %s → %s（%s）", from.String(), to.String(), rpc))
+	s.persistTaskLocked(task)
 	return nil
+}
+
+// persistTaskLocked — 任务实体写穿镜像（调用方须持 s.mu；R-31）。
+// 错误只记日志：运行期内存仍是权威，持久化降级不反噬任务流。
+func (s *TaskServiceImpl) persistTaskLocked(task *pb.ScanTask) {
+	if s.pgStore == nil {
+		return
+	}
+	if err := s.pgStore.upsert(task); err != nil {
+		log.Printf("[task-store] upsert %s: %v", task.GetTaskId(), err)
+	}
 }
 
 // cloneLocked — 返回任务深拷贝（proto message 含 sync.Mutex，禁止值拷贝；
@@ -214,6 +245,7 @@ func (s *TaskServiceImpl) CreateScanTask(ctx context.Context, req *pb.CreateScan
 	}
 	s.configs[task.TaskId] = req.GetConfig()
 	s.tasks[task.TaskId] = task
+	s.persistTaskLocked(task) // R-31: 创建即落库
 	s.idem[requestID] = &idemRecord{fingerprint: fp}
 	log.Printf("Created task %s", task.TaskId)
 	s.events.PublishAsync("task.created", task) // ADR-199: 09 §2 task→Kafka 行
@@ -683,6 +715,7 @@ func (s *TaskServiceImpl) RetryScanTask(ctx context.Context, req *pb.RetryScanTa
 	task.Status = pb.TaskStatus_TASK_STATUS_QUEUED
 	task.UpdatedAt = timestamppb.Now()
 	task.ErrorMessage = ""
+	s.persistTaskLocked(task) // R-31: 重试回 QUEUED 也落库
 	return cloneLocked(task), nil
 }
 
@@ -1055,11 +1088,6 @@ func (s *TaskServiceImpl) GetTaskContext(ctx context.Context, req *pb.GetTaskCon
 			"task context for %s not available (task not completed or unknown)", req.GetTaskId())
 	}
 	return tc, nil
-}
-
-// GetTask retrieves a task (alias for GetScanTask).
-func (s *TaskServiceImpl) GetTask(ctx context.Context, req *pb.GetScanTaskRequest) (*pb.ScanTask, error) {
-	return s.GetScanTask(ctx, req)
 }
 
 // ---- reconciler.TaskStore 适配（04 §1 对账接线，ADR-131）----

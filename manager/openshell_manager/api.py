@@ -1,6 +1,7 @@
 """OpenShell manager HTTP surface — FastAPI 架构（ADR-174，人类指令 2026-09-01）。
 
-原 stdlib http.server 实现（http_api.py，保留作参照）整体迁移 FastAPI/uvicorn：
+原 stdlib http.server 实现（旧 http_api.py，2026-09-08 死代码清理中随
+人类指令"消除重复接口实现"退役，git 历史可考）整体迁移 FastAPI/uvicorn：
   - 路由声明式注册（替代 regex ROUTES 表 + 手写 dispatch）；
   - 鉴权收敛为依赖注入（/healthz 豁免，其余 Bearer token）；
   - 异常处理器统一错误契约 {"error": msg}（ApiError/LookupError/404 no route/兜底 502），
@@ -17,7 +18,7 @@ import hmac
 import json
 import re
 import tempfile
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, Request
@@ -29,7 +30,7 @@ from . import config
 from .gateway import GatewayFacade
 from .upload import StreamingMultipartParser, UploadError, boundary_from_content_type
 
-MAX_BODY_BYTES = 8 * 1024 * 1024
+MAX_BODY_BYTES = 20 * 1024 * 1024
 
 facade = GatewayFacade()
 

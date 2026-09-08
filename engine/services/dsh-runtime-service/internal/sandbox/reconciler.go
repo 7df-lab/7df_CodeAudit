@@ -79,16 +79,6 @@ type SandboxReconciler struct {
 // ReconcilerOption — 函数式选项。
 type ReconcilerOption func(*SandboxReconciler)
 
-// WithReconcileInterval — 周期（默认 30m）。
-func WithReconcileInterval(d time.Duration) ReconcilerOption {
-	return func(c *SandboxReconciler) { c.interval = d }
-}
-
-// WithReconcileStartupDelay — 首轮延迟（默认 2m，避开启动抖动与 manager 未就绪）。
-func WithReconcileStartupDelay(d time.Duration) ReconcilerOption {
-	return func(c *SandboxReconciler) { c.startupDelay = d }
-}
-
 // NewSandboxReconciler — 构造（r 提供 manager 端点/凭据/call 通道）。
 func NewSandboxReconciler(r *ManagerRunner, opts ...ReconcilerOption) *SandboxReconciler {
 	c := &SandboxReconciler{

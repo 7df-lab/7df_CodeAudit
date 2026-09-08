@@ -61,11 +61,6 @@ func (h *taskWatchHub) notify(taskID string) {
 	}
 }
 
-// notifyLocked — 语义同 notify，标注"调用方持 s.mu 写锁"（读名对齐既有 *Locked 惯例）。
-func (s *TaskServiceImpl) notifyLocked(taskID string) {
-	s.hub.notify(taskID)
-}
-
 // StreamTaskSnapshot — 订阅任务快照增量（ADR-189）。首帧必推（订阅位之后的当前
 // 状态）；此后唤醒/兜底 tick 时变化检测，变化才推；终态帧 settled=true 后关流。
 // 读 RPC（无幂等键要求，03 §2）。

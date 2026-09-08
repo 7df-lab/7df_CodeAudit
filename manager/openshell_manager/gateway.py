@@ -67,6 +67,12 @@ class GatewayFacade:
         from google.protobuf.json_format import MessageToDict, ParseDict
         return openshell_pb2, sandbox_pb2, MessageToDict, ParseDict
 
+    def _admin_stub(self):
+        """OpenShell admin stub + openshell pb 模块——ExposeService 与
+        Provider 系 RPC 的统一取用点（原六处重复的 stub/pb 取用样板）。"""
+        pb, _sandbox, _m2d, _ParseDict = self._pb()
+        return pb_grpc_stub(self._sdk()), pb
+
     def _ref(self, ref) -> Dict[str, Any]:
         """Full status projection: plain ref fields PLUS phase_name and the
         raw status.conditions list (gateway diagnostics must survive the
@@ -155,12 +161,6 @@ class GatewayFacade:
     # NOT the 4MiB gRPC default the original comment assumed). 720KiB raw →
     # 960KiB base64 text, leaving ~64KiB headroom for command/framing.
     UPLOAD_CHUNK_BYTES = 720 * 1024
-
-    def upload_file(self, *, sandbox_id: str, path: str, content: bytes,
-                    mode: Optional[str] = None) -> Dict[str, Any]:
-        """Write ``content`` to ``path`` (thin wrapper over the stream API)."""
-        return self.write_file_stream(sandbox_id=sandbox_id, path=path,
-                                      chunks=iter([content]), mode=mode)
 
     def write_file_stream(self, *, sandbox_id: str, path: str,
                           chunks: "Iterator[bytes]",
@@ -297,8 +297,7 @@ class GatewayFacade:
     def expose_service(self, *, sandbox: str, service: str,
                        target_port: int, workspace: str,
                        domain: bool = False) -> Dict[str, Any]:
-        stub = pb_grpc_stub(self._sdk())
-        pb, _sandbox, _m2d, _ParseDict = self._pb()
+        stub, pb = self._admin_stub()
         resp = stub.ExposeService(pb.ExposeServiceRequest(
             sandbox=sandbox, service=service, target_port=int(target_port),
             domain=bool(domain), workspace=workspace), timeout=60)
@@ -307,8 +306,7 @@ class GatewayFacade:
     def list_services(self, *, sandbox: str, workspace: str = "",
                       limit: int = 100, offset: int = 0,
                       all_workspaces: bool = False) -> List[Dict[str, Any]]:
-        stub = pb_grpc_stub(self._sdk())
-        pb, _sandbox, _m2d, _ParseDict = self._pb()
+        stub, pb = self._admin_stub()
         resp = stub.ListServices(pb.ListServicesRequest(
             sandbox=sandbox, workspace=workspace, limit=limit, offset=offset,
             all_workspaces=all_workspaces), timeout=30)
@@ -316,8 +314,7 @@ class GatewayFacade:
 
     def delete_service(self, *, sandbox: str, service: str,
                        workspace: str) -> Dict[str, Any]:
-        stub = pb_grpc_stub(self._sdk())
-        pb, _sandbox, _m2d, _ParseDict = self._pb()
+        stub, pb = self._admin_stub()
         resp = stub.DeleteService(pb.DeleteServiceRequest(
             sandbox=sandbox, service=service, workspace=workspace), timeout=30)
         return {"deleted": bool(resp.deleted)}
@@ -360,10 +357,7 @@ class GatewayFacade:
     def list_providers(self, *, workspace: str) -> List[Dict[str, Any]]:
         """Provider 概要清单（name/type/config），凭据按省略屏蔽——同
         get_provider 的脱敏纪律，秘密只在网关加密存储。"""
-        _ensure_sdk_path()
-        client = self._sdk()
-        from openshell._proto import openshell_pb2 as pb
-        stub = pb_grpc_stub(client)
+        stub, pb = self._admin_stub()
         providers = stub.ListProviders(
             pb.ListProvidersRequest(workspace=workspace), timeout=30)
         return [{"name": p.metadata.name, "type": p.type,
@@ -379,10 +373,7 @@ class GatewayFacade:
                           f"'{workspace}'")
 
     def delete_provider(self, *, workspace: str, name: str) -> Dict[str, Any]:
-        _ensure_sdk_path()
-        client = self._sdk()
-        from openshell._proto import openshell_pb2 as pb
-        stub = pb_grpc_stub(client)
+        stub, pb = self._admin_stub()
         resp = stub.DeleteProvider(
             pb.DeleteProviderRequest(name=name, workspace=workspace),
             timeout=30)
@@ -391,11 +382,8 @@ class GatewayFacade:
     def upsert_provider(self, *, workspace: str, name: str, type_: str,
                         credentials: Dict[str, str],
                         conf: Dict[str, str]) -> Dict[str, Any]:
-        _ensure_sdk_path()
-        client = self._sdk()
-        from openshell._proto import openshell_pb2 as pb
+        stub, pb = self._admin_stub()
         from openshell._proto import datamodel_pb2 as dm
-        stub = pb_grpc_stub(client)
         existing = stub.ListProviders(
             pb.ListProvidersRequest(workspace=workspace), timeout=30)
         exists = any(p.metadata.name == name for p in existing.providers)

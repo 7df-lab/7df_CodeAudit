@@ -23,8 +23,9 @@ import (
 	"github.com/codeaudit/services/dsh-runtime-service/internal/sandbox"
 )
 
-// patchRoundFn — 一轮沙箱回合的抽象（生产=ManagerRunner.Run；测试=canned 响应注入）。
-type patchRoundFn func(ctx context.Context, assignment string) (finalText string, err error)
+// patchRoundFn — 一轮沙箱回合的抽象（生产=ManagerRunner.Run 且 Task.PatchFixRound=true，
+// Run 按 patches 语义解析返回结构化产出；测试=canned 产出注入）。
+type patchRoundFn func(ctx context.Context, assignment string) ([]sandbox.PatchFix, error)
 
 // patchFailure — 一项校验失败（findings 下标 + 失败详情）。
 type patchFailure struct {
@@ -113,18 +114,15 @@ func runPatchFixRound(ctx context.Context, taskID, projectPath string, findings 
 ` + string(raw) + `
 
 输出契约（必须遵守）：完成后调用 submit_patches 工具提交结果（参数 schema：
-patches 数组，每项 {index: 下标整数, diff_patch: "apply_patch 补丁文本"}）。
+patches 数组，每项 {index: 下标整数, diff_patch: "apply_patch 补丁文本"}）；
+补丁较多时分批连续调用（每批最多 4 条，服务端按 index 合并）。
 正文只写简短说明，不要在正文里另写 JSON。
 仅当工具不可用时才降级：把结果作为一个 JSON 代码块输出为最后一条消息，schema:
 {"patches": [{"index": 下标整数, "diff_patch": "apply_patch 补丁文本"}]}
 只重新生成失败的项。`
-	finalText, err := round(ctx, assignment)
+	fixes, err := round(ctx, assignment)
 	if err != nil {
 		return nil, err
-	}
-	fixes, perr := sandbox.ParsePatches(finalText)
-	if perr != nil {
-		return nil, perr
 	}
 	return fixes, nil
 }

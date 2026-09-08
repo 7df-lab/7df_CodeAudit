@@ -6,7 +6,6 @@ package service
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	pb "github.com/codeaudit/proto-gen"
@@ -17,19 +16,6 @@ type verdictJSON struct {
 	Verdict    pb.AIVerdict
 	Confidence float32
 	Reason     string
-}
-
-// parseLLMReview — 解析 LLM 单行 JSON 判定; 失败返回 nil。
-func parseLLMReview(content, modelID string) *pb.VerifiedFinding {
-	v := parseVerdictJSON(content)
-	if v == nil {
-		return nil
-	}
-	return &pb.VerifiedFinding{
-		Verdict:    v.Verdict,
-		Confidence: v.Confidence,
-		Reasoning:  fmt.Sprintf("[LLM:%s] %s", modelID, v.Reason),
-	}
 }
 
 // parseVerdictJSON — 判定 JSON 的通用解析（ai-inference 直连与 DSH 沙箱回合同构，

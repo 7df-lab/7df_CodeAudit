@@ -91,6 +91,26 @@ describe('CodeAuditClient', () => {
     assert.ok(seenUrls[0].includes(encodeURIComponent('{"page_size":100,"cursor":""}')), 'JSON 风格分页参数');
   });
 
+  it('listTasks 翻页累积（project_id 透传 + has_next/next_cursor 跟页）', async () => {
+    const store = makeStore('ok', 'R');
+    const pages = [
+      { tasks: [{ task_id: 't1' }], pagination: { next_cursor: '100', has_next: true, total: 2 } },
+      { tasks: [{ task_id: 't2' }], pagination: { next_cursor: '', has_next: false, total: 2 } },
+    ];
+    const seenUrls: string[] = [];
+    const fetchFn: FetchLike = async (url) => {
+      seenUrls.push(String(url));
+      return jsonResponse(200, pages.shift()!);
+    };
+    const c = new CodeAuditClient('http://x', store as TokenStore, fetchFn);
+    const tasks = await c.listTasks('p1');
+    assert.strictEqual(tasks.length, 2);
+    assert.strictEqual(seenUrls.length, 2);
+    assert.ok(seenUrls[0].includes('project_id=p1'), 'project_id 透传');
+    assert.ok(seenUrls[1].includes('cursor%22%3A%22100%22') || seenUrls[1].includes('"cursor":"100"'),
+      '第二页应携带游标 100');
+  });
+
   it('429 记录退避窗口（retry_after 钳位 5~60s）', async () => {
     const store = makeStore('ok', 'R');
     const fetchFn: FetchLike = async () => jsonResponse(429, { retry_after: 2 }); // 低于下限 → 5s

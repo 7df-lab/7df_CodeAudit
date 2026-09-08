@@ -9,18 +9,10 @@
 // 绝不 innerHTML 原文拼接。
 import type { ProgressState } from './progressModel';
 import { fmtBytes, stageLabel, taskStatusLabel } from './progressModel';
+import { escapeHtml } from './htmlEscape';
 
 const LOG_TAIL = 200; // 日志展示条数（全量在平台环形缓存，面板取尾即可）
 const AI_RENDER_CAP = 256 * 1024; // webview 单次渲染正文上限（超限保尾，防巨帧卡顿）
-
-export function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
 
 const STAGE_CHIP_CLASS: Record<string, string> = {
   STAGE_STATUS_PENDING: 'pending',

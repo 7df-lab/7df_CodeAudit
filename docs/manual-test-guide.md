@@ -14,7 +14,7 @@
 |---|---|---|
 | 模拟栈已起 | 伞仓 `make deploy-sim`(或 `bash deploy/sim.sh status`) | gateway 健康(18080)、console 健康(18088) |
 | openshell-manager(LXC 107) | `curl http://gateway.internal:18800/healthz` | `{"ok": true}` |
-| DSH 沙箱镜像 | `pct exec 107 -- docker images \| grep dsh-pentest-sse` | `dsh-pentest-sse:latest` 在列 |
+| DSH 沙箱镜像 | `pct exec <CTID> -- docker images \| grep dsh-pentest-sse` | `dsh-pentest-sse:latest` 在列 |
 | 推理路由(网关侧) | `curl -H "Authorization: Bearer $(cut -d= -f2 manager/deploy/env)" "http://gateway.internal:18800/api/v1/inference/route?workspace=default"` | 有 provider/model |
 
 **推理 provider 配置方法**（2026-09-05 智谱 BigModel 实证；provider 存网关容器
@@ -57,7 +57,7 @@ curl -X PUT "$BASE/inference/route" -H "Authorization: Bearer $TOK" -H 'Content-
      → 提交审计任务;
    - AI 交互日志卡(ADR-181):默认折叠,展开为整页时间线(加载更早 400 条/显示全部);中文人性化
      交互流——任务下发全文、思考流、输出、子任务骨架/回报、回合结束;徽标"实时接收中"→收束后
-     "已收束"+KB 定格;原始 SSE 帧由 dsh-runtime 落盘(engine `data/ai-interaction/`)供机器调试;
+     "已收束"+KB 定格;原始 SSE 帧由 dsh-runtime 落盘(engine `interaction_dir`, 容器部署=`CODEAUDIT_INTERACTION_DIR`=/data/repos/ai-interaction 共享卷, R36)供机器调试;
    - 阶段时间线卡:阶段实时流转,不再静止到结束统一盖章。
 5. **终态核验**(约 2 分钟):发现页签应有数条发现,结论列带 AI 输出徽标(悬停看判定理由);
    AI 交互日志"下载完整日志"尾部应为 `── 回合结束: completed ──` → `■ 会话空闲(收束)`;

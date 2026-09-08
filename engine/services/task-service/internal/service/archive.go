@@ -27,9 +27,9 @@ import (
 )
 
 const (
-	maxArchiveBytes   = 25 << 20  // 与 gateway 上传白名单上限一致（ADR-145）
-	maxUnpackedBytes  = 200 << 20 // 解包总量上限
-	maxArchiveFiles   = 3000      // 文件数上限
+	maxArchiveBytes   = 100 << 20 // 与 gateway 上传白名单上限一致（2026-09-08 用户指令 100MB）
+	maxUnpackedBytes  = 500 << 20 // 解包总量上限（2026-09-08 用户指令 500MB）
+	maxArchiveFiles   = 100000    // 文件数上限（2026-09-08 用户指令 10 万）
 	downloadChunkCap  = 1 << 20   // 单块读取上限（防御异常大块）
 	fetchDialTimeout  = 10 * time.Second
 	downloadTimeout   = 120 * time.Second
@@ -73,6 +73,21 @@ func FetchUploadArchive(ctx context.Context, storageAddr, fileID, dest string) (
 // resolveRootDescentCap — 壳目录降入深度上限（防病态嵌套；正常压缩包一层即到根）。
 const resolveRootDescentCap = 3
 
+// archiveExt — 归一化压缩包扩展名。.tar.gz 是双段后缀，filepath.Ext 只会取到
+// ".gz"（R33，gw-e295b637 实证：按 Ext 落盘 → archive-<ts>.gz 不满足自家解包
+// switch → .tar.gz 上传任务 prepare 必挂；.zip/.tgz 单段幸存故 ADR-200 起
+// E2E 未暴露）。白名单与落盘命名必须同源于此，不得各写一套后缀判断。
+func archiveExt(name string) string {
+	switch {
+	case strings.HasSuffix(name, ".tar.gz"):
+		return ".tar.gz"
+	case strings.HasSuffix(name, ".tgz"):
+		return ".tgz"
+	default:
+		return filepath.Ext(name)
+	}
+}
+
 // ResolveProjectRoot — 解析真实项目根：解包目录内只有唯一子目录时逐层降入
 // （GitHub/常见发布压缩包带 "<repo>-<ver>/" 顶层壳，剥壳前后端/校验/沙箱三方
 // 才能共享同一相对路径口径——gw-f6a3523 实证：不剥壳时 fixpatch 校验、
@@ -108,13 +123,14 @@ func downloadArchive(ctx context.Context, storageAddr, fileID, dest string) (str
 		return "", fmt.Errorf("GetFileInfo %s: %w", fileID, err)
 	}
 	name := strings.ToLower(info.GetFilePath())
-	if !strings.HasSuffix(name, ".zip") && !strings.HasSuffix(name, ".tgz") && !strings.HasSuffix(name, ".tar.gz") {
+	ext := archiveExt(name)
+	if ext != ".zip" && ext != ".tgz" && ext != ".tar.gz" {
 		return "", fmt.Errorf("不支持的格式（仅 .zip/.tar.gz/.tgz）: %s", info.GetFilePath())
 	}
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return "", err
 	}
-	archivePath := filepath.Join(dest, fmt.Sprintf("archive-%d%s", time.Now().UnixNano(), filepath.Ext(name)))
+	archivePath := filepath.Join(dest, fmt.Sprintf("archive-%d%s", time.Now().UnixNano(), ext))
 
 	stream, err := client.DownloadFile(dctx, &pb.DownloadFileRequest{FileId: fileID})
 	if err != nil {

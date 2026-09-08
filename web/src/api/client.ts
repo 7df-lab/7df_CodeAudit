@@ -132,6 +132,10 @@ async function requestRefresh(): Promise<string> {
   return data.access_token;
 }
 
+// 代码压缩包上限 100MB（2026-09-08 用户指令）：与 gateway uploadMaxBytes（100MB）/
+// nginx client_max_body_size 100m 同源；页面 beforeUpload 用作本地预检，超限不发起请求。
+export const MAX_ARCHIVE_UPLOAD_BYTES = 100 * 1024 * 1024;
+
 // 代码压缩包上传（ADR-200）：multipart 直传网关 → 网关流式转发 storage（MinIO），
 // 网关不落盘。返回 file_id —— 创建任务时放入 config.upload_file_id，
 // 启动时 task-service 从 storage 拉回解包扫描。
@@ -231,10 +235,6 @@ export async function bootRefresh(): Promise<string | null> {
 
 export async function getInferenceProviders(): Promise<{ providers: InferenceProvider[] }> {
   return (await api.get('/v1/inference/providers')).data;
-}
-
-export async function getInferenceProvider(name: string): Promise<InferenceProvider> {
-  return (await api.get(`/v1/inference/providers/${encodeURIComponent(name)}`)).data;
 }
 
 export interface InferenceProviderPayload {

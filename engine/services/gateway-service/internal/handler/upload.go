@@ -3,7 +3,7 @@
 // 人类指令口径：原始压缩包**经 gateway 直传 storage（MinIO），gateway 不落盘**。
 // 此前形态（ADR-145）gateway 解包落本地盘、以目录路径为引用——单机权宜，已废弃；
 // 扫描时的拉取与解包移至 task-service（archive.go，解压失败抛压缩包错误）。
-// 安全: 登录后可用（JWT 链）；扩展名白名单；25MB 上限（MaxBytesReader+计数双保险）。
+// 安全: 登录后可用（JWT 链）；扩展名白名单；100MB 上限（MaxBytesReader+计数双保险）。
 // 生产多节点就绪: 对象在 MinIO，gateway/task 可异机。
 package handler
 
@@ -18,7 +18,7 @@ import (
 	pb "github.com/codeaudit/proto-gen"
 )
 
-const uploadMaxBytes = 25 << 20 // 压缩包上限 25MB（ADR-145 口径沿用）
+const uploadMaxBytes = 100 << 20 // 压缩包上限 100MB（2026-09-08 用户指令上调；原 ADR-145 25MB）
 
 // UploadsDir — 仅 source-file 端点解析历史上传件时使用（ADR-195 遗留读路径）；
 // ADR-200 起上传不再写盘，新任务目录由 task 从 storage 拉取解包产生。
@@ -38,7 +38,7 @@ func (t *Transcoder) UploadArchive(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, uploadMaxBytes)
 	mr, err := r.MultipartReader() // 流式解析：不产生 gateway 侧临时文件
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid multipart form (max 25MB): "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid multipart form (max 100MB): "+err.Error())
 		return
 	}
 
@@ -79,7 +79,7 @@ func (t *Transcoder) UploadArchive(w http.ResponseWriter, r *http.Request) {
 	t.streamUploadToStorage(w, r, uploadID, objPath, contentType, filePart)
 }
 
-// streamUploadToStorage — 管道转发（64KiB 分块，首块带路径/类型；25MB 双保险计数）。
+// streamUploadToStorage — 管道转发（64KiB 分块，首块带路径/类型；100MB 双保险计数）。
 func (t *Transcoder) streamUploadToStorage(w http.ResponseWriter, r *http.Request,
 	uploadID, objPath, contentType string, src io.Reader) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
@@ -112,7 +112,7 @@ func (t *Transcoder) streamUploadToStorage(w http.ResponseWriter, r *http.Reques
 			total += int64(n)
 			if total > uploadMaxBytes {
 				_ = stream.CloseSend()
-				writeError(w, http.StatusBadRequest, "archive exceeds 25MB")
+				writeError(w, http.StatusBadRequest, "archive exceeds 100MB")
 				return
 			}
 		}

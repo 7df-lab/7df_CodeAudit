@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -47,6 +48,12 @@ type Task struct {
 	WorkspaceDir string // 待审计代码目录（tar 整包上传沙箱 /sandbox/project，ADR-187）
 	Assignment   string // 分析任务指令（模式A/模式D差异化）
 	Timeout      time.Duration
+	// PatchFixRound — 补丁失败反馈再生成回合（ADR-183 补遗②）：结果契约是
+	// submit_patches 工具参数/正文 {"patches":[...]}，Run 按 patches 语义解析
+	// （缺省 false=审计回合，按 findings 语义解析）。gw-d331089f 实证：再生成回合
+	// 曾被套用 findings 解析——模型合规调用 submit_patches 后正文无 findings JSON，
+	// Run 报 "no JSON in DSH output" 判废，工具参数提取（ADR-184）永远轮不到执行。
+	PatchFixRound bool
 }
 
 // Finding — 沙箱内 DSH 产出的发现（映射前），字段与任务输出契约一致。
@@ -69,7 +76,9 @@ type Finding struct {
 type Result struct {
 	OK       bool      `json:"ok"`
 	Findings []Finding `json:"findings"`
-	Error    string    `json:"error"`
+	// Patches — PatchFixRound 的结构化产出（submit_patches 分批合并/正文 JSON 降级）。
+	Patches []PatchFix `json:"patches,omitempty"`
+	Error   string     `json:"error"`
 	// FinalText — 最终 assistant 消息全文（ADR-183 补遗②：失败反馈再生成回合的
 	// 输出契约是 {"patches":[...]} 而非 findings，调用方需原文自行解析）。
 	FinalText string `json:"final_text"`
@@ -324,6 +333,22 @@ func (r *ManagerRunner) Run(ctx context.Context, t Task) (*Result, error) {
 	res.FinalText = finalText
 	res.ToolCalls = calls
 
+	// ADR-183 补遗②/gw-d331089f（R34）：补丁再生成回合按 patches 语义解析——
+	// 审计回合的 findings 解析对此类回合必然失败（契约是 submit_patches 工具调用，
+	// 正文无 findings JSON）。
+	if t.PatchFixRound {
+		patches, srcCh, perr := parsePatchFixResult(finalText, calls)
+		if perr != nil {
+			r.event("error", "补丁再生成结果解析失败: %v", perr)
+			res.Error = perr.Error()
+			return res, fmt.Errorf("result parse failed: %w", perr)
+		}
+		r.event("info", "补丁再生成结果解析成功 patches=%d（通道=%s）", len(patches), srcCh)
+		res.OK = true
+		res.Patches = patches
+		return res, nil
+	}
+
 	// ADR-184：结果源优先级——submit_findings 工具参数（原生 function-calling，
 	// Cline 同款结构层）> 最终消息 ```json 围栏（降级通道，两代兼容）。
 	findings, srcCh, perr := parseAuditResult(finalText, calls)
@@ -357,8 +382,8 @@ func LastToolCallArgs(calls []ToolCall, name string) (string, bool) {
 
 // parseAuditResult — 结果源选择：submit_findings 工具参数优先（模型 function-calling
 // 原生产出，无散文转义负担），```json 围栏降级（工具未调用/参数损坏时兜底）。
-// ADR-194/ADR-211：分批提交合并——模型被要求按补丁体量分层分批（无补丁 ≤4 条/
-// 含补丁 ≤2 条/大补丁单条）连续多次调用 submit_findings（单批巨型参数=数万 token
+// ADR-194/ADR-211/ADR-220：分批提交合并——模型被要求按补丁体量分层分批（无补丁 ≤8 条/
+// 含补丁 ≤4 条/大补丁单条）连续多次调用 submit_findings（单批巨型参数=数万 token
 // 长流，实测连续断流），此处合并全部批次并按 title+file+line 去重（模型自纠重试
 // 可能重发同批）。
 // 空列表陷阱（gw-5a96f1f7 实证修复）：submit_findings 提交 {"findings":[]} 是合法
@@ -393,6 +418,48 @@ func parseAuditResult(finalText string, calls []ToolCall) ([]Finding, string, er
 	}
 	// 工具未被调用（或全部批次损坏）→ 围栏降级（不因首选通道失败而丢弃回合）
 	fs, err := ParseFindings(finalText)
+	if err != nil {
+		return nil, "", err
+	}
+	return fs, "text-fence", nil
+}
+
+// parsePatchFixResult — 补丁再生成回合（Task.PatchFixRound）结果源选择，镜像
+// parseAuditResult 的双通道口径：submit_patches 工具参数优先（分批连续调用按 index
+// 合并，同 index 后批覆盖——模型自纠重发时以最新提交为准），正文 {"patches":[...]}
+// JSON 围栏降级（工具未调用/参数损坏时兜底）。
+// 返回 (patches, 通道名, err)；空 patches 列表≠未提交（模型可能判定无需修）——
+// 与 parseAuditResult 的零发现口径同源，判据是"至少一批参数解析成功"。
+func parsePatchFixResult(finalText string, calls []ToolCall) ([]PatchFix, string, error) {
+	byIndex := map[int]PatchFix{}
+	anyParsed := false
+	for i := range calls {
+		if calls[i].Name != SubmitPatchesTool {
+			continue
+		}
+		fs, err := ParsePatches(calls[i].Arguments)
+		if err != nil {
+			continue // 单批损坏不丢弃其余批次（与审计回合同宽容度）
+		}
+		anyParsed = true
+		for _, f := range fs {
+			byIndex[f.Index] = f
+		}
+	}
+	if anyParsed {
+		idxs := make([]int, 0, len(byIndex))
+		for idx := range byIndex {
+			idxs = append(idxs, idx)
+		}
+		sort.Ints(idxs)
+		merged := make([]PatchFix, 0, len(idxs))
+		for _, idx := range idxs {
+			merged = append(merged, byIndex[idx])
+		}
+		return merged, SubmitPatchesTool, nil
+	}
+	// 工具未被调用（或全部批次损坏）→ 围栏降级
+	fs, err := ParsePatches(finalText)
 	if err != nil {
 		return nil, "", err
 	}
@@ -980,11 +1047,11 @@ const assignmentTemplate = `# CodeAudit 代码安全分析任务
 分析完成后，调用 submit_findings 工具提交全部发现（字段与该工具参数 schema 一致：
 title/description/severity/cwe_id/file_path/start_line/confidence/reasoning/
 fix_suggestion/diff_patch）。正文只写简短结论摘要，不要在正文里另写 JSON。
-**分批提交（强制，ADR-194/ADR-211）**：单次提交的参数流越长，推理流中断风险越高
+**分批提交（强制，ADR-194/ADR-211/ADR-220）**：单次提交的参数流越长，推理流中断风险越高
 （gw-7f06fe5d 实证：单批巨型提交连续 4 次断流；分批上线后大补丁单批仍断流——
 按补丁体量分层控制每批条数：
-- 不含 diff_patch（补丁为空字符串）的发现：每批最多 4 条；
-- 含 diff_patch 的发现：每批最多 2 条；补丁涉及多个文件或超过约 40 行时，该批只提交这 1 条；
+- 不含 diff_patch（补丁为空字符串）的发现：每批最多 8 条；
+- 含 diff_patch 的发现：每批最多 4 条；补丁涉及多个文件或超过约 40 行时，该批只提交这 1 条；
 - diff_patch 的上下文行在改动块上方/下方各最多 3 行（消费端按内容锚定，大段上下文
   只会拉长参数流、徒增断流风险）。
 分批时逐批连续调用 submit_findings（服务端自动合并去重），全部批次提交完成后再写最终摘要。

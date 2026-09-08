@@ -5,6 +5,7 @@ package handler
 
 import (
 	"context"
+	"strings"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -35,6 +36,12 @@ func NewProjectHandler(svc *service.ProjectService, idm *idempotency.Store) *Pro
 
 // CreateProject — write RPC, has RequestMetadata.metadata, must implement idempotency (03 §2).
 func (h *ProjectHandler) CreateProject(ctx context.Context, req *v1.CreateProjectRequest) (*v1.Project, error) {
+	// R-32: 包装键与名称必须显式存在——protojson 未知字段被丢弃后 nil Project 会
+	// 静默创建出全空项目（dind 全新环境实测：裸 {name:...} 顶层载荷 201 空壳）
+	if req.GetProject() == nil || strings.TrimSpace(req.GetProject().GetName()) == "" {
+		return nil, status.Error(codes.InvalidArgument,
+			`project is required (wrapper shape: {"project":{"name":...}})`)
+	}
 	// R4: read RequestMetadata for idempotency
 	if req.GetMetadata() == nil || req.GetMetadata().GetRequestId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "metadata.request_id is required (03 §2)")

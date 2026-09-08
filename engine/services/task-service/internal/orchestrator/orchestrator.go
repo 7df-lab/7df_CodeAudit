@@ -39,27 +39,15 @@ type StageRecorder func(stage string, msg string)
 
 // Orchestrator executes one scan task end-to-end following its scan mode.
 type Orchestrator struct {
-	cfg    Config
-	mu     sync.Mutex
-	events map[string][]string // taskID → stage log
+	cfg Config
 }
 
 func New(cfg Config) *Orchestrator {
-	return &Orchestrator{cfg: cfg, events: map[string][]string{}}
-}
-
-// Events returns stage log lines for a task (E2E 断言用).
-func (o *Orchestrator) Events(taskID string) []string {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return append([]string(nil), o.events[taskID]...)
+	return &Orchestrator{cfg: cfg}
 }
 
 func (o *Orchestrator) record(taskID, stage, msg string) {
 	log.Printf("[orchestrator][%s] %s: %s", taskID, stage, msg)
-	o.mu.Lock()
-	o.events[taskID] = append(o.events[taskID], fmt.Sprintf("%s: %s", stage, msg))
-	o.mu.Unlock()
 }
 
 func dial(addr string) (*grpc.ClientConn, func(), error) {

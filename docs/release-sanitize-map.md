@@ -49,7 +49,7 @@
 
 | 位置 | 值 | 生效性 | 处置 |
 |------|----|--------|------|
-| `deploy.sh:17-24` | `pct exec 107`、`/root/os-deploy/deploy/web`、`http://gateway.internal:8088`、upstream 8090 | **运行时(内网 CD 链)** | 该文件整体不随发布(对外发布走伞仓 production-deploy 的 [5/5]);或中性 env 化 |
+| `deploy.sh:17-24` | `pct exec <CTID>`、`/root/os-deploy/deploy/web`、`http://gateway.internal:8088`、upstream 8090 | **运行时(内网 CD 链)** | 该文件整体不随发布(对外发布走伞仓 production-deploy 的 [5/5]);或中性 env 化 |
 | `docker-compose.yml:6`(注释)、`README.md:134,184` | `gateway.internal:8080`、"107 模拟栈网关 :18080" | 文档 | 占位符化 |
 | `src/findings/chainParser.ts:28` + `src/__tests__/chainParser.test.ts:80` | 注释/夹具含 `gateway.internal` | 注释/测试 | 改 RFC5737 `192.0.2.x`(保住 4 段 IP 形状) |
 | `.gitignore` | 不含 `.env` | 风险 | 发布前补 |
@@ -75,7 +75,7 @@
 | `deploy/docker-compose.yml:22,31` | extra_hosts `gateway.internal:host-gateway`;env 缺省同域名 | **运行时** | 同上参数化;extra_hosts 块整体可删 |
 | `deploy/docker-compose.yml:49`(注释) | "LXC=gateway.internal / PVE=pve.internal"、`192.168.0.0/16` 池 | 文档 | 删 |
 | `deploy/docker-compose.yml:45,50` | 网络名 `codeaudit-sandbox-gateway-manager-net`、钉网段 `10.10.109.0/24` | **运行时** | 网段 env 化或去钉(§5 旋钮 9) |
-| `deploy/deploy.sh:16-20,86` | `pct exec 107`、`/root/os-deploy/...`、`http://gateway.internal:18800` | **运行时(内网链)** | 内网链不随发布;对外链是伞仓 production-deploy 的 [2/5] staging 装配 |
+| `deploy/deploy.sh:16-20,86` | `pct exec <CTID>`、`/root/os-deploy/...`、`http://gateway.internal:18800` | **运行时(内网链)** | 内网链不随发布;对外链是伞仓 production-deploy 的 [2/5] staging 装配 |
 | `deploy/Dockerfile.manager:15` | `COPY config.json ./`(兜底档,而 config.json 是 gitignored 本地物且含生产 IP) | **构建时** | 改为跟踪的 `config.json.example`;production-deploy.sh:187-196 生成的最小档里 `gateway.internal:8080` 同步中性化 |
 | 根 `Dockerfile:7-9` | 基镜像 `openshell-manager:1.0.0`(注释自述"已带 config.json 与 .token 部署文件"——**烘过 token 的离线路径**) | 构建 | 不随发布 |
 | `deploy/env.template:2` | `OPENSHELL_GATEWAY_ENDPOINT=gateway.internal:8080` | 模板 | 占位符化 |
@@ -93,9 +93,9 @@ env 机制健全:`OPENSHELL_MANAGER_{CONFIG,BIND,PORT,TOKEN,MAX_UPLOAD_BYTES}`�
 | `docker-compose.yml:83-89` | 5 条 xwpt 实验域 extra_hosts + "pentest lab" 注释 | **运行时** | 整块删除或移可选 overlay;沙箱服务路由真实依赖=网关发布口+Host 头,不依赖这 5 条(它们是开发机兜底) |
 | `docker-compose.yml:149` | 网络名 `codeaudit-sandbox-gateway-net` | **运行时** | 中性化 |
 | `docker-compose.yml:79` | `user: "0"`;`:56`(toml)`allow_unauthenticated_users = true` | **安全姿态** | 保留但对外文档必须写明信任边界(loopback/发布范围) |
-| `deploy.sh:28-30` / `gateway_lifecycle.sh:46-49` | `REMOTE="${REMOTE-pct exec 107 --}"`、`VMID=107`、`/root/os-deploy/deploy/docker`、`ROUTING_DOMAIN=openshell.internal` | **运行时** | 对外链=伞仓 production-deploy 传 `REMOTE="" DEPLOY_DIR=本地`;缺省需中性化+补 ssh 传输路径(pct-only 是一键缺口) |
+| `deploy.sh:28-30` / `gateway_lifecycle.sh:46-49` | `REMOTE="${REMOTE-pct exec <CTID> --}"`、`VMID=107`、`/root/os-deploy/deploy/docker`、`ROUTING_DOMAIN=openshell.internal` | **运行时** | 对外链=伞仓 production-deploy 传 `REMOTE="" DEPLOY_DIR=本地`;缺省需中性化+补 ssh 传输路径(pct-only 是一键缺口) |
 | `gateway.toml:43` | `supervisor_image = "ghcr.io/nvidia/openshell/supervisor:local"` | **运行时**(`:latest`→`:local` retag 自举约定) | 保留机制,文档化 |
-| `tests/run.sh` 多处(97-98,184-190,215-217,441-449…) | **字面量断言**钉死 xwpt 域/`pct exec 107`/网络名 | 测试门禁 | **改配置必须同 commit 改此测试**,否则 CI 红 |
+| `tests/run.sh` 多处(97-98,184-190,215-217,441-449…) | **字面量断言**钉死 xwpt 域/`pct exec <CTID>`/网络名 | 测试门禁 | **改配置必须同 commit 改此测试**,否则 CI 红 |
 | README/docs | `gateway.internal=gateway.internal`、LXC 107、内网部署链叙述 | 文档 | 清洗 |
 
 无密钥入库(JWT 密钥运行时 generate-certs 生成)。env:`IMAGE_TAG`、`OPENSHELL_PORT`(与容器 8080 **同号契约**)、`OPENSHELL_HEALTH_PORT`、`OPENSHELL_GATEWAY_CONFIG`、`OPENSHELL_DB_URL`、`XDG_DATA_HOME`、`HOME`。
@@ -130,7 +130,7 @@ bridge.mjs/settings.yaml/codeaudit-submit 插件干净:无密钥、无端点(插
 | `deploy/production-deploy.sh` | ~~:193 生成的最小 config.json 含 `gateway.internal:8080`~~ → 已中性化(2026-09-07 交互化联动改造一并修复,见 §4 旋钮 1) | ✅ |
 | `deploy/prod/env.template:7` | `OPENSHELL_MANAGER_URL=http://gateway.internal:18800` | 内网链文件,不随发布 |
 | `deploy/prod/deploy.sh:21-25,70,87` | pct/107/`gateway.internal`/`/root/os-deploy` | 内网链,不随发布 |
-| `deploy/sandbox-deploy.toml`(vmid=107×5、/root/os-deploy×4)、`deploy/sim*.sh`、`deploy/docker-compose.sim.yml:92`(缺省内网 manager)、`deploy/env.sim.example:48`、`deploy/pull-images.sh:21`(`REMOTE-pct exec 107`)、`deploy/tests/*`(git_fixture 10.10.210.1:19418、ui_check 缺省 `gateway.internal:18088`) | 内网 QA 链全套 | **不随发布**(见 §4 发布树裁剪) |
+| `deploy/sandbox-deploy.toml`(vmid=107×5、/root/os-deploy×4)、`deploy/sim*.sh`、`deploy/docker-compose.sim.yml:92`(缺省内网 manager)、`deploy/env.sim.example:48`、`deploy/pull-images.sh:21`(`REMOTE-pct exec <CTID>`)、`deploy/tests/*`(git_fixture 10.10.210.1:19418、ui_check 缺省 `gateway.internal:18088`) | 内网 QA 链全套 | **不随发布**(见 §4 发布树裁剪) |
 | `docs/`(dev-prod-map 等)、`LESSONS.md`、`.agent/`、`Makefile` sim 目标、`README.md` | 内网拓扑全量叙述 | 不随发布或重写 |
 | `deploy/prod/docker-compose.deploy.yml:18-19` | S3 凭据 `minioadmin` 硬编码 | §5 旋钮 3 |
 
@@ -156,7 +156,7 @@ bridge.mjs/settings.yaml/codeaudit-submit 插件干净:无密钥、无端点(插
 `production-deploy.sh` 现读 16 键(密钥 2 + 地址 2 + 端口 9 + Kafka 1 + 网段 1 + 追加的 console upstream)。以下为**链路上仍硬编码、脚本给不出旋钮**的缺口,按优先级。
 **2026-09-07 交互化落地**(deploy/production-deploy.sh 重构):①deploy/configure 终端运行时交互确认访问 IP/端口冲突(给空闲建议,避开本栈计划口)/网段重叠(给跳位建议),汇总确认才开工,`--yes`/非 TTY 跳过;②**联动键自动重算回写**——`OPENSHELL_GATEWAY_ENDPOINT`/`CODEAUDIT_GATEWAY_DIAL_ADDR` 随 `OPENSHELL_PORT`、`CODEAUDIT_GATEWAY_UPSTREAM` 随 `CODEAUDIT_HOST_GATEWAY`,旋钮 1 的伞仓侧全部闭环(含生成档 config.json 中性化,manager 子仓 `config.py:29` 代码缺省仍待清);③模板曝光 `DSH_IMAGE`。**沙箱素材免下载**(2026-09-08):`ensure_sandbox_artifacts` 先 `fetch*.sh --verify` 离线复核(sbom sha256 逐项),在位即零下载,缺失/漂移才全量拉取;`check` 只报在位性。状态标注:✅=已闭环,⚠️=部分,空=未动。
 **xwpt 三仓清源落地**(2026-09-08,人类指令"xwpt 不具通用性"):配置面全零——gateway compose 5 条 lab 域 extra_hosts 删(server_sans→`*.sandbox.codeaudit.internal`)、manager compose extra_host+三处缺省删/中性化、sse 冒烟断言参数化;`openshell.internal` 剩余命中仅叙述性文档(gateway/manager/sse README+docs、sse tool-sbom 注记),随发布分支剔除。
-**内外面分离定案**(2026-09-08,人类指令点破):manager 是内部面非交互面——`OPENSHELL_MANAGER_URL` 恒为内部常量 `host.docker.internal:18800`(hosts 别名,零 DNS 零用户输入),不再随访问 IP;用户确认的访问入口只存 `CODEAUDIT_ACCESS_IP` 供横幅/汇总**显示**,不参与任何接线。暴露给用户的只有 web(IP+口)与 engine 网关(IP+口);其余服务宿主口均为运维/内部消费面,生产档可考虑 loopback 化(见 §4 施工表外延)。Windows 部署经 `deploy/windows/bootstrap.ps1` 复用同一 bash 入口(双壳:Git Bash 优先,WSL2 兜底;bash 入口带 MSYS 回退 ss→netstat、ip/hostname→ipconfig、python3→python)。
+**内外面分离定案**(2026-09-08,人类指令点破):manager 是内部面非交互面——`OPENSHELL_MANAGER_URL` 恒为内部常量 `http://host.docker.internal:18800`(hosts 别名,零 DNS 零用户输入,带 scheme——引擎 REST 基址),不再随访问 IP;用户确认的访问入口只存 `CODEAUDIT_ACCESS_IP` 供横幅/汇总**显示**,不参与任何接线。暴露给用户的只有 web(IP+口)与 engine 网关(IP+口);其余服务宿主口均为运维/内部消费面,生产档可考虑 loopback 化(见 §4 施工表外延)。Windows 部署经 `deploy/windows/bootstrap.ps1` 复用同一 bash 入口(双壳:Git Bash 优先,WSL2 兜底;bash 入口带 MSYS 回退 ss→netstat、ip/hostname→ipconfig、python3→python)。
 **零 DNS 依赖不变量**(2026-09-08 代码实证,清源相关推论):同网服务名走 docker 内嵌 DNS、跨栈走 hosts 别名/裸 IP、**沙箱路由域(现 `*.openshell.internal`)仅作 Host 头路由键从不被解析**(dsh-runtime routeReq 拨 `CODEAUDIT_GATEWAY_DIAL_ADDR`、svcURL 仅进 req.Host;bridge.mjs 零出站;dsh-runtime 零 net.LookupHost)。推论:①路由域是纯字符串键,旋钮 2(`ROUTING_DOMAIN`)只影响证书 SAN 与 URL 观感,不影响可达性;②gateway/manager compose 里的 xwpt extra_hosts 条目本身就是"零 DNS 机制"的实现载体(hosts 别名),清洗时改为中性别名即可、不可简单删除;③本机 /etc/hosts 的 xwpt 条目**不进入容器**(内嵌 DNS 不转发宿主 hosts),历史 e2e 绿不依赖它。
 
 | # | 建议旋钮(production.env 新键) | 现状硬编码点 | 期望行为 |

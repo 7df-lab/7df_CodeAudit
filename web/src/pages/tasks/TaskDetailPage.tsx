@@ -121,6 +121,17 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
     let retryTimer: number | undefined;
     let settled = false;
     let ws: WebSocket | undefined; // 提到 effect 作用域：卸载时才能关闭连接
+    // 半开看门狗：TCP 静默断链时浏览器不触发 onclose，wsLive 恒真 → 轮询永久停用、
+    // 页面冻结到手动刷新。45s 无任何数据帧且任务未收束 → 强制 close，走 onclose 的
+    // 快照兜底 + 5s 重连（服务端 20s 无条件 ping 浏览器不可见，客户端只能以数据帧
+    // 有无判活；静默期误杀的代价只是一次快照拉取+重连）。
+    let lastFrameAt = Date.now();
+    const watchdog = window.setInterval(() => {
+      if (closed || settled) return;
+      const sock = ws;
+      if (!sock || sock.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - lastFrameAt > 45_000) sock.close();
+    }, 5000);
     const connect = () => {
       if (closed || settled) return;
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -137,12 +148,14 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
       }
       const socket = ws;
       socket.onopen = () => {
+        lastFrameAt = Date.now(); // 新连接重置看门狗窗口
         if (!closed) {
           wsLiveRef.current = true;
           setWsLive(true);
         }
       };
       ws.onmessage = (ev: MessageEvent<string>) => {
+        lastFrameAt = Date.now();
         try {
           const d = JSON.parse(ev.data) as TaskSnapshot & { type?: string };
           if (d.type !== 'snapshot' || !d.task) return;
@@ -178,6 +191,7 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
     return () => {
       closed = true;
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      window.clearInterval(watchdog);
       // 离开页面必须断开推流——此前只置标志不 close，连接留在原地持续收 250ms 帧，
       // 旧挂载的 onmessage 继续写查询缓存，反复进出任务页连接累积（泄漏）
       ws?.close();
@@ -193,6 +207,19 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
     qc.invalidateQueries({ queryKey: ['task-snapshot', taskId] });
     qc.invalidateQueries({ queryKey: ['tasks'] });
   };
+
+  // 收束即补拉：发现/融合/审核列表在"终态帧早于发现落库"的异常序列（如长任务被
+  // 对账器误判超时后阶段仍收敛）下会以空列表入缓存且不再触发——终态+AI 收束帧
+  // 到达时统一失效一次，晚到数据不再需要手动刷新页面。
+  const settled = isTerminalQuery && !!snap?.ai?.complete;
+  const settledInvalidatedRef = useRef(false);
+  useEffect(() => {
+    if (!settled || settledInvalidatedRef.current) return;
+    settledInvalidatedRef.current = true;
+    qc.invalidateQueries({ queryKey: ['findings', taskId] });
+    qc.invalidateQueries({ queryKey: ['fusion-findings', taskId] });
+    qc.invalidateQueries({ queryKey: ['review-findings', taskId] });
+  }, [settled, taskId, qc]);
 
   const act = useMutation({
     mutationFn: async (a: TaskAction) => dispatchAction(task!, a),

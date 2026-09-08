@@ -1,5 +1,6 @@
 import * as assert from 'assert';
-import { buildViewUpdate, escapeHtml, renderAiContextHtml } from '../src/aiContextView';
+import { buildViewUpdate, renderAiContextHtml } from '../src/aiContextView';
+import { escapeHtml } from '../src/htmlEscape';
 import { applyFrame, createProgressState } from '../src/progressModel';
 import type { TaskSnapshot } from '../src/types';
 

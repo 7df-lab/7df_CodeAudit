@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -496,5 +497,36 @@ func TestListProjects_NewestFirst(t *testing.T) {
 	}
 	if got := resp.GetProjects()[0].GetName(); got != "nf-2" {
 		t.Fatalf("newest project should be first, got %q", got)
+	}
+}
+
+
+// R-32 锁定测试：CreateProject 缺 project 包装键/空 name 必须 400（InvalidArgument），
+// 禁止静默创建全空项目（dind 全新环境实测：裸 {"name":...} 顶层载荷 201 空壳）。
+// 校验先于 idm/svc 触达，零值 handler 即可离线验证。
+func TestCreateProjectRejectsMissingProject(t *testing.T) {
+	h := &handler.ProjectHandler{} // 校验先于依赖触达——nil svc/idm 安全
+	cases := []struct {
+		desc string
+		req  *v1.CreateProjectRequest
+	}{
+		{"缺 project 包装键", &v1.CreateProjectRequest{}},
+		{"project 为 nil", &v1.CreateProjectRequest{Project: nil}},
+		{"project.name 为空", &v1.CreateProjectRequest{Project: &v1.Project{Name: ""}}},
+		{"project.name 全空白", &v1.CreateProjectRequest{Project: &v1.Project{Name: "   "}}},
+	}
+	for _, tc := range cases {
+		_, err := h.CreateProject(context.Background(), tc.req)
+		if err == nil {
+			t.Fatalf("%s: 未拒绝（期望 InvalidArgument）", tc.desc)
+		}
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("%s: 错误码=%v 期望 InvalidArgument", tc.desc, status.Code(err))
+		}
+		// 消息锚定 R-32 校验本体：紧随其后的 R-4 metadata 校验同返回
+		// InvalidArgument，只看错误码无法区分二者（M28 变异会借道存活）。
+		if !strings.Contains(status.Convert(err).Message(), "project is required") {
+			t.Fatalf("%s: 消息=%q 未锚定包装键校验（疑似命中后续校验）", tc.desc, status.Convert(err).Message())
+		}
 	}
 }
