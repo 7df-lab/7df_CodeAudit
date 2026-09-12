@@ -16,15 +16,23 @@ export default function ReviewView({ taskId }: { taskId: string }) {
     queryFn: async () =>
       (await api.get('/v1/findings', { params: { task_id: taskId, pagination: { page_size: 100 } } })).data as {
         findings: UnifiedFinding[];
+        pagination?: { has_next?: boolean };
       },
   });
 
   if (isLoading) return <Typography.Text type="secondary">加载中…</Typography.Text>;
   const findings = data?.findings ?? [];
+  // B3-4（审计修复）：视图单页拉 100 条截断——has_next=true 时如实提示，不再静默丢剩余
+  const truncated = data?.pagination?.has_next === true;
 
   return (
     <div>
       <Typography.Title level={4}>审核视图（旧模式D）</Typography.Title>
+      {truncated && (
+        <Typography.Paragraph type="warning" style={{ marginBottom: 8 }}>
+          仅显示前 100 条，请用发现页完整审阅
+        </Typography.Paragraph>
+      )}
       <Alert
         style={{ marginBottom: 16 }}
         type="warning"
@@ -56,7 +64,8 @@ export default function ReviewView({ taskId }: { taskId: string }) {
             { title: '来源', dataIndex: 'source_tool', width: 110 },
             {
               title: '已落盘结论', dataIndex: 'ai_verdict', width: 140,
-              render: (v: string) => <Tag>{zh(AI_VERDICT, v)}</Tag>,
+              // 空值显式归一"未判定"（zh 已无枚举特判，B3-5；展示行为不变）
+              render: (v: string) => <Tag>{zh(AI_VERDICT, v || 'AI_VERDICT_UNSPECIFIED')}</Tag>,
             },
             {
               title: '结论理由（原文）', dataIndex: 'ai_reasoning',

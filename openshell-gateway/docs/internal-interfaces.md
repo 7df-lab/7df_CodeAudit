@@ -39,7 +39,7 @@
 
 | 函数 | 提取 | 预期输入形态 | 预期输出 |
 |---|---|---|---|
-| `configured_server_sans` | sed `^server_sans[[:space:]]*=[[:space:]]*(.+)$` 首行 | `server_sans = ["*.openshell.internal"]` | `[\"*.openshell.internal\"]`（原样值）；无匹配 → 空串 |
+| `configured_server_sans` | sed `^server_sans[[:space:]]*=[[:space:]]*(.+)$` 首行 | `server_sans = ["*.sandbox.codeaudit.internal"]` | `[\"*.sandbox.codeaudit.internal\"]`（原样值）；无匹配 → 空串 |
 | `configured_supervisor_image` | sed 取双引号值首行 | `supervisor_image  = "ghcr.io/…:local"` | 镜像 ref；无 → 空串（ensure 跳过自举） |
 
 **写入器 `patch_server_sans`**（heredoc 经 `run_remote bash -s <domain> <toml_path>` 下发，编辑不落本机）：

@@ -14,13 +14,13 @@
 | TaskService (L811) | task-service | 50054 `ports.task` | 19 | WatchTaskProgress |
 | ProjectService (L848) | project-service | 50052 `ports.project` | 11 | — |
 | UserService (L867) | project-service | 同上 | 13 | — |
-| ResultService (L887) | result-service | 50058 `ports.result` | 13 | — |
+| ResultService (L887) | result-service | 50058 `ports.result` | 14 | — |
 | ReportService (L909) | result-service | 同上 | 6 | — |
 | DSHRuntimeService (L923) | dsh-runtime-service | 50057 `ports.dsh_runtime` | 18 | WatchAnalysisProgress |
 | CodeAnalysisService (L948) | dsh-runtime-service | 同上 | 5 | GetCallGraph, GetDataFlow, GetAnalysisProgress |
 | SASTAdapterService (L972) | sast-adapter-service | 50051 `ports.sast_adapter` | 6 | — |
 | SASTFusionService (L986) | sast-adapter-service | 同上 | 9 | — |
-| StorageService (L1005) | storage-service | 50055 `ports.storage` | 6 | — |
+| StorageService (L1005) | storage-service | 50055 `ports.storage` | 7 | — |
 | NotificationService (L1019) | storage-service | 同上 | 4 | — |
 
 - gateway-service 不注册任何 gRPC 服务端（纯 HTTP）。
@@ -100,7 +100,23 @@ PAUSED <──> RUNNING         （无 DEAD→QUEUED 状态机边；RetryScanTas
 ```
 
 - `CreateScanTask`：必填 project_id + request_id；**task_id = request_id**（幂等键即任务标识）；
-  指纹=project_id|scan_mode|sast_tools|排序后 config；创建即发 Kafka `task.created`。
+  指纹=project_id|scan_mode|sast_tools|排序后 config + 增量四字段（ADR-225：incremental/
+  baseline_task_id/git_anchor/diff_hint 长度——同键异体判定覆盖增量意图）；创建即发 Kafka
+  `task.created`。**增量契约（ADR-225）**：显式 `baseline_task_id` 三重校验（存在/同项目/
+  COMPLETED），任一不满足 → InvalidArgument（不静默替换不降级）；`git_anchor`/`diff_hint`
+  （截断 64KB）落任务 config 与 proto 快照字段。
+- **增量解析（ADR-225，StartTask 的 Prepare 包装，incremental.go）**：源码解析链产出新树根后
+  ——①基线选定：显式优先；自动=同项目 COMPLETED 且源码可达（卷树或 upload_file_id 可重物化）
+  的 created_at 最新者，不可达顺延更早（语义安全）；②基线树三级重物化：卷树（uploads-<id>/
+  unpacked 剥壳 或 <id> clone 根）→ 上传原件重解包到 scratch（diff 后清理）；③内容 diff：两侧
+  剥壳对齐 → 逐文件 sha256 → changed（新增∪修改）/deleted（排除 .git 与
+  .codeaudit-incremental.diff）+ 行级 unified diff（AI 提示词素材，256KB 上限）；④快照回写
+  ScanTask（baseline/changed/deleted/diff_source=content，随 PG payload），重试不重算；
+  ⑤`diff_hint` 交叉核对不一致仅记任务日志（D5：不作依据）。降级矩阵（诚实，无静默）：无基线
+  → `config.incremental_degraded_reason=no_baseline`；基线不可达 → `baseline_unavailable:*`；
+  diff 失败 → `diff_failed:*`——降级后按全量继续（增量上下文不激活，编排零感知）。
+  编排传导：InheritFindings（Execute 前置，幂等键 `<task>-inherit`）+ SAST changed_files
+  （零变更=零工具调用）+ AI 增量任务卡（见 §6 RunAIAnalysis）。
 - `StartTask`：CREATED/QUEUED→RUNNING；源码解析链（ADR-209 顺序，锁定测试 upload_priority_test.go
   三用例）：`config.project_path` 直用 > 任务级 `config.upload_file_id`（storage 拉包闭包）>
   项目级 upload_file_id（GetProjectConfig 兜底+快照回写）> 项目 repo_url clone（守卫必须含
@@ -140,11 +156,19 @@ PAUSED <──> RUNNING         （无 DEAD→QUEUED 状态机边；RetryScanTas
 - Project CRUD：NotFound → `NotFound "project %s not found"`；重复创建 → AlreadyExists。
 - **存储为内存 MemoryStore——无持久化**（重启即失；PG 化为后续任务）。
 
-## 5. result-service（ResultService 13 + ReportService 6 RPC）
+## 5. result-service（ResultService 14 + ReportService 6 RPC）
 
 - `BatchCreateFindings`：request_id 必填；逐条幂等重放；**单条失败不整批失败**，计入
   failed_count（ADR-198 不静默）。findings 表 UNIQUE(task_id,tool_name,rule_id,file_path,
   line_number) 兜底。
+- `InheritFindings`（ADR-225）：request_id+baseline_task_id+new_task_id 必填（自继承 →
+  InvalidArgument）；复制基线中 `file_path ∉ exclude_paths`（规范化口径：正斜杠/去 ./
+  消 ../，与 task-service diff 产物镜像）的 findings 到新任务——finding_id 新分配
+  `<new_task>-inh-<N>`（List 稳定序 → 序号确定）、`inherited_from_task_id=baseline`、
+  verdict/reasoning/ai_fix_suggestion/diff_patch 等终态列随行复制；命中排除清单计入
+  skipped_count。幂等：同 (request_id, finding_id) 重放跳过——编排侧用任务稳定键
+  `<task_id>-inherit`（自动重试不重复继承）。PG 列 `inherited_from_task_id` 启动幂等迁移
+  （ADD COLUMN IF NOT EXISTS）。
 - `ListFindings`：pageSize≤0→`result.page_size_default`(20)、>max→`result.page_size_max`(100)
   （配置驱动）；cursor=base64(JSON)，坏 → InvalidArgument。
 - `UpdateVerdict/BatchUpdateVerdict`：verdict 实际变化才发 Kafka `finding.verdict.updated`；
@@ -163,6 +187,11 @@ PAUSED <──> RUNNING         （无 DEAD→QUEUED 状态机边；RetryScanTas
 - `RunAIAnalysis`：request_id+task_id 必填；幂等三态；五 Agent 流水线；AI 发现经
   `BatchCreateFindings` 落盘（幂等键 `<request_id>-store`），落盘失败 → `Unavailable
   "persist N ai findings to result-service: ..."`（不静默，ADR-134）。
+  **增量（ADR-225 D3）**：`changed_files/deleted_files/incremental_diff` 非空 → 沙箱任务卡
+  （Assignment）注入变更清单+diff 聚焦段（全量代码树照常进沙箱，跨文件追踪指路保留）；
+  `incremental_diff` 超 24KB 任务卡预算 → 全文落项目树 `.codeaudit-incremental.diff`
+  （随 tar 进沙箱），任务卡截断+指路（ADR-187 纪律）。注入内容随第一条 /prompt 全文
+  进入 `.ai.log`「任务下发」帧（可审计）。
 - `VerifySASTResults`：先从 result 拉实体；**沙箱不可用 → 如实全批 NEEDS_MANUAL
   （confidence 0.3）**，绝不冒充 AI 判定（07 §10）。进沙箱前同段去重（±2 行容差）。
 - `SearchMissedVulns/ReviewSASTResults`：兼容分支；沙箱→RuleScan 降级；落盘失败仅日志
@@ -195,6 +224,10 @@ PAUSED <──> RUNNING         （无 DEAD→QUEUED 状态机边；RetryScanTas
   多工具并行、按声明序汇装；单工具失败产出 FAILED ToolScanResult 仍正常返回（04 §6），
   仅系统性错误返回 err；扫描超时 `sast_adapter.scan_timeout_s`(120s) → DeadlineExceeded；
   落盘幂等键 `<reqID>-multi`。
+  **增量（ADR-225）**：`changed_files` 非空 → 工具按 `sast_adapter.tools.<id>.files_argv`
+  模板执行（`{files}` 占位展开，40/批，results 数组合并——ADR-144 同款形态）；文件数
+  >500 或工具未配 files_argv → **诚实降级全目录扫描**（WARN 留痕）。`RunSASTScan`
+  同语义（changed_files=7）。配置键 `files_argv` 为可选键（区别于必填 argv，ADR-137）。
 - `ListAvailableTools`：仅列有执行映射的工具（bandit/opengrep）。
 - `FuseResults`：request_id 必填；实体解析三级链（本地 store→扫描存储→result GetFinding
   兜底）；ID 解析不到 → `InvalidArgument "findings not found (result-service also
@@ -205,11 +238,14 @@ PAUSED <──> RUNNING         （无 DEAD→QUEUED 状态机边；RetryScanTas
 - `CompareResults`：四象限+双向 precision/recall/F1。`CalculateMetrics/GenerateComparisonReport`：
   按 task 从 result 翻页拉全量；result 地址未配 → FailedPrecondition，拨号失败 → Unavailable。
 
-## 8. storage-service（StorageService 6 + NotificationService 4 RPC）
+## 8. storage-service（StorageService 7 + NotificationService 4 RPC）
 
+- `GetStorageMode`（ADR-225 S5）：只读档位探测，mode="s3"（MinIO 持久档）|"memory"
+  （07 §10 降级档，重启即丢）。唯一消费方=task-service 卷缓存 GC 的硬保护
+  （memory 档绝不删卷树）。判据=presigner 注入与否（MinIO 档必注入）。
 - `UploadFile`：客户端流；首块必须带 file_path+content_type（缺失 → InvalidArgument）；
   成功返回 StoredFile{file_id(`file-` 前缀),size_bytes}；数据对象按路径前缀分派域桶
-  （reports/ cpg/ sast-raw/ uploads/），元数据 sidecar 恒落默认桶 `meta/files/<file_id>`。
+  （reports/ cpg/ sast-raw/ uploads/ trees/——ADR-225 源码树 tar 域），元数据 sidecar 恒落默认桶 `meta/files/<file_id>`。
 - `DownloadFile`：file_id 必填；64KiB 服务端流；不存在 → NotFound。
 - `GetPresignedUrl`：MinIO 模式签 PUT/GET URL；memory 模式占位。
 - `ListNotifications`：user_id 必填；`MarkNotificationRead`：notification_id 必填 + 归属校验

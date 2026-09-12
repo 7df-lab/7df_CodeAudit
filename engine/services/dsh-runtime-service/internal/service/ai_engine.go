@@ -72,7 +72,14 @@ func (s *DSHRuntimeServiceImpl) runFiveAgentPipeline(ctx context.Context, req *p
 
 	// ---- Vuln Detector: 优先 OpenShell 沙箱内 DSH（ADR-140/166）；不可用 → AI 原生 → RuleScan 降级链（07 §10） ----
 	sbxEmit := taskLogSink(req.GetTaskId(), "sandbox")
-	sbxFindings, sbxErr := analyzeViaSandbox(ctx, req.GetTaskId(), req.GetProjectPath(), sandboxAssignmentModeA(), sbxEmit)
+	// ADR-225 D3: 增量任务的任务卡注入变更清单+diff（沙箱代码树仍为全量；
+	// 非增量请求零行为差异——assignment 与现状逐字节一致）
+	assignment := sandboxAssignmentModeA()
+	if isIncrementalAssignment(req.GetChangedFiles(), req.GetDeletedFiles(), req.GetIncrementalDiff()) {
+		assignment = sandboxAssignmentIncremental(req.GetChangedFiles(), req.GetDeletedFiles(),
+			req.GetIncrementalDiff(), req.GetProjectPath())
+	}
+	sbxFindings, sbxErr := analyzeViaSandbox(ctx, req.GetTaskId(), req.GetProjectPath(), assignment, sbxEmit)
 	if sbxErr != nil {
 		log.Printf("[dsh-runtime][%s] sandbox path unavailable (%s), falling back to RuleScan chain",
 			req.GetTaskId(), sandboxErrHint(sbxErr))
@@ -130,7 +137,9 @@ func (s *DSHRuntimeServiceImpl) runFiveAgentPipeline(ctx context.Context, req *p
 		p := strings.ToLower(f.GetLocation().GetFilePath())
 		if strings.Contains(p, "_test") || strings.Contains(p, "/test") || strings.Contains(p, "sample") || strings.Contains(p, "mock") {
 			f.AiVerdict = pb.AIVerdict_AI_VERDICT_NEEDS_MANUAL
-			f.AiReasoning = "quality-validator: located under test/sample path; LLM cross-validation unavailable — manual review required"
+			// [降级] 机器写入前缀（2026-09-09 用户报障"写入方：人工"误标）：该文本本身即
+			// "LLM 交叉验证不可用"的降级路径，与前缀约定对齐，消费端据此区分机器/人工写入
+			f.AiReasoning = "[降级] quality-validator: located under test/sample path; LLM cross-validation unavailable — manual review required"
 			suspicious++
 		}
 		if f.GetAiVerdict() == pb.AIVerdict_AI_VERDICT_FALSE_POSITIVE {
@@ -172,7 +181,9 @@ func (s *DSHRuntimeServiceImpl) runFiveAgentPipeline(ctx context.Context, req *p
 			LlmInferenceMs:  llmMs,
 		},
 	}
-	return &pb.RunAIAnalysisResponse{Result: res, FixSuggestions: fixSuggestions}, nil
+	// R56: 降级=沙箱路径失败（sbxErr），与 RuleScan 是否有产出无关——
+// :117 的 fallbackUsed 被"是否零发现"语义覆盖，不能作标志源
+return &pb.RunAIAnalysisResponse{Result: res, FixSuggestions: fixSuggestions, Degraded: sbxErr != nil}, nil
 }
 
 // buildFixSuggestion — Fix Advisor 出口（ADR-176 偏差③4c 债偿还 / ADR-183）：
@@ -211,14 +222,16 @@ func filepathWalkLite(root string, fn func(path string, lines int32, lang string
 }
 
 // fetchFindingsByIDs — 从 result-service 逐条取 finding 实体（09 §2: findings 权威存储）。
-func fetchFindingsByIDs(ids []string) []*pb.UnifiedFinding {
+// R46: 连接失败/查询错误向上传播——此前静默返回空/部分集合，AI 验证对象无声缩水。
+// 单条 NotFound（finding 已被删除的竞态）跳过不视为错误。
+func fetchFindingsByIDs(ids []string) ([]*pb.UnifiedFinding, error) {
 	out := []*pb.UnifiedFinding{}
 	if len(ids) == 0 {
-		return out
+		return out, nil
 	}
 	conn, closeFn, err := dial(cfgAddr("result", "CODEAUDIT_RESULT_ADDR")) // ADR-212: 与持久化侧同源
 	if err != nil {
-		return out
+		return out, fmt.Errorf("dial result-service: %w", err)
 	}
 	defer closeFn()
 	client := pb.NewResultServiceClient(conn)
@@ -226,12 +239,18 @@ func fetchFindingsByIDs(ids []string) []*pb.UnifiedFinding {
 	defer cancel()
 	for _, id := range ids {
 		resp, err := client.GetFinding(ctx, &pb.GetFindingRequest{FindingId: id})
-		if err != nil || resp.GetFinding() == nil {
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				continue
+			}
+			return out, fmt.Errorf("get finding %s: %w", id, err)
+		}
+		if resp.GetFinding() == nil {
 			continue
 		}
 		out = append(out, resp.GetFinding())
 	}
-	return out
+	return out, nil
 }
 
 // fetchFindingsByTask — 按 task 翻页取全部 findings。

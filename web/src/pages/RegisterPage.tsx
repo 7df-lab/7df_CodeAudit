@@ -68,7 +68,7 @@ export default function RegisterPage() {
           <Form.Item
             name="password"
             label="密码"
-            extra="至少 8 位，须同时包含字母与数字（07 §账号安全）"
+            extra="至少 8 位，须同时包含字母与数字"
             rules={[
               { required: true, message: '请输入密码' },
               { min: 8, message: '至少 8 位' },

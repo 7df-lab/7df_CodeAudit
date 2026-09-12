@@ -84,17 +84,20 @@ export function appendAiChunk(
   if (cursor === 0 || chunkStart > cursor) {
     return { text: chunkText, cursor: nextCursor };
   }
-  // 衔接：只取 cursor 之后新增的字节（按 utf-8 边界切；服务端 chunk 为完整 utf-8 文本，
-  // 跳过前缀字节后仍从字符边界起步）
+  // 衔接：只取 cursor 之后新增的字节（按 utf-8 边界切）。步进按完整 code point
+  // 计算（String.fromCodePoint 的字节长）：代理对（emoji 等 4 字节字符）占 2 个
+  // UTF-16 code unit，按单 code unit 取 Buffer.byteLength 会把孤立代理项算成 3 字节
+  // （CESU-8），skip 落在代理对中间时会劈开字符、往渲染文本里塞进孤立代理项（B2-8）
   const skip = cursor - chunkStart;
   let off = 0;
   let rest = chunkText;
-  while (off < skip) {
-    // 找到覆盖 skip 偏移的字符边界（多字节字符不撕裂）
-    const step = Buffer.byteLength(rest[0] ?? '', 'utf8') || 1;
+  while (off < skip && rest.length > 0) {
+    // 找到覆盖 skip 偏移的字符边界（多字节字符/代理对不撕裂）
+    const cp = rest.codePointAt(0) ?? 0;
+    const step = Buffer.byteLength(String.fromCodePoint(cp), 'utf8') || 1;
     if (off + step > skip) break;
     off += step;
-    rest = rest.slice(1);
+    rest = rest.slice(cp > 0xffff ? 2 : 1);
   }
   return { text: text + rest, cursor: nextCursor };
 }
@@ -199,8 +202,9 @@ export interface ProgressNode {
   /** markdown 折叠无必要：扁平列表，无子节点 */
 }
 
-const STAGE_LABELS: Record<string, string> = {
-  STAGE_TYPE_UNSPECIFIED: '未分类阶段',
+// 阶段类型标签：键集 = proto StageType 七枚举（parity 闸门 A8 全等），文案对齐 web STAGE_TYPE。
+export const STAGE_LABELS: Record<string, string> = {
+  STAGE_TYPE_UNSPECIFIED: '未指定',
   STAGE_TYPE_CODE_ANALYSIS: '代码分析',
   STAGE_TYPE_SAST_SCAN: 'SAST 扫描',
   STAGE_TYPE_AI_INFERENCE: 'AI 推理',
@@ -218,15 +222,31 @@ const STAGE_ICONS: Record<string, string> = {
   STAGE_STATUS_UNSPECIFIED: 'circle',
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  TASK_STATUS_PENDING: '待启动',
-  TASK_STATUS_RUNNING: '运行中',
-  TASK_STATUS_PAUSED: '已暂停',
+// 阶段状态中文标签（与 STAGE_ICONS 同键集；原为 buildProgressItems 循环内重建，提升到模块级）
+const STAGE_STATUS_LABELS: Record<string, string> = {
+  STAGE_STATUS_PENDING: '等待中',
+  STAGE_STATUS_RUNNING: '进行中',
+  STAGE_STATUS_COMPLETED: '完成',
+  STAGE_STATUS_FAILED: '失败',
+  STAGE_STATUS_SKIPPED: '跳过',
+  STAGE_STATUS_UNSPECIFIED: '—',
+};
+
+// 任务状态标签：键集 = proto TaskStatus 十一枚举（伞仓 parity 闸门 check-wiring A8
+// 全等），文案对齐 web/src/dict/index.ts 的 TASK_STATUS 表（web 为文案权威）。
+// golden 键集锁见 test/progressModel.test.ts（防未来漂移静默）。
+export const STATUS_LABELS: Record<string, string> = {
+  TASK_STATUS_UNSPECIFIED: '未知',
+  TASK_STATUS_CREATED: '已创建',
+  TASK_STATUS_PENDING: '保留值', // 审批流废除（2026-09-01）后不再产生，仅历史数据兼容
+  TASK_STATUS_QUEUED: '已排队',
+  TASK_STATUS_RUNNING: '执行中',
   TASK_STATUS_COMPLETED: '已完成',
-  TASK_STATUS_CANCELLED: '已取消',
-  TASK_STATUS_TIMEOUT: '已超时',
-  TASK_STATUS_DEAD: '异常终止',
   TASK_STATUS_FAILED: '失败',
+  TASK_STATUS_CANCELLED: '已取消',
+  TASK_STATUS_TIMEOUT: '超时',
+  TASK_STATUS_DEAD: '重试耗尽',
+  TASK_STATUS_PAUSED: '已暂停',
 };
 
 export const stageLabel = (type: string, stageId: string): string => STAGE_LABELS[type] ?? stageId;
@@ -272,24 +292,16 @@ export function buildProgressItems(state: ProgressState): ProgressNode[] {
     const start = parseTsMs(s.started_at);
     const end = parseTsMs(s.completed_at) ?? (s.status === 'STAGE_STATUS_RUNNING' ? Date.now() : null);
     const dur = start !== null && end !== null ? fmtDuration(end - start) : undefined;
-    const statusZh: Record<string, string> = {
-      STAGE_STATUS_PENDING: '等待中',
-      STAGE_STATUS_RUNNING: '进行中',
-      STAGE_STATUS_COMPLETED: '完成',
-      STAGE_STATUS_FAILED: '失败',
-      STAGE_STATUS_SKIPPED: '跳过',
-      STAGE_STATUS_UNSPECIFIED: '—',
-    };
     nodes.push({
       kind: 'stage',
       id: s.stage_id,
       label: stageLabel(s.type, s.stage_id),
-      description: [statusZh[s.status] ?? s.status, dur].filter(Boolean).join(' · '),
+      description: [STAGE_STATUS_LABELS[s.status] ?? s.status, dur].filter(Boolean).join(' · '),
       icon: STAGE_ICONS[s.status] ?? 'circle',
       tooltip: [
         `阶段：${stageLabel(s.type, s.stage_id)}`,
         `stage_id：${s.stage_id}`,
-        `状态：${statusZh[s.status] ?? s.status}`,
+        `状态：${STAGE_STATUS_LABELS[s.status] ?? s.status}`,
         dur ? `耗时：${dur}` : null,
         s.error_message ? `错误：${s.error_message}` : null,
       ].filter(Boolean).join('\n'),

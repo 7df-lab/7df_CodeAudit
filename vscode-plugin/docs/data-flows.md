@@ -14,7 +14,7 @@
 | refresh token | SecretStorage `codeaudit.refresh` | login / refresh / boot 读取 | `boot()` 在 activate 后异步执行，完成后重算 `loggedIn` 上下文并触发任务恢复 | extension.test.ts › 恢复链路（依赖 boot 时序） |
 | 上次任务 ID | **workspaceState** `codeaudit.lastTaskId` | doScan 建任务 / bindTask 绑定 | 字符串；平台删除该任务后被清空（写 `undefined`） | extension.test.ts › 恢复链路 404 分支 |
 | 项目绑定 | 工作区 `.vscode/settings.json` `codeaudit.projectId` | selectProject 命令 | 由 VS Code 配置系统托管（Workspace 目标） | guards.test.ts › 配置键守卫 |
-| 修复快照 | **globalStorage** `checkpoints/cp-<ts>-<seq>/` | 每次补丁落盘前 | `manifest.json`：`{绝对路径: 内容文件名|null}`；null=修复前不存在（回滚=删除）；内容文件名为路径消毒串；**checkpoint 保留不删**（支持回滚后再次应用） | checkpoint.test.ts 8 例 |
+| 修复快照 | **globalStorage** `checkpoints/cp-<ts>-<seq>/` | 每次补丁落盘前 | `manifest.json`：`{绝对路径: 内容文件名|null}`；null=修复前不存在（回滚=删除）；内容文件名为路径消毒串；**同一文件在全部 checkpoint 中的条目上限 100（CHECKPOINT_PER_FILE_KEEP，超限从最旧 cp 移除该文件条目，manifest 清空则整目录删除；被清理的旧登记回滚走既有「缺失/损坏」降级）** | checkpoint.test.ts 系列（含每文件上限 2 例） |
 | 修复登记 | globalStorage `fix-registry.json` | recordApplied / markRolledback | `FixRecord[]`（findingId 唯一键，applied⇄rolledback 状态机）；损坏视为无记录 | fixRegistry.test.ts 5 例 |
 
 ## 2. 状态机
@@ -35,10 +35,16 @@
 - 上下文键派生：`taskRunning` = watchTask 置位、终态/onTaskGone 清位；`taskPaused` 跟随快照 status；`hasTask` = 有任务记录。
 - `cancelRequested`：用户主动取消置位，终态分支据此把非 COMPLETED 统一归因为「已取消」。
 
-### 2.2 扫描互斥
+### 2.2 扫描互斥 / 修复写盘互斥
 
 `scanning` 布尔：doScan 入口检查（进行中→警告拒绝）→ 终态（`terminal` 事件）或 doScan 异常时释放。
 onTaskGone 也释放。锁定测试：extension.test.ts › 扫描互斥。
+
+`fixing` 布尔（B2-6 扩展）：工作区**写盘互斥**，统一覆盖三路改盘——
+①applyMachinePatch（机器补丁主路径，含低风险批量）②doFixFinding 围栏 diff 兜底路径的
+改盘段 ③回滚（rollbackRecord 外科/整文件覆盖 + doRollback 无登记 restoreLatest 兜底）。
+任一进行中其余路径直接拒绝（不改盘、不建 checkpoint、finally 复位）。
+锁定测试：extension.test.ts › 修复互斥（B2-6）+ 写盘互斥扩展 2 例。
 
 ### 2.3 修复登记状态机
 
@@ -80,7 +86,8 @@ WS 帧/轮询快照 ──settle──▶ emit('snapshot') ─▶ extension 快�
 ### 4.1 扫描链路（doScan → watchTask → 终态）
 
 ```
-findFiles(20000上限, excludeGlobs) → minPackFiles 阈值检查 → adm-zip 打包（读盘失败跳过）
+findFiles(PACK_FILE_CAP=20000 上限, excludeGlobs；命中上限→警告收紧 excludes 或「继续打包」确认, B5-2)
+→ minPackFiles 阈值检查 → adm-zip 打包（读盘失败跳过）
 → POST /v1/uploads/archive → config.upload_file_id‖project_path 二选一（都缺→中止）
 → POST /v1/tasks → POST /v1/tasks/{id}/start → watchTask(taskId, zip字节数)
 → WS/轮询双通道 → 终态 COMPLETED → listFindings 翻页累积 → renderFindings（诊断+树）
@@ -124,10 +131,13 @@ rollbackFix(发现) / rollbackFixes(最近 applied 记录‖最近 checkpoint)
 tokens.boot() 完成 → restoreLastTask：
   workspaceState.lastTaskId 存在 → bindTask(silent)
   否则 已登录+已绑定项目 → latestCompletedTask（listTasks 首个 COMPLETED）→ bindTask(silent)
+绑定项目（selectProject 成功）且空闲 → 自动同步（人类指令 2026-09-12）：
+  latestCompletedTask(projectId) → 有则 bindTask（带轻通知）；无完成任务/失败静默（仅日志，不打扰绑定流程）；
+  扫描发起中/活跃非终态任务时不触发（避免 bindTask 切换确认门打扰）
 bindTask：snapshot→进度重建→非终态则 watchTask(resumeState=true) 续订→findings→renderFindings
-  404 not found → 清 lastTaskId（不恢复死任务）
+  404 not found 两径：恢复场景（taskId===旧指针）→ 清 lastTaskId；切换目标已删 → 保留旧绑定 + 警告（regressions #27）
 ```
-锁定测试：extension.test.ts › 恢复链路（COMPLETED 重建 / 非终态续订 / 404 清指针）。
+锁定测试：extension.test.ts › 恢复链路（COMPLETED 重建 / 非终态续订 / 404 清指针）、› 绑定项目后自动同步。
 
 ### 4.5 沙箱收包校验支线（防空包白审）
 
@@ -140,8 +150,11 @@ watchTask 携带 expectedUploadBytes（zip 字节数）→ 每次快照后（一
 
 ### 4.6 任务消亡支线
 
-WS 1011 "not found" 或快照 404 not found → onTaskGone → 本地落 `TASK_STATUS_DEAD` + 上下文清位 + 互斥释放 + 警告。
-锁定测试：taskWatcher.test.ts 2 例 + extension.test.ts › onTaskGone 落终态。
+WS 1011 "not found" 或快照 404 not found → onTaskGone（**双层归属守卫 B5-1**：pollOnce await 后复查
+watcher `closed`——已关闭的在途 404 不触发；extension 回调头部查 `taskId===lastTaskId`——迟到帧
+不污染新任务）→ 本地落 `TASK_STATUS_DEAD` + 上下文清位 + 互斥释放 + 警告。
+锁定测试：taskWatcher.test.ts 3 例（含 B5-1 在途 404 复查）+ extension.test.ts › onTaskGone 落终态
++ extension.test.ts › 旧 watcher 在途 404/迟到的 WS 1011（回归锁 B5-1）。
 
 ## 5. 宿主进程交互（扩展 → VS Code）
 
@@ -149,7 +162,7 @@ WS 1011 "not found" 或快照 404 not found → onTaskGone → 本地落 `TASK_S
 |---|---|---|
 | diff 审阅视图 | `vscode.diff(beforeUri, rightUri, title)`；beforeUri=`codeaudit-fix` scheme + base64 query 内容；右侧=当前文件/Move 目标/空文档（Delete） | extension.test.ts › diff 审阅数据 |
 | setContext | 6 个上下文键驱动 when 菜单/欢迎页/视图互斥 | guards.test.ts › 上下文键守卫 |
-| openExternal | 控制台 URL 推导（consoleUrl‖serverUrl:4173）+ `/tasks/{lastTaskId}` | extension.test.ts › 打开控制台 |
+| openExternal | 控制台 URL 推导（consoleUrl‖serverUrl 剥离端口→:80）+ `/tasks/{lastTaskId}` | extension.test.ts › 打开控制台 |
 | URI handler | 深链首段 → executeCommand 分发 | extension.test.ts › URI 深度链接分发 |
 | CodeAction | 诊断相交 + 文件路径匹配 → fixFinding QuickFix | extension.test.ts › 编辑器灯泡 |
 | 输出通道 | 「CodeAudit」日志：登录/打包清单/任务启动/WS 原始事件（open/close/error）/终态统计/低风险跳过原因 | 诊断事实源（WS 静默回退轮询时可区分「没推」与「连不上」） |

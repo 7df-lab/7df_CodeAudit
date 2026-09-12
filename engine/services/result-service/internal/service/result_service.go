@@ -428,12 +428,33 @@ func (s *ResultServiceImpl) GetTaskResultStats(ctx context.Context, req *pb.GetT
 }
 
 // ExportFindings - 依据: codeaudit_common.proto L932 + L1245-L1246
+// validateTaskIDForPath — 路径消毒：task_id 仅允许 [A-Za-z0-9._-] 且不得含 ".."（R53）。
+func validateTaskIDForPath(taskID string) error {
+	if len(taskID) > 128 {
+		return status.Error(codes.InvalidArgument, "task_id too long")
+	}
+	for _, r := range taskID {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.'
+		if !ok {
+			return status.Errorf(codes.InvalidArgument, "task_id contains illegal character %q", r)
+		}
+	}
+	if strings.Contains(taskID, "..") {
+		return status.Error(codes.InvalidArgument, "task_id must not contain '..'")
+	}
+	return nil
+}
+
 // SetStorageAddr — ADR-200 补遗: findings 导出归档地址（env CODEAUDIT_STORAGE_ADDR）。
 func (s *ResultServiceImpl) SetStorageAddr(addr string) { s.storageAddr = addr }
 
 func (s *ResultServiceImpl) ExportFindings(ctx context.Context, req *pb.ExportFindingsRequest) (*pb.ExportFindingsResponse, error) {
 	if req.GetTaskId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "task_id is required")
+	}
+	// R53: task_id 进落盘文件名/对象键——白名单消毒防 ../ 路径穿越（gw- 前缀+受限字符集）
+	if err := validateTaskIDForPath(req.GetTaskId()); err != nil {
+		return nil, err
 	}
 
 	// 依据: 03 §5 分页规范 - 获取所有 findings
@@ -576,6 +597,8 @@ func (s *ResultServiceImpl) modelToUnified(f *model.Finding) *pb.UnifiedFinding 
 		IsUnique:        f.IsUnique,
 		// ADR-152: 复核时间回读（页面"复核状态"列数据源；此前恒为空）
 		UpdatedAt: timestamppb.New(f.UpdatedAt),
+		// ADR-225: 增量继承标记回读（空=实扫产出；非空=继承来源任务——双视图筛选数据源）
+		InheritedFromTaskId: f.InheritedFrom,
 	}
 }
 

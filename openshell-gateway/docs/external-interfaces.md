@@ -26,12 +26,13 @@
 | 子命令 | 前置动作 | 预期输出 | 失败语义 |
 |---|---|---|---|
 | `check`/`--check` | 对 4 文件逐一 md5 本地 vs 远端 | 逐行 `drift: <file>`；全同步时 `in sync`；有漂移时追加一行 `^ CD differs from LXC runtime; run deploy.sh to apply` | 仓内文件缺失 → `missing in CD: <file>` stderr、**exit 1**；漂移本身**不是失败**（exit 0，只报告） |
-| `deploy` | 同上 md5 差量 | 逐文件 `unchanged: <f>` 或 `pushed: <f>`；全同步时先打 `openshell-gateway: in sync, ensure only`；结束前执行 `gateway_lifecycle.sh ensure`（其输出透传） | 任一仓内文件缺失 exit 1；ensure 失败则整体失败 |
+| `deploy` | 同上 md5 差量 | **REMOTE 非空**：逐文件 `unchanged: <f>` 或 `pushed: <f>`；**REMOTE=""（本机模式）**：打 `REMOTE 空=本机模式，跳过推送`，不做任何推送（B1-5 审计修复，push 路径纳入 REMOTE 契约）；全同步时先打 `openshell-gateway: in sync, ensure only`；结束前执行 `gateway_lifecycle.sh ensure`（其输出透传） | 任一仓内文件缺失 exit 1；ensure 失败则整体失败 |
 | `status`/`start`/`stop`/`restart` | — | `exec gateway_lifecycle.sh <cmd>`，输出与退出码完全透传 | 同 lifecycle 对应子命令 |
 | `logs [N]` | — | `exec gateway_lifecycle.sh logs [N]`（N 缺省由 lifecycle 定 50） | 同 lifecycle |
 
 **deploy 子命令的副作用序列**（差量下发契约）：
 
+0. **REMOTE=""（本机模式）短路**：跳过 1–2 的全部远程动作（`pct push` 是宿主→LXC 专用，本机无 LXC 可推），打印提示后直接进 3；文件以仓内目录为事实源
 1. `run_remote mkdir -p $DEPLOY_DIR`
 2. 对每个 md5 有差异的文件：远端 `cp <f> <f>.bak.<YYYYMMDDHHMMSS>`（失败容忍，`|| true`）→ **`pct push $VMID $f $DEPLOY_DIR/$f`** → `pushed: <f>`
 3. `./gateway_lifecycle.sh ensure`（同目录相对调用，继承全部环境）
@@ -53,7 +54,7 @@
 | `REMOTE` | `pct exec 107 --` | 命令前缀；**空串 = 本机执行**（`${REMOTE-…}`，dind 实测固化的契约，回归档案 R1） |
 | `DEPLOY_DIR` | `/root/os-deploy/deploy/docker` | compose 项目目录（TOML/compose 运行副本所在） |
 | `SERVICE` | `gateway` | compose 服务名，必须等于 compose 文件的服务键 |
-| `ROUTING_DOMAIN` | `openshell.internal` | ensure 钉住的路由域 |
+| `ROUTING_DOMAIN` | `sandbox.codeaudit.internal` | ensure 钉住的路由域 |
 | `LIVENESS_HOST`/`LIVENESS_PORT` | `127.0.0.1`/`8080` | TCP 存活探测目标（不是 HTTP！8081 健康端点发布但不可达，见 data-flows.md D2） |
 | `LIVENESS_TIMEOUT_SECS` | `60` | 存活等待上限 |
 | `JWT_DIR` | `/var/lib/openshell/tls/jwt` | JWT 签名密钥目录（须与 TOML gateway_jwt 段同源） |
@@ -64,7 +65,7 @@
 | 子命令 | 预期 stdout | 预期 exit | 副作用 |
 |---|---|---|---|
 | `ensure` | JWT/supervisor 自举提示（如触发）→ `gateway container absent/not running — compose up -d`（仅容器缺失时）→ `enforcing routing domain …` + `rewrote/inserted server_sans …` + `backup: …`（仅需钉域时）或 `routing domain already enforced: server_sans=…` → `gateway liveness OK (…)` → `verify OK: server_sans=…, liveness …` | 0；任步失败非 0 | 幂等：改 TOML（留 .bak）、compose restart（仅改域时）、compose up -d（仅容器缺失时）；**全新宿主自足**：预置 JWT 密钥（一次性 generate-certs）、补拉 supervisor 镜像（`:local` 404 则拉 `:latest` retag） |
-| `verify` | `verify OK: server_sans=["*.openshell.internal"], liveness 127.0.0.1:8080` | 0；server_sans 不符或 TCP 不通 → `ERROR: …` stderr、1 | 只读，不改任何东西 |
+| `verify` | `verify OK: server_sans=["*.sandbox.codeaudit.internal"], liveness 127.0.0.1:8080` | 0；server_sans 不符或 TCP 不通 → `ERROR: …` stderr、1 | 只读，不改任何东西 |
 | `status` | `== compose service ==` + compose ps 输出、`== routing domain ==` + `server_sans = <值>`（未设时 `(<unset> -> gateway default: openshell.localhost)`）、`== liveness ==` + `OK (…)`/`DOWN` | 0；DOWN 时 1 | 只读 |
 | `start` | compose start 输出 + `gateway liveness OK` | 0 / 超时 1 | compose start |
 | `stop` | compose stop 输出 | 0 | compose stop |
@@ -84,7 +85,7 @@
 |---|---|---|---|
 | gRPC 控制面 `:8080` | manager(:18800)/openshell CLI 的 sandbox/provider 调用（protobuf over gRPC） | 沙箱编排（DooD 拉起兄弟容器）、provider 存储、令牌签发；`allow_unauthenticated_users = true` → **控制面无鉴权**，信任边界 = LXC 内网（端口不得出公网） | `gateway.toml` [openshell.gateway] + [auth]；compose ports 8080 |
 | 健康端点 `:8081` | `GET /healthz`、`GET /readyz` | **发布了但宿主侧不可达**（容器内仅绑 loopback 且健康端点无桥接监听，curl reset）——2026-09-05 实测固化；存活探测一律走 TCP 8080 或 manager `GET /api/v1/gateway/health` | `health_bind_address`；compose 8081 映射 |
-| 服务路由域 | `http://{workspace}--{sandbox}--{service}.openshell.internal:8080/` | 按 SAN 路由到对应沙箱服务端口；旧默认域 `openshell.localhost` 仍兜底接受 | `server_sans`（lifecycle ensure 幂等钉住） |
+| 服务路由域 | `http://{workspace}--{sandbox}--{service}.sandbox.codeaudit.internal:8080/` | 按 SAN 路由到对应沙箱服务端口；旧默认域 `openshell.localhost` 仍兜底接受 | `server_sans`（lifecycle ensure 幂等钉住） |
 | 沙箱回调 | 沙箱容器 → `host.openshell.internal:8080`（网关签发的 JWT，ttl 3600s） | 回到网关 gRPC；**宿主端口必须同号发布 8080** 才能路由进网关容器 | `grpc_endpoint` scheme + compose 端口映射 |
 
 ---
@@ -114,7 +115,7 @@
 | 键 | 预期值 | 违反后果 |
 |---|---|---|
 | `[openshell] version` | `1` | 二进制拒绝加载 |
-| `server_sans` | `["*.openshell.internal"]`，**全文件恰好一行** | 偏离 → verify 失败；多行 → lifecycle 只认第一行，第二行成暗雷 |
+| `server_sans` | `["*.sandbox.codeaudit.internal"]`，**全文件恰好一行** | 偏离 → verify 失败；多行 → lifecycle 只认第一行，第二行成暗雷 |
 | `bind_address` | `127.0.0.1:8080` | 配 0.0.0.0 破坏"仅 loopback+桥接自动监听"口径 |
 | `health_bind_address` | `127.0.0.1:8081` | — |
 | `compute_drivers` | `["docker"]` | — |

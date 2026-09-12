@@ -1,40 +1,55 @@
 // T2 完成标准：04 §3 五模式向导分支覆盖（ADR-186）
 // ADR-203: 迁移到 fakeGateway（axios adapter 层）——api/client 真实代码全量执行
-// （类型化端点/FormData 上传/拦截器链），handler 返回响应，未建模路由响亮失败。
+// （类型化端点/拦截器链），handler 返回响应，未建模路由响亮失败。
 // 此前 vi.mock 整模块曾长期掩盖 mock 缺 api 具名导出（queryFn 抛错被 react-query 吞，
-// 数据从未加载仍全绿）。创建请求体矩阵（upload_file_id/project_path 优先级）在本文件锁定。
+// 数据从未加载仍全绿）。2026-09-09 人类指令起请求体矩阵收窄为"config 无任务级源码键"
+// （upload_file_id/project_path 档随任务级源码覆盖一并退役），在本文件锁定。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import TaskNewPage, { DEFAULT_SCAN_MODE, MODE_SPECS } from '../pages/tasks/TaskNewPage';
-import { useFakeGateway } from '../testsupport/fakeGateway';
+import { httpError, useFakeGateway } from '../testsupport/fakeGateway';
 
 // 向导共用的最小网关模型（文件级注册，beforeEach 对全部用例生效；请求日志按用例隔离）
+// 2026-09-09 人类指令: 任务向导不再承载任务级源码覆盖——p1 无来源(警告)/p2 仓库/p3 上传包
+// 建任务引导（2026-09-11 报障修复）：projects 载荷/故障可按用例注入（defaultProjects 轮换）
+const defaultProjects = {
+  projects: [
+    { project_id: 'p1', name: 'Demo', repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null },
+    { project_id: 'p2', name: 'RepoDemo', repo_url: 'https://git.example.com/team/repo.git', default_branch: 'main', default_scan_mode: '', created_at: null },
+    { project_id: 'p3', name: 'ZipDemo', repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null },
+  ],
+  pagination: { next_cursor: '', has_next: false, total: 3 },
+};
+let projectsPayload: unknown = defaultProjects;
+let projectsFail = false;
 const gateway = useFakeGateway({
-  'GET /v1/projects': {
-    projects: [{ project_id: 'p1', name: 'Demo', repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null }],
-    pagination: { next_cursor: '', has_next: false, total: 1 },
+  'GET /v1/projects': () => {
+    if (projectsFail) throw httpError(500, { error: 'project service down' });
+    return projectsPayload;
   },
-  // proto L845: GetProject 返回裸 Project；repo_url 为空 → 非仓库模式（手填路径/上传件）
+  // proto L845: GetProject 返回裸 Project；repo_url 为空 → 非仓库模式（源码走项目 config 上传件）
   'GET /v1/projects/p1': { project_id: 'p1', name: 'Demo', repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null },
   'GET /v1/projects/p1/config': { project_id: 'p1', config: {} },
+  'GET /v1/projects/p2': { project_id: 'p2', name: 'RepoDemo', repo_url: 'https://git.example.com/team/repo.git', default_branch: 'main', default_scan_mode: '', created_at: null },
+  'GET /v1/projects/p2/config': { project_id: 'p2', config: {} },
+  'GET /v1/projects/p3': { project_id: 'p3', name: 'ZipDemo', repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null },
+  'GET /v1/projects/p3/config': { project_id: 'p3', config: { upload_file_id: 'fid-9', upload_file_name: 'src.zip' } },
   'GET /v1/tools': {
     tools: [
       { tool_id: 'bandit', name: 'bandit', supported_languages: ['python'], output_format: 'bandit', valid: true, errors: [] },
       { tool_id: 'codeql', name: 'codeql (parser only; no executor mapping)', supported_languages: [], output_format: 'json', valid: false, errors: ['no executor mapping'] },
     ],
   },
-  // ADR-200: storage 直传（gateway 返回 file_id → config.upload_file_id）
-  'POST /v1/uploads/archive': { upload_id: 'u1', file_id: 'fid-1', file_path: 'uploads/u1.zip', size_bytes: 2048 },
   'POST /v1/tasks': { task_id: 't-new-1' },
 });
 
-function renderWizard() {
+function renderWizard(initialEntry = '/tasks/new') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/tasks/new']}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <TaskNewPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -82,26 +97,15 @@ describe('TaskNewPage 向导', () => {
   });
 });
 
-describe('TaskNewPage 上传件与扫描路径（ADR-202 回归）', () => {
+describe('TaskNewPage 项目级源码来源（2026-09-09 人类指令：项目层级决定源码仓库）', () => {
   // 走到参数步：选项目 → 模式B 纯AI（needsSastTools=false，绕开工具多选）
-  async function gotoParamsStep() {
+  async function gotoParamsStep(projectLabel: string) {
     fireEvent.mouseDown(screen.getByRole('combobox'));
-    fireEvent.click(await screen.findByText('Demo (p1)'));
+    fireEvent.click(await screen.findByText(projectLabel));
     fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step0 → 1
     fireEvent.click(await screen.findByText(/模式B 纯AI/));
     fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step1 → 2
-    await screen.findByText('上传代码压缩包（推荐）');
-  }
-
-  function uploadZip(container: HTMLElement) {
-    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
-    const file = new File(['PK\x03\x04'], 'code.zip', { type: 'application/zip' });
-    Object.defineProperty(input, 'files', { value: [file], configurable: true });
-    fireEvent.change(input);
-  }
-
-  function pathInput(): HTMLInputElement {
-    return screen.getByPlaceholderText('/path/to/project') as HTMLInputElement;
+    await screen.findByText(/源码来源|未配置源码来源/);
   }
 
   // ADR-203 资金流：关掉自动启动（start 链路属 stateMachine 测试域），触发创建并捕获请求体
@@ -115,68 +119,91 @@ describe('TaskNewPage 上传件与扫描路径（ADR-202 回归）', () => {
     return post!.body as Record<string, unknown>;
   }
 
-  it('上传成功后扫描路径免填：非必填+置灰，空路径可进确认页', async () => {
+  it('向导不提供任务级源码覆盖：无上传控件、无路径输入（原 ADR-202 档退役）', async () => {
     const { container } = renderWizard();
-    await gotoParamsStep();
-    expect(pathInput().disabled).toBe(false);
-
-    uploadZip(container);
-    await screen.findByText(/已上传至存储/); // ADR-200 直传 storage 成功提示（真 uploadArchive 经 fakeGateway）
-    expect(pathInput().disabled).toBe(true); // ADR-202: 上传件优先，路径置灰免填
-
-    fireEvent.click(screen.getByRole('button', { name: '下一步：确认' }));
-    // 空路径通过校验直达确认页，且回显 storage 通道而非路径
-    expect(await screen.findByText(/已上传存储（启动时从 storage 拉回解包）/)).toBeTruthy();
-
-    // 受控 fileList（ADR-202）：上一步往返后上传件展示不丢，路径仍置灰
-    fireEvent.click(screen.getByRole('button', { name: '上一步' }));
-    expect(await screen.findByText('code.zip')).toBeTruthy();
-    expect(pathInput().disabled).toBe(true);
+    await gotoParamsStep('Demo (p1)');
+    expect(container.querySelector('input[type="file"]')).toBeNull();
+    expect(screen.queryByPlaceholderText('/path/to/project')).toBeNull();
   });
 
-  it('100MB 本地预检：超限文件提示且不发起上传请求（2026-09-08 限额批次）', async () => {
-    const { container } = renderWizard();
-    await gotoParamsStep();
-    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
-    const big = new File(['PK\x03\x04'], 'big.zip', { type: 'application/zip' });
-    Object.defineProperty(big, 'size', { value: 101 * 1024 * 1024 }); // jsdom 免真分配 100MB
-    Object.defineProperty(input, 'files', { value: [big], configurable: true });
-    fireEvent.change(input);
-    await screen.findByText(/仅支持 zip\/tar\.gz，≤100MB/);
-    expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/uploads/archive')).toBe(false);
-  });
-
-  it('移除已上传件后路径恢复手填模式：重新启用且必填', async () => {
-    const { container } = renderWizard();
-    await gotoParamsStep();
-    uploadZip(container);
-    await screen.findByText(/已上传至存储/);
-
-    fireEvent.click(container.querySelector('.ant-upload-list-item-actions button')!); // 移除上传件
-    expect(pathInput().disabled).toBe(false); // ADR-202: file_id 已清，路径模式恢复
-    expect(container.querySelector('.ant-upload-list-item')).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: '下一步：确认' }));
-    // 空路径被必填规则拦下，停留参数步
-    expect(await screen.findByRole('button', { name: '下一步：确认' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '创建任务' })).toBeNull();
-  });
-
-  it('ADR-202/200 创建请求体矩阵①：上传件优先——config 只含 upload_file_id，无 project_path', async () => {
-    const { container } = renderWizard();
-    await gotoParamsStep();
-    uploadZip(container);
-    await screen.findByText(/已上传至存储/);
-    const body = (await createAndCaptureTaskBody()) as { config: Record<string, string> };
-    expect(body.config).toEqual({ upload_file_id: 'fid-1' });
-  });
-
-  it('ADR-202/200 创建请求体矩阵②：未上传手填路径——config.project_path 兜底生效', async () => {
+  it('无来源项目：参数步与确认页如实警告（启动将失败）', async () => {
     renderWizard();
-    await gotoParamsStep();
-    fireEvent.change(pathInput(), { target: { value: '/srv/code/demo' } });
+    await gotoParamsStep('Demo (p1)');
+    expect(screen.getByText(/该项目未配置源码来源/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '下一步：确认' }));
+    expect(await screen.findByText(/未配置——启动将失败/)).toBeTruthy();
+  });
+
+  it('仓库项目：源码来源只读展示仓库地址（自动拉取）', async () => {
+    renderWizard();
+    await gotoParamsStep('RepoDemo (p2)');
+    expect(screen.getByText(/源码来源（项目级）：仓库自动拉取（https:\/\/git\.example\.com\/team\/repo\.git）/)).toBeTruthy();
+  });
+
+  it('上传型项目：源码来源显示压缩包原始文件名（config.upload_file_name）', async () => {
+    renderWizard();
+    await gotoParamsStep('ZipDemo (p3)');
+    expect(screen.getByText(/源码来源（项目级）：项目压缩包：src\.zip/)).toBeTruthy();
+  });
+
+  it('ADR-202/200 请求体矩阵收窄：config 不再携带任务级源码键（恒无 upload_file_id/project_path）', async () => {
+    renderWizard();
+    await gotoParamsStep('Demo (p1)');
     const body = (await createAndCaptureTaskBody()) as { sast_tools: string[]; config: Record<string, string> };
-    expect(body.config).toEqual({ project_path: '/srv/code/demo' }); // 无上传件 → 路径兜底，键不混杂
+    expect(body.config).toEqual({}); // 模式B 无审核键 → 空 config；源码键已退役
     expect(body.sast_tools).toEqual([]); // 模式B 无工具
+    expect('upload_file_id' in body.config).toBe(false);
+    expect('project_path' in body.config).toBe(false);
+  });
+});
+
+// 建任务引导（2026-09-11 用户报障修复）：加载失败显性化+重试 / 空列表引导 / 深链预选
+describe('TaskNewPage 建任务引导（2026-09-11 报障修复）', () => {
+  it('空列表：下拉空态引导"前往项目页创建"（Link → /projects）', async () => {
+    projectsPayload = { projects: [], pagination: { next_cursor: '', has_next: false, total: 0 } };
+    try {
+      renderWizard();
+      await screen.findByText('选择项目');
+      fireEvent.mouseDown(screen.getByRole('combobox'));
+      const link = await screen.findByRole('link', { name: '前往项目页创建' });
+      expect(link.getAttribute('href')).toBe('/projects');
+    } finally {
+      projectsPayload = defaultProjects;
+    }
+  });
+
+  it('项目列表加载失败：Alert 显性化 + 重试按钮（refetch 打到真实端点）', async () => {
+    projectsFail = true;
+    try {
+      renderWizard();
+      expect(await screen.findByText('项目列表加载失败')).toBeTruthy();
+      const gets = () => gateway.requests.filter((r) => r.method === 'GET' && r.url === '/v1/projects').length;
+      const before = gets();
+      fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
+      await waitFor(() => expect(gets()).toBeGreaterThan(before));
+    } finally {
+      projectsFail = false;
+    }
+  });
+
+  it('?project_id= 深链预选：命中列表项 → 预选 RepoDemo(p2)，下一步可点', async () => {
+    renderWizard('/tasks/new?project_id=p2');
+    await screen.findByText('选择项目');
+    // 预选后 Select 渲染选中项标签（selection-item；antd input.value 恒空），下一步解锁
+    await waitFor(() =>
+      expect(document.body.querySelector('.ant-select-selection-item')?.textContent).toBe('RepoDemo (p2)'),
+    );
+    expect(screen.getByRole('button', { name: '下一步' })).toHaveProperty('disabled', false);
+  });
+
+  it('?project_id= 未命中列表项 → 保持未选（下一步禁用，不猜 ID）', async () => {
+    renderWizard('/tasks/new?project_id=p-absent');
+    await screen.findByText('选择项目');
+    // 等列表真实加载完成后再断言未预选（无选中项标签渲染）
+    await waitFor(() =>
+      expect(gateway.requests.some((r) => r.method === 'GET' && r.url === '/v1/projects')).toBe(true),
+    );
+    expect(document.body.querySelector('.ant-select-selection-item')).toBeNull();
+    expect(screen.getByRole('button', { name: '下一步' })).toHaveProperty('disabled', true);
   });
 });

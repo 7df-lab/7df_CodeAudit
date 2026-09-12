@@ -23,6 +23,7 @@ const strongPW = "passw0rd-X"
 
 func setupUserLifecycle(t *testing.T, mode string, codes []string) *handler.UserHandler {
 	t.Helper()
+	t.Setenv("CODEAUDIT_JWT_SECRET", "test-secret-r65") // R65 fail-fast 后测试须显式供密钥
 	store := repo.NewMemoryStore()
 	idm := idempotency.New()
 	svc := service.NewUserService(store)
@@ -262,7 +263,7 @@ func parseClaims(t *testing.T, token string) jwt.MapClaims {
 	t.Helper()
 	claims := jwt.MapClaims{}
 	_, err := jwt.ParseWithClaims(token, claims, func(tk *jwt.Token) (interface{}, error) {
-		return []byte("codeaudit-dev-secret-change-in-production"), nil
+		return []byte("test-secret-r65"), nil // R65: 与 setupUserLifecycle 供的密钥一致
 	})
 	if err != nil {
 		t.Fatalf("parse token: %v", err)
@@ -284,3 +285,75 @@ func roleOf(t *testing.T, token string) string {
 	role, _ := parseClaims(t, token)["role"].(string)
 	return role
 }
+
+// R43（2026-09-11 审计修复批次）: ListUsers 游标超界必须钳制返回空页——end 有钳而
+// offset 无，大 cursor 触发 slice 越界 panic（admin 面 DoS）。对齐 ListProjects 口径。
+func TestListUsers_CursorBeyondEnd_EmptyPage(t *testing.T) {
+	h := setupUserLifecycle(t, "open", nil)
+	for i, name := range []string{"usr1", "usr2", "usr3"} {
+		if _, err := h.CreateUser(context.Background(), &v1.CreateUserRequest{
+			Metadata: &v1.RequestMetadata{RequestId: "req-lu" + string(rune('0'+i))},
+			Username: name, Email: name + "@x.io", Password: strongPW,
+		}); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+	req := &v1.ListUsersRequest{Pagination: &v1.PaginationRequest{Cursor: "99999"}}
+	resp, err := h.ListUsers(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ListUsers cursor beyond end: %v", err)
+	}
+	if len(resp.GetUsers()) != 0 {
+		t.Fatalf("expected empty page, got %d users", len(resp.GetUsers()))
+	}
+	if resp.GetPagination().GetHasNext() {
+		t.Fatal("no next expected beyond end")
+	}
+}
+
+// B5-2（D2 裁决 2026-09-11）: token TTL 对齐契约 30min/7d——实现 1h/24h 与契约
+// （03 §4 / configs yaml access_ttl_min=30·refresh_ttl_day=7 / gateway taskwatch 推导）
+// 三方冲突；改代码对齐（现网影响仅 token 提前续期）。exp-iat 直读 JWT claims 断言。
+func TestTokenTTL_MatchesContract(t *testing.T) {
+	h := setupUserLifecycle(t, "open", nil)
+	resp, err := h.RegisterUser(context.Background(), registerReq("req-ttl", "ttluser", "ttl@x.io", strongPW, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ttlOf := func(tok string) int64 {
+		var claims jwt.MapClaims
+		if _, _, err := jwt.NewParser().ParseUnverified(tok, &claims); err != nil {
+			t.Fatalf("parse token: %v", err)
+		}
+		iat, iok := claims["iat"].(float64)
+		exp, eok := claims["exp"].(float64)
+		if !iok || !eok {
+			t.Fatalf("missing iat/exp claims")
+		}
+		return int64(exp) - int64(iat)
+	}
+	if got := ttlOf(resp.GetAccessToken()); got != 30*60 {
+		t.Fatalf("access ttl = %ds, want 1800 (30min, 03 §4)", got)
+	}
+	if got := ttlOf(resp.GetRefreshToken()); got != 7*24*3600 {
+		t.Fatalf("refresh ttl = %ds, want 604800 (7d, 03 §4)", got)
+	}
+}
+
+// R65（2026-09-12 待办收尾·账号面三件）：
+// ①登录失败文案必须合一——"user not found"vs"invalid password"经网关透传构成用户名枚举
+func TestLogin_UnifiedFailureMessage(t *testing.T) {
+	h := setupUserLifecycle(t, "open", nil)
+	if _, err := h.RegisterUser(context.Background(), registerReq("r65a", "realuser65", "real65@x.io", strongPW, "")); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	_, errExist := h.Login(context.Background(), &v1.LoginRequest{Username: "realuser65", Password: "wrong-pass-X"})
+	_, errNo := h.Login(context.Background(), &v1.LoginRequest{Username: "ghost65", Password: "wrong-pass-X"})
+	if errExist == nil || errNo == nil {
+		t.Fatal("both logins must fail")
+	}
+	if errExist.Error() != errNo.Error() {
+		t.Fatalf("failure messages must be identical (anti user-enumeration, R65):\n%q\n%q", errExist.Error(), errNo.Error())
+	}
+}
+

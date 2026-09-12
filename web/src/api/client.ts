@@ -12,7 +12,10 @@ export const TOKEN_KEY = 'codeaudit.refresh_token';
 export interface LoginResponse {
   access_token: string;
   refresh_token: string;
-  expires_in_s: number;
+  // B8-web（跨仓契约收口）：expires_in_s 是 proto int64（google.protobuf.Duration 风格秒数），
+  // protojson 序列化 int64 可能为字符串形态——类型放宽 string | number，消费点必须 Number() 归一
+  // （当前无消费点——login/register/refresh 只取令牌对；将来排期刷新定时器时在此口径下消费）。
+  expires_in_s: string | number;
 }
 
 export const api = axios.create({ baseURL: '/' });
@@ -132,6 +135,12 @@ async function requestRefresh(): Promise<string> {
   return data.access_token;
 }
 
+// axios 错误 → HTTP 状态码（审计 B3-3：mutation onError 文案统一携带状态码；
+// 403/503 等另有全局事件总线横幅，此处只补页面级即时反馈）
+export function errStatus(e: unknown): number | undefined {
+  return (e as { response?: { status?: number } } | undefined)?.response?.status;
+}
+
 // 代码压缩包上限 100MB（2026-09-08 用户指令）：与 gateway uploadMaxBytes（100MB）/
 // nginx client_max_body_size 100m 同源；页面 beforeUpload 用作本地预检，超限不发起请求。
 export const MAX_ARCHIVE_UPLOAD_BYTES = 100 * 1024 * 1024;
@@ -151,7 +160,10 @@ export async function uploadArchive(file: File): Promise<UploadArchiveResponse> 
   fd.append('file', file);
   const resp = await api.post('/v1/uploads/archive', fd, {
     headers: { 'Content-Type': 'multipart/form-data' },
-    timeout: 120_000,
+    // B4-3：120s→300s——大包（接近 100MB 上限）在慢速上行链路（家庭宽带/移动网络）
+    // 120s 内传不完，axios 客户端侧超时先于网关 300s 读写窗掐断，用户只见"上传失败"。
+    // 与 nginx proxy_read/send_timeout 300s 对齐。
+    timeout: 300_000,
   });
   return resp.data;
 }
@@ -285,6 +297,40 @@ export async function getReportContent(reportId: string): Promise<{ format: stri
   const content = String(resp.data ?? '');
   const format = content.trimStart().startsWith('<') ? 'html' : 'json';
   return { format, content };
+}
+
+// 报告窗口 CSP meta（审计 B3-2，纵深防御·双保险第一层）：报告 HTML 仅内联样式、无脚本——
+// 写入报告窗口前先注入此 meta（必须先于任何内容写入），default-src 'none' 全灭脚本/
+// 外链资源，style-src 'unsafe-inline' 保内联样式活。
+export const REPORT_WINDOW_CSP_META =
+  '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'">';
+
+// 报告窗口渲染（fix-plan-0911 §14 升级，双保险第二层·更硬）：打开 about:blank 宿主窗，
+// 在其中插入 <iframe sandbox src=blob:> 携带报告内容——sandbox 空 token 不含
+// allow-scripts / allow-same-origin，iframe 内脚本与同源权限全灭（纯渲染不需要任何
+// 能力，比 meta CSP 更硬）；同时 CSP meta 由本函数统一前置于 blob 内容，即便
+// sandbox 通道被降级（旧浏览器/扩展改写 iframe）meta 仍灭脚本。
+// HTML 分支原样传入；JSON 分支由调用方转义为 <pre> 文本后传入（保持旧转义行为）。
+export function openReportWindow(content: string, mime: 'text/html' | 'text/plain'): Window | null {
+  const w = window.open('about:blank', '_blank');
+  if (!w) return null;
+  const blob = new Blob([REPORT_WINDOW_CSP_META + content], { type: `${mime};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const iframe = w.document.createElement('iframe');
+  // 无 allow-scripts：脚本全灭；无 allow-same-origin：来源隔离（blob 亦不继承宿主源）
+  iframe.setAttribute('sandbox', '');
+  iframe.setAttribute('src', url);
+  iframe.setAttribute('title', '报告内容');
+  iframe.setAttribute('style', 'border:0;width:100%;height:100vh;display:block');
+  w.document.body.appendChild(iframe);
+  return w;
+}
+
+// 重新生成报告（审计 B3-5 接线，D4 裁定）：POST /v1/tasks/{task_id}/report →
+// ReportService/GenerateReport（幂等，网关生成幂等键；旧报告保留，新报告入列后经
+// ['reports'] 失效刷新）。报告中心"重新生成"按钮消费。
+export async function regenerateReport(taskId: string): Promise<{ result?: { report_id: string } }> {
+  return (await api.post(`/v1/tasks/${taskId}/report`, {})).data;
 }
 
 // 任务源码全文（ADR-195）：gateway 读任务源树内的文件（项目相对路径或裸文件名，

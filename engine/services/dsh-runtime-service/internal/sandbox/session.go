@@ -141,11 +141,13 @@ func (r *ManagerRunner) launch(ctx context.Context, taskID string) (ls *liveSess
 	// 升级请求 approval/asked 在 headless 下无人审批）。confinement 边界本就是
 	// openshell policy（filesystem/egress/run_as_user），DSH 内层跳过不越界——
 	// env 覆盖是 DSH 官方入口（bundle base cordis.patch.yml sandbox-policy.mode）。
+	// LLM env 段按当前推理路由分派（ADR-227）：anthropic 型 → anthropic-relay
+	// （bridge 烘 llm-pi-ai 路由打 L7 /v1/messages）；其余 → deepseek 适配器。
 	launchScript := fmt.Sprintf(
-		"nohup env DSH_MAX_TOKENS=%d DSH_PERMISSION_MODE=danger-full-access DEEPSEEK_BASE_URL=https://inference.local/v1 DEEPSEEK_API_KEY=openshell-injected %s > %s 2>&1 & "+
+		"nohup env DSH_MAX_TOKENS=%d DSH_PERMISSION_MODE=danger-full-access %s %s > %s 2>&1 & "+
 			"for i in $(seq 1 15); do curl -s -m 2 %s | grep -q '\"ok\":true' && exit 0; sleep 1; done; "+
 			"echo bridge-not-ready; tail -5 %s; exit 1",
-		r.cfg.DSHMaxTokens, bridgeCmd, bridgeLogPath, bridgeHealthz, bridgeLogPath)
+		r.cfg.DSHMaxTokens, r.llmRouteEnv(ctx), bridgeCmd, bridgeLogPath, bridgeHealthz, bridgeLogPath)
 	if _, err = r.execIn(ctx, url, token, created.ID, launchScript, 60); err != nil {
 		r.event("error", "拉起 bridge 失败: %v", err)
 		err = fmt.Errorf("launch bridge: %w", err)
@@ -213,7 +215,11 @@ const continueAfterStreamBreak = "你上一回合的推理流在输出中途被�
 // maxTurnStreamRetries — 主会话瞬态流断的回合级重试上限（ADR-192）。
 const maxTurnStreamRetries = 2
 
-// isTransientStreamErr — 瞬态流断判定（值得续跑重试）：provider/网络层的流中断族。
+// isTransientStreamErr — 瞬态流断判定（值得续跑重试）：provider/网络层的流中断族，
+// 以及流中途数据级损坏（malformed SSE payload，ADR-227）——后者与连接级断流同族：
+// 请求本身合法、会话历史完好，续跑指令让模型重发提交即可恢复；重发整个模型请求的
+// 提供商级重试才有增量重复顾虑（dsh-retry-policy 对 STREAM_CLOSED 的排除理由），
+// 回合级续跑不重发请求、模型基于历史重新生成，无此问题。
 // 非瞬态（参数非法/鉴权/模型不存在等）重试无意义，立即失败。
 func isTransientStreamErr(err error) bool {
 	if err == nil {
@@ -224,6 +230,10 @@ func isTransientStreamErr(err error) bool {
 		"SSE stream ended", "STREAM_CLOSED", "stream disconnected",
 		"connection reset", "connection refused", "broken pipe",
 		"i/o timeout", "context deadline", "EOF", "unavailable", "overloaded",
+		// "malformed SSE payload:" 前缀是 dsh llm-deepseek translate 的稳定消息
+		// 形态（gw-a00057d9691e0097f1b546da 实证；跨仓前缀契约同 ADR-192 补遗
+		// 对 "SSE stream ended without [DONE]" 的处理）
+		"malformed SSE payload",
 	} {
 		if strings.Contains(s, kw) {
 			return true
@@ -458,20 +468,26 @@ func tarProject(root string) ([]byte, int, error) {
 		if !info.Mode().IsRegular() || walkExcludes[info.Name()] {
 			return nil
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
 		rel, rerr := filepath.Rel(root, path)
 		if rerr != nil {
 			rel = path
 		}
-		hdr := &tar.Header{Name: filepath.ToSlash(rel), Mode: 0o644, Size: int64(len(data)), ModTime: info.ModTime()}
+		hdr := &tar.Header{Name: filepath.ToSlash(rel), Mode: 0o644, Size: info.Size(), ModTime: info.ModTime()}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err
 		}
-		_, err = tw.Write(data)
-		return err
+		// R62（2026-09-11 审计）：流式拷贝边打边量——原实现 ReadFile 整文件入内存，
+		// 超限判定在打包完成后才触发（内存已冲高）；现按缓冲区水位即时中止
+		if buf.Len()+int(info.Size()) > maxProjectArchiveBytes {
+			return fmt.Errorf("project tar exceeds %d bytes", maxProjectArchiveBytes)
+		}
+		f, ferr := os.Open(path)
+		if ferr != nil {
+			return nil // 单条目不可读跳过（原 ReadFile 失败同语义）
+		}
+		_, cerr := io.Copy(tw, f)
+		f.Close()
+		return cerr
 	})
 	if err != nil {
 		return nil, 0, err

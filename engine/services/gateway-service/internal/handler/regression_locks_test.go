@@ -2,6 +2,8 @@ package handler
 
 // REGRESSIONS.md 随建锁定测试（2026-09-07，接口契约三件套会话）：
 //   R11 — 通知中心 IDOR：ListNotifications.user_id 必须取 JWT 身份，query 传入被忽略（ADR-212⑩）；
+//         R11 延伸（ADR-222）：read-all 一键全部已读同款语义——List 未读强制 JWT 身份，
+//         且只标记 List 结果内的通知（不收任意 id）；
 //   R26 — 写路由幂等键必须在 decodeBody 之后注入（protojson.Unmarshal 会重置消息，TP12-T3）；
 //   R25 — taskwatch 连接寿命下界必须显著超过最长审计任务（gw-f6a3523：32.5min 审计撞
 //         30min 旧值中途断流；活性由 ping/pong+读限承担，寿命只作泄漏兜底，不得回缩）。
@@ -9,6 +11,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -25,11 +28,12 @@ import (
 // notifCaptureBackend — 捕获 ListNotifications 实收 UserId 的进程内真实后端。
 type notifCaptureBackend struct {
 	pb.UnimplementedNotificationServiceServer
-	addr     string
-	srv      *grpc.Server
-	mu       sync.Mutex
-	gotUser  string
-	gotCalls int
+	addr      string
+	srv       *grpc.Server
+	mu        sync.Mutex
+	gotUser   string
+	gotCalls  int
+	gotMarked []string
 }
 
 func startNotifCaptureBackend(t *testing.T) *notifCaptureBackend {
@@ -51,6 +55,13 @@ func (b *notifCaptureBackend) ListNotifications(ctx context.Context, req *pb.Lis
 	b.gotCalls++
 	b.mu.Unlock()
 	return &pb.ListNotificationsResponse{Notifications: []*pb.Notification{{NotificationId: "n-1", UserId: req.GetUserId()}}}, nil
+}
+
+func (b *notifCaptureBackend) MarkNotificationRead(ctx context.Context, req *pb.MarkNotificationReadRequest) (*pb.Notification, error) {
+	b.mu.Lock()
+	b.gotMarked = append(b.gotMarked, req.GetNotificationId())
+	b.mu.Unlock()
+	return &pb.Notification{NotificationId: req.GetNotificationId(), Read: true}, nil
 }
 
 // R11（ADR-212⑩）：user_id 一律取 JWT 身份——query 里的 user_id 必须被忽略。
@@ -82,6 +93,48 @@ func TestNotifications_UserIdFromJWTNotQuery(t *testing.T) {
 	}
 	if b.gotUser != "u-real-victim" {
 		t.Fatalf("IDOR regression: ListNotifications received user_id=%q (query param honored over JWT identity)", b.gotUser)
+	}
+}
+
+// R11 延伸（ADR-222）：read-all 一键全部已读同款归属语义——List 未读的 user_id
+// 强制取 JWT 身份（query 传入被忽略），且只标记 List 结果内的通知。
+// 回归形态：read-all 改读 query（或收 body 里的任意 id 集合）→ 任何登录用户可
+// 一键标记任意用户全部通知已读。
+func TestNotifications_ReadAll_UserFromJWTNotQuery(t *testing.T) {
+	b := startNotifCaptureBackend(t)
+	tr := NewTranscoder(BackendAddrs{StorageAddr: b.addr, CallTimeoutS: 5})
+	defer tr.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), middleware.UserIDKey, "u-real-victim")
+		tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+	}))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/v1/notifications/read-all?user_id=u-attacker", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	var out struct {
+		Marked int `json:"marked"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Marked != 1 {
+		t.Fatalf("marked = %d, want 1 (fake List returns exactly one unread)", out.Marked)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.gotUser != "u-real-victim" {
+		t.Fatalf("IDOR regression: read-all ListNotifications received user_id=%q (query param honored over JWT identity)", b.gotUser)
+	}
+	if len(b.gotMarked) != 1 || b.gotMarked[0] != "n-1" {
+		t.Fatalf("marked set regression: got %v, want [n-1] (must only mark notifications listed for the JWT user)", b.gotMarked)
 	}
 }
 

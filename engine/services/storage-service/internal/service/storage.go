@@ -7,6 +7,8 @@
 package service
 
 import (
+	"os"
+	"strconv"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -43,6 +45,20 @@ func (s *StorageSvc) SetPresigner(p repo.Presigner) { s.presigner = p }
 //
 // MinIO integration note (09 §1): in production, each chunk would be written to
 // the object directly via MinIO's PutObject streaming API.
+// maxAssembleBytes — 单对象组装内存上限（R62，2026-09-11 审计）：AssembleChunks 全量
+// 缓冲无上限是 OOM 向量（gateway 100MB 是唯一有闸入口；树 tar/gRPC 直连可更大）。
+// 超限 ResourceExhausted 拒绝，不吞内存。env：CODEAUDIT_STORAGE_MAX_OBJECT_BYTES。
+var maxAssembleBytes = envInt64Or("CODEAUDIT_STORAGE_MAX_OBJECT_BYTES", 512<<20)
+
+func envInt64Or(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
 func (s *StorageSvc) AssembleChunks(recv func() (*v1.UploadFileChunk, error)) (*v1.StoredFile, []byte, error) {
 	var (
 		buf         []byte
@@ -64,6 +80,10 @@ func (s *StorageSvc) AssembleChunks(recv func() (*v1.UploadFileChunk, error)) (*
 			contentType = chunk.ContentType
 		}
 		buf = append(buf, chunk.Data...)
+		if int64(len(buf)) > maxAssembleBytes { // R62: 边收边量
+			return nil, nil, status.Errorf(codes.ResourceExhausted,
+				"object exceeds assemble limit %d bytes (R62)", maxAssembleBytes)
+		}
 	}
 
 	if filePath == "" {
@@ -147,4 +167,13 @@ func (s *StorageSvc) GetPresignedURL(filePath string, operation v1.GetPresignedU
 func sha256Hex(data []byte) string {
 	h := sha256.Sum256(data)
 	return fmt.Sprintf("%x", h[:])
+}
+
+// StorageMode — ADR-225: 存储档位（"s3"=MinIO 持久档；"memory"=07 §10 降级档）。
+// 判据=presigner 注入与否（MinIO 档 SetPresigner 必被调用，memory 档恒 nil）。
+func (s *StorageSvc) StorageMode() string {
+	if s.presigner != nil {
+		return "s3"
+	}
+	return "memory"
 }

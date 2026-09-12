@@ -19,7 +19,7 @@ Client Request
 │          Gateway Service (:8080)        │
 │                                         │
 │  1. Logging Middleware                  │
-│  2. Rate Limiting (50 req/min/IP)      │
+│  2. Rate Limiting (100 req/min/user)  │
 │  3. JWT Authentication                  │
 │  4. Request Routing                     │
 └─────────────────────────────────────────┘
@@ -153,7 +153,7 @@ go test ./internal/middleware/ratelimit_test.go -v
 
 - **03 §1.1**: Gateway capabilities (routing, auth, rate limiting)
 - **03 §4**: JWT HS256 authentication (access 30min / refresh 7d)
-- **07 §7**: Rate limiting specification (50 req/min)
+- **07 §7**: Rate limiting specification (100 req/min, 2026-09-10)
 - **ADR-113**: Port 8080 assignment
 - **01 §4**: Service architecture (9 services)
 

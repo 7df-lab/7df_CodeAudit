@@ -43,7 +43,7 @@ func NewMinioFileStore(endpoint, accessKey, secretKey, bucket string, secure boo
 		return nil, fmt.Errorf("minio client: %w", err)
 	}
 	m := &MinioFileStore{client: cli, bucket: bucket, ctx: context.Background()}
-	for _, b := range []string{bucket, "reports", "cpg", "sast-raw", "uploads"} {
+	for _, b := range []string{bucket, "reports", "cpg", "sast-raw", "uploads", "trees"} {
 		exists, err := cli.BucketExists(m.ctx, b)
 		if err != nil {
 			return nil, fmt.Errorf("minio BucketExists %s: %w", b, err)
@@ -58,7 +58,7 @@ func NewMinioFileStore(endpoint, accessKey, secretKey, bucket string, secure boo
 }
 
 // bucketFor — 09 §1 域前缀 → bucket（reports/… → reports；cpg/… → cpg；sast-raw/… →
-// sast-raw；其余 → 兜底桶）。
+// sast-raw；trees/… → trees（ADR-225 源码树 tar 持久层）；其余 → 兜底桶）。
 func (m *MinioFileStore) bucketFor(filePath string) string {
 	switch {
 	case len(filePath) >= 8 && filePath[:8] == "reports/":
@@ -69,6 +69,8 @@ func (m *MinioFileStore) bucketFor(filePath string) string {
 		return "sast-raw"
 	case len(filePath) >= 8 && filePath[:8] == "uploads/":
 		return "uploads"
+	case len(filePath) >= 6 && filePath[:6] == "trees/":
+		return "trees"
 	}
 	return m.bucket
 }

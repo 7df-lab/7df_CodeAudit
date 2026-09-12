@@ -82,7 +82,8 @@ if ($gitBash) {
     Say "命中 Git Bash：$gitBash"
     if (-not $gitExe) { $gitExe = $gitBash -replace '\\bin\\bash\.exe$', '\cmd\git.exe' }
     if (-not $Dir) { $Dir = Join-Path $env:USERPROFILE "codeaudit-umbrella" }
-    $posix = Convert-To-PosixPath $Dir
+    # 注：本脚本按 README 自述未经 Windows 真机实测，调用名与 function 定义（:43）一致为准
+    $posix = To-PosixPath $Dir
 
     if (-not (Test-Path (Join-Path $Dir ".git"))) {
         if (-not $RepoUrl) { Die "首次使用请提供 -RepoUrl <伞仓 git 地址>。" }

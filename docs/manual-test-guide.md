@@ -33,8 +33,24 @@ curl -X PUT "$BASE/inference/route" -H "Authorization: Bearer $TOK" -H 'Content-
 ```
 
 注意：①provider type 不可变更，换 type=删了重建；②智谱 openai 直拼 404 的根因
-是网关写死追加 /v1（官方 anthropic 兼容端点存在但经网关协议转换会被 400 拒，
-勿用）；③模型用编码计划的 glm-5.3-flash。
+是网关对 openai 型写死追加 /v1（用上面的 `/v1/../../` 形态绕过）；③模型用编码计划
+的 glm-5.3-flash。
+
+anthropic 型（ADR-228，2026-09-12 起可用）——用户可自填**任意 anthropic 兼容端点**：
+
+```bash
+curl -X PUT "$BASE/inference/providers" -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' -d '{
+ "workspace":"default","name":"zhipu-anthropic","type":"anthropic",
+ "credentials":{"API_KEY":"<key>"},
+ "config":{"BASE_URL":"https://open.bigmodel.cn/api/anthropic"}}'
+curl -X PUT "$BASE/inference/route" -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' -d '{
+ "workspace":"default","provider":"zhipu-anthropic","model":"glm-5.3-flash"}'
+```
+
+要点：①端点键为 `BASE_URL`/`API_KEY`（大写，R55）；②**BASE_URL 须 https**——明文
+http 会被网关验证层回落官方 api.anthropic.com（区域 403）；③生效路径=沙箱 DSH 经
+llm-pi-ai anthropic-messages 适配器打 L7 `inference.local/v1/messages` 原生直通
+（凭据网关按路由携带，沙箱只见占位符）；切回 openai 型 provider 即回 deepseek 通道。
 
 模拟栈为 PG 持久存储(与退役裸栈的内存存储不同):`make down-sim` 保卷、`make destroy-sim` 才清数据。
 
@@ -85,7 +101,7 @@ curl -s "$BASE/v1/findings?task_id=<taskID>" -H "Authorization: Bearer $TOK" | p
 | 任务失败/发现为 0,执行日志见"沙箱创建失败" | 107 镜像不在 / manager 不可达 | 核对 §0;镜像重建 `bash dsh-pentest-sse/deploy.sh`(伞仓根) |
 | 模式B 无 AI 交互日志 | 异常(旧口径已废——4a/4b 均走沙箱) | 按"深度排查"处理;ai-inference 已删(ADR-175),无"直连无日志"的合法情形 |
 | AI 日志不增长,见 max_tokens 报错 | 推理路由 provider 变更且上限低于配置 | 经 manager inference 路由 API 切换/调上限 |
-| 429 rate limit | 限流 50 req/min(按登录令牌,07 §7) | 关多余重度标签页或等 60s |
+| 429 rate limit | 限流 100 req/min(按登录令牌,07 §7;2026-09-10 起 50→100) | 关多余重度标签页或等 60s |
 | 控制台行为像旧版本 | console 容器是构建产物 | 伞仓 web/ 子仓 `npm run build` 后 `make deploy-sim` 重建 console |
 | 重启后数据还在/丢了? | 模拟栈 PG 数据在卷 | `down-sim` 保卷重启数据仍在;`destroy-sim` 清卷才丢 |
 | 深度排查 | 容器日志 | `make logs-sim <svc>`(gateway/task/dsh-runtime/sast-adapter) |

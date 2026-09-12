@@ -81,6 +81,7 @@ func createTables(db *sql.DB) error {
 	ALTER TABLE findings ADD COLUMN IF NOT EXISTS is_unique BOOLEAN NOT NULL DEFAULT FALSE;
 	ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_fix_suggestion TEXT; -- ADR-183 存量表迁移（幂等）
 	ALTER TABLE findings ADD COLUMN IF NOT EXISTS diff_patch TEXT; -- ADR-183 存量表迁移（幂等）
+	ALTER TABLE findings ADD COLUMN IF NOT EXISTS inherited_from_task_id VARCHAR(255); -- ADR-225 增量扫描继承标记（幂等）
 	ALTER TABLE findings ALTER COLUMN verdict TYPE VARCHAR(40); -- ADR-198: ai_verdict 枚举串（AI_VERDICT_NEEDS_MANUAL=23）长于旧 20 位宽，PG 模式下静默截断拒写
 	-- ADR-201 存量表迁移（幂等）: code_snippet→source_raw 列正名——ADR-141 起该列实际
 	-- 承载 proto UnifiedFinding.source_raw 全量原始 JSON，非代码片段，同名直存消除映射暗语
@@ -126,21 +127,21 @@ func createTables(db *sql.DB) error {
 
 func (r *PostgresFindingRepository) Create(finding *model.Finding) error {
 	query := `
-		INSERT INTO findings (id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		INSERT INTO findings (id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, inherited_from_task_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 	`
 	_, err := r.db.Exec(query,
 		finding.ID, finding.TaskID, finding.ToolName, finding.RuleID,
 		finding.Severity, finding.Message, finding.FilePath, finding.LineNumber,
 		finding.SourceRaw, finding.Verdict, finding.Reasoning, finding.DedupGroup, finding.MatchedFindings, finding.IsUnique, finding.AiFixSuggestion, finding.DiffPatch, finding.CreatedAt, finding.UpdatedAt,
-		finding.RequestID,
+		finding.RequestID, finding.InheritedFrom,
 	)
 	return err
 }
 
 func (r *PostgresFindingRepository) GetByID(id string) (*model.Finding, error) {
 	query := `
-		SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+		SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, COALESCE(inherited_from_task_id, '') AS inherited_from_task_id
 		FROM findings WHERE id = $1
 	`
 	finding := &model.Finding{}
@@ -148,7 +149,7 @@ func (r *PostgresFindingRepository) GetByID(id string) (*model.Finding, error) {
 		&finding.ID, &finding.TaskID, &finding.ToolName, &finding.RuleID,
 		&finding.Severity, &finding.Message, &finding.FilePath, &finding.LineNumber,
 		&finding.SourceRaw, &finding.Verdict, &finding.Reasoning, &finding.DedupGroup, &finding.MatchedFindings, &finding.IsUnique, &finding.AiFixSuggestion, &finding.DiffPatch, &finding.CreatedAt, &finding.UpdatedAt,
-		&finding.RequestID,
+		&finding.RequestID, &finding.InheritedFrom,
 	)
 	if err != nil {
 		return nil, err
@@ -190,7 +191,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 		// First page
 		if taskID != "" && verdict != "" {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, COALESCE(inherited_from_task_id, '') AS inherited_from_task_id
 				FROM findings
 				WHERE task_id = $1 AND verdict = $2
 				ORDER BY id
@@ -199,7 +200,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 			args = []interface{}{taskID, verdict, limit + 1}
 		} else if taskID != "" {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, COALESCE(inherited_from_task_id, '') AS inherited_from_task_id
 				FROM findings
 				WHERE task_id = $1
 				ORDER BY id
@@ -208,7 +209,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 			args = []interface{}{taskID, limit + 1}
 		} else if verdict != "" {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, COALESCE(inherited_from_task_id, '') AS inherited_from_task_id
 				FROM findings
 				WHERE verdict = $1
 				ORDER BY id
@@ -217,7 +218,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 			args = []interface{}{verdict, limit + 1}
 		} else {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, COALESCE(inherited_from_task_id, '') AS inherited_from_task_id
 				FROM findings
 				ORDER BY id
 				LIMIT $1
@@ -228,7 +229,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 		// Subsequent pages
 		if taskID != "" && verdict != "" {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, COALESCE(inherited_from_task_id, '') AS inherited_from_task_id
 				FROM findings
 				WHERE id > $1 AND task_id = $2 AND verdict = $3
 				ORDER BY id
@@ -237,7 +238,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 			args = []interface{}{lastID, taskID, verdict, limit + 1}
 		} else if taskID != "" {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, COALESCE(inherited_from_task_id, '') AS inherited_from_task_id
 				FROM findings
 				WHERE id > $1 AND task_id = $2
 				ORDER BY id
@@ -246,7 +247,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 			args = []interface{}{lastID, taskID, limit + 1}
 		} else if verdict != "" {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, COALESCE(inherited_from_task_id, '') AS inherited_from_task_id
 				FROM findings
 				WHERE id > $1 AND verdict = $2
 				ORDER BY id
@@ -255,7 +256,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 			args = []interface{}{lastID, verdict, limit + 1}
 		} else {
 			query = `
-				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+				SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, COALESCE(inherited_from_task_id, '') AS inherited_from_task_id
 				FROM findings
 				WHERE id > $1
 				ORDER BY id
@@ -278,7 +279,7 @@ func (r *PostgresFindingRepository) List(lastID string, limit int, taskID string
 			&f.ID, &f.TaskID, &f.ToolName, &f.RuleID,
 			&f.Severity, &f.Message, &f.FilePath, &f.LineNumber,
 			&f.SourceRaw, &f.Verdict, &f.Reasoning, &f.DedupGroup, &f.MatchedFindings, &f.IsUnique, &f.AiFixSuggestion, &f.DiffPatch, &f.CreatedAt, &f.UpdatedAt,
-			&f.RequestID,
+			&f.RequestID, &f.InheritedFrom,
 		)
 		if err != nil {
 			return nil, "", err
@@ -307,7 +308,7 @@ func (r *PostgresFindingRepository) ListByVerdict(verdict string, lastID string,
 
 func (r *PostgresFindingRepository) GetByRequestIDAndFindingID(requestID string, findingID string) (*model.Finding, error) {
 	query := `
-		SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id
+		SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, COALESCE(inherited_from_task_id, '') AS inherited_from_task_id
 		FROM findings
 		WHERE request_id = $1 AND id = $2
 	`
@@ -316,7 +317,7 @@ func (r *PostgresFindingRepository) GetByRequestIDAndFindingID(requestID string,
 		&finding.ID, &finding.TaskID, &finding.ToolName, &finding.RuleID,
 		&finding.Severity, &finding.Message, &finding.FilePath, &finding.LineNumber,
 		&finding.SourceRaw, &finding.Verdict, &finding.Reasoning, &finding.DedupGroup, &finding.MatchedFindings, &finding.IsUnique, &finding.AiFixSuggestion, &finding.DiffPatch, &finding.CreatedAt, &finding.UpdatedAt,
-		&finding.RequestID,
+		&finding.RequestID, &finding.InheritedFrom,
 	)
 	if err != nil {
 		return nil, err
@@ -348,7 +349,37 @@ func (r *PostgresFindingRepository) GetStatsByTaskID(taskID string) (*model.Resu
 	stats.ByVerdict["AI_VERDICT_TRUE_POSITIVE"] = int32(trueP)
 	stats.ByVerdict["AI_VERDICT_FALSE_POSITIVE"] = int32(falseP)
 	stats.ByVerdict["AI_VERDICT_NOT_REVIEWED"] = int32(stats.TotalFindings - trueP - falseP)
-	return stats, nil
+	// R45: by_severity/by_cwe 与内存实现口径对齐（CWE 由 rule_id 承载，表无独立 cwe 列）
+	rows, err := r.db.Query(`SELECT severity, COUNT(*) FROM findings WHERE task_id = $1 GROUP BY severity`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sev string
+		var n int
+		if err := rows.Scan(&sev, &n); err != nil {
+			return nil, err
+		}
+		stats.BySeverity[sev] = int32(n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	cweRows, err := r.db.Query(`SELECT rule_id, COUNT(*) FROM findings WHERE task_id = $1 GROUP BY rule_id`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer cweRows.Close()
+	for cweRows.Next() {
+		var cwe string
+		var n int
+		if err := cweRows.Scan(&cwe, &n); err != nil {
+			return nil, err
+		}
+		stats.ByCwe[cwe] = int32(n)
+	}
+	return stats, cweRows.Err()
 }
 
 func (r *PostgresFindingRepository) CreateFeedback(feedback *model.FindingFeedback) error {

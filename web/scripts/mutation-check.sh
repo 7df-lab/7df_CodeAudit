@@ -90,6 +90,12 @@ add src/pages/tasks/TaskDetailPage.tsx \
   src/__tests__/TaskDetailPage.test.tsx \
   "M12 P-20 WS 非收束断线不立即补拉快照（116af13 修复，gw-f6a3523 实证）"
 
+add src/auth/session.tsx \
+  "for (const delayMs of [1000, 2000, 4000]) {" \
+  "for (const delayMs of []) {" \
+  src/__tests__/session.test.tsx \
+  "M13 P-22 boot 续签后 me 瞬时失败重试被移除（首败即甩登录页，429 风暴实证）"
+
 # ── 执行 ──
 total=${#M_FILE[@]}
 killed=0

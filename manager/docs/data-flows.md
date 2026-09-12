@@ -18,11 +18,16 @@ os.environ ──覆盖──> config.json ──回落──> 内置默认
 | Bearer token | `OPENSHELL_MANAGER_TOKEN` | `tokenFile`（相对服务根）→ `token` | 空=免鉴权 | require_token |
 | 网关端点 | `OPENSHELL_GATEWAY_ENDPOINT` | `gatewayEndpoint` | gateway.internal:8080 | SDK 客户端 |
 | SDK 位置 | `OPENSHELL_LIB_PATH` | `libPath` | 服务根 libs/OpenShell/python | sys.path 注入 |
-| 上传策略上限 | `OPENSHELL_MANAGER_MAX_UPLOAD_BYTES` | `maxUploadBytes` | 0=不限 | 上传 413 |
+| 上传策略上限 | `OPENSHELL_MANAGER_MAX_UPLOAD_BYTES` | `maxUploadBytes` | 2 GiB=2147483648（0=不限） | 上传 413 |
 | 服务地址 | `OPENSHELL_MANAGER_URL` | `url` | http://127.0.0.1:18800 | **仅引擎侧读取**（共享 SSOT，服务自身不用） |
 
 要点：
-- **token 三级解析**：env > tokenFile（文件缺失=静默空，不致命）> config `token` 键。
+- **token 三级解析**：env > tokenFile（相对服务根）> config `token` 键。
+  tokenFile **文件缺失**=未配置（静默空，不致命）；**存在但读失败**
+  （EACCES/EIO 等 OSError）→ `TokenFileError` fail-closed（B3-2 审计修复：
+  require_token 503 + stderr 日志；修复前吞异常当空，读失败瞬间鉴权失效）。
+  文件解析结果 5s 缓存（`_token_cache`；env 分支不缓存）——require_token 是
+  async 依赖，防每请求一次阻塞磁盘读；异常不落缓存，权限恢复即自愈。
 - **共享 SSOT 防漂移**：引擎 `openshell_manager_client` 读同一份 config.json 的
   `url`/`token`/`tokenFile`，两端不会各配各的。
 - **坏 config 不致命**：config.json 损坏/非对象 → 降级 `{}`，env-only 部署照常存活。
@@ -77,11 +82,11 @@ write_file_stream()   （run_in_threadpool，全程同步阻塞线程池）
 ## 4. 请求执行路径上的线程模型
 
 - FastAPI 路由分两类：`def`（同步，Starlette 自动丢线程池）与 `async def`（事件循环）。
-  JSON 端点里 `create/exec/wait-ready/update-config/services/inference` 是 async def
-  但内部 facade 调用是**同步阻塞 gRPC**——会占住事件循环直到 gRPC 返回
-  （timeout=60s 兜底）。上传用 `run_in_threadpool` 显式离循环（大 body 解析不能占循环）。
-- 这是已知取舍：manager 是内部管理面，QPS 极低（引擎单任务串行调用），
-  简单性优先于吞吐。若未来出现并发场景需把同步 facade 调用全面线程池化。
+  全部 async def 端点（`create/exec/wait-ready/update-config/services 写操作/
+  inference 写操作`）的南向 facade 调用一律 `await run_in_threadpool(…)`（B3-1
+  审计修复）——同步阻塞 gRPC 裸跑在事件循环上曾把 /healthz 探活与全部并发请求
+  卡到 gRPC 返回（timeout=60s 兜底），修复前实测慢 exec 在途时探活排队 2s+。
+  上传路径自 ADR-174 起即为该形态（大 body 解析不能占循环），本次对齐。
 
 ## 5. 部署链（deploy/ → LXC 107）
 
@@ -114,8 +119,8 @@ manager/deploy/deploy.sh deploy
 | 沙箱日志 `GET …/logs` | 引擎 `GET /api/v1/openshell/sandboxes[/…/logs]` 透传 | 沙箱 stdout/stderr 观测 |
 
 服务自身 `log_level=warning, access_log=False`：不产访问日志，排障靠上游引擎日志
-与响应错误体。502 兜底会把异常类型名带出（`RuntimeError: …`），是有意设计——
-内部管理面要可诊断，而非对外保密面。
+与服务端 stderr。未捕获异常兜底为 500 + 通用文案 `internal error`，`ExcType: msg`
+细节进服务端 stderr 日志（B3-3：客户端不再看到异常类型/消息，服务端可诊断性不变）。
 
 ## 7. 错误传播全景（从网关到调用方）
 
@@ -126,13 +131,15 @@ ParseDict 失败 ─────┼─→ GatewayFacade 抛 ValueError/LookupErr
                               ▼
               api.py 异常处理器（api-internal.md §4 映射表）
                               ▼
-        400 / 404 / 502 {"error": …} ──→ 引擎按码分流：400=调用方 bug 不重试；
-        404=对象不存在；502=南向不可达，引擎侧按"网关不可达"重试/降级
+        400 / 404 / 500 / 503 {"error": …} ──→ 引擎按码分流：400=调用方 bug 不重试；
+        404=对象不存在；500=manager 自身/南向未捕获故障（细节在服务端日志）；
+        503=token 鉴权材料不可得（fail-closed，B3-2）
 ```
 
-502 的语义负担最重（触发上游重试/降级），所以纪律是**客户端格式错误绝不 502**——
-历史上数值参数、spec/policy 未知字段、command 裸字符串三类先后泄漏成过 502，
-已逐一收口为 400 并由契约测试锁定（REGRESSIONS.md R4/R10）。
+客户端格式错误**绝不 5xx** 是硬纪律（5xx 触发上游重试/降级）——历史上数值参数、
+spec/policy 未知字段、command 裸字符串三类先后泄漏成过 502，已逐一收口为 400 并由
+契约测试锁定（REGRESSIONS.md R4/R10）；B3-3 起兜底处理器本身也改 500 + 通用文案，
+502 不再出现于本服务错误面。
 
 ## 8. 与兄弟仓的交互边界（不经理理 HTTP 面的部分）
 

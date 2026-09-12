@@ -38,6 +38,8 @@ func (s *TaskServiceImpl) AppendTaskLog(ctx context.Context, req *pb.AppendTaskL
 		if e, ok := s.logByID(req.GetTaskId(), id); ok {
 			return &pb.AppendTaskLogResponse{Entry: e}, nil // 同键回放
 		}
+		// R50: 幂等键在而原条目已被环形丢弃——回空壳回执（原 log_id），不再回落追加新条目
+		return &pb.AppendTaskLogResponse{Entry: &pb.TaskLogEntry{LogId: id, TaskId: req.GetTaskId()}}, nil
 	}
 	entry := s.appendLogLocked(req.GetTaskId(), req.GetLevel(), req.GetSource(), req.GetMessage())
 	s.logIdem[req.GetMetadata().GetRequestId()] = entry.GetLogId()

@@ -23,11 +23,15 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 SERVICE_ROOT = Path(__file__).resolve().parent.parent
 # 中性缺省(经 hosts 别名解析, 零 DNS 依赖); 有自定义域名时 env/config 覆盖(2026-09-08 内网域清中性)
 DEFAULT_GATEWAY_ENDPOINT = "host.docker.internal:8080"
+# B3-3 审计修复：上传上限缺省 2 GiB（原 0=不限，防误操作上限形同虚设）。
+# 上传是流式转发（内存恒定 <1 MiB），上限纯防"误指 50GB 归档"类误操作。
+DEFAULT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2147483648
 
 _config_cache: dict | None = None
 
@@ -71,14 +75,32 @@ def manager_port() -> int:
         return 18800
 
 
+class TokenFileError(RuntimeError):
+    """tokenFile 已配置但读取失败（EACCES/EIO 等）——fail-closed 信号。
+
+    区别于"文件不存在"（= 未配置 token，按无鉴权放行维持现状）：文件在
+    而读不到 = 鉴权材料不可得，require_token 必须拒绝请求（503）而不是
+    吞掉异常当无 token 静默放行（B3-2 审计修复）。"""
+
+
+# B3-2：文件解析结果 5s 缓存（env 分支不缓存——直读内存无 IO 且优先级
+# 需实时生效）。require_token 是 async 依赖，无缓存时每请求一次阻塞磁盘
+# 读。TokenFileError 不落缓存：权限恢复后下一个请求即自动恢复。
+_TOKEN_CACHE_TTL_SECONDS = 5.0
+_token_cache: "tuple[str, float] | None" = None  # (value, monotonic expiry)
+
+
 def _token_from_file(token_file: str) -> str:
     path = Path(token_file)
     if not path.is_absolute():
         path = SERVICE_ROOT / token_file
+    if not path.exists():
+        return ""  # 文件不存在 = 未配置 token（放行，维持现状）
     try:
         return path.read_text(encoding="utf-8").strip()
-    except Exception:  # noqa: BLE001 - missing file == no token
-        return ""
+    except OSError as exc:
+        raise TokenFileError(
+            f"token file {path} exists but is unreadable: {exc}") from exc
 
 
 def manager_token() -> str:
@@ -86,17 +108,23 @@ def manager_token() -> str:
 
     Priority: $OPENSHELL_MANAGER_TOKEN > config ``tokenFile`` (relative to
     the service root) > config ``token``. Empty = auth disabled (loopback
-    binds only).
+    binds only). File-sourced results are cached for
+    ``_TOKEN_CACHE_TTL_SECONDS`` (async dependency runs this per request;
+    the disk read must not block the event loop on every call).
     """
     env = os.environ.get("OPENSHELL_MANAGER_TOKEN", "").strip()
     if env:
         return env
+    global _token_cache
+    now = time.monotonic()
+    if _token_cache is not None and _token_cache[1] > now:
+        return _token_cache[0]
     token_file = _cfg("tokenFile")
-    if token_file:
-        token = _token_from_file(token_file)
-        if token:
-            return token
-    return _cfg("token")
+    token = _token_from_file(token_file) if token_file else ""
+    if not token:
+        token = _cfg("token")
+    _token_cache = (token, now + _TOKEN_CACHE_TTL_SECONDS)
+    return token
 
 
 def gateway_endpoint() -> str:
@@ -144,15 +172,17 @@ def max_upload_bytes() -> int:
     archive by accident): memory is NOT the reason — the upload path
     streams, so manager memory stays constant regardless of file size.
 
-    Priority: $OPENSHELL_MANAGER_MAX_UPLOAD_BYTES > config ``maxUploadBytes``.
+    Priority: $OPENSHELL_MANAGER_MAX_UPLOAD_BYTES > config ``maxUploadBytes``
+    > DEFAULT_MAX_UPLOAD_BYTES (2 GiB, B3-3 — the old default of 0/unlimited
+    left the guard disarmed).
     """
     env = os.environ.get("OPENSHELL_MANAGER_MAX_UPLOAD_BYTES", "").strip()
     if env:
         return int(env)
     try:
-        return int(_cfg("maxUploadBytes", "0"))
+        return int(_cfg("maxUploadBytes", str(DEFAULT_MAX_UPLOAD_BYTES)))
     except ValueError:
-        return 0
+        return DEFAULT_MAX_UPLOAD_BYTES
 
 
 def validate() -> None:

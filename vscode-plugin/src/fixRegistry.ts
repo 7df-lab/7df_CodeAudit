@@ -34,6 +34,8 @@ export interface FsLite {
   readFileSync(p: string, encoding: 'utf-8'): string;
   writeFileSync(p: string, data: string, encoding: 'utf-8'): void;
   mkdirSync(p: string, opts: { recursive: boolean }): void;
+  /** 原子替换（tmp+rename 持久化的第二步）：真实 fs.renameSync 同名 */
+  renameSync(from: string, to: string): void;
 }
 
 export class FixRegistry {
@@ -50,8 +52,12 @@ export class FixRegistry {
   }
 
   private persist(): void {
+    // tmp+rename 原子替换：直写目标文件时写一半崩溃（磁盘满/进程被杀）会留下坏 JSON，
+    // 构造时被静默视为无记录——全部"已修复"徽章与回滚入口一次丢失。tmp 失败则旧文件原样。
     this.fsOps.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    this.fsOps.writeFileSync(this.filePath, JSON.stringify([...this.records.values()], null, 2), 'utf-8');
+    const tmp = `${this.filePath}.tmp`;
+    this.fsOps.writeFileSync(tmp, JSON.stringify([...this.records.values()], null, 2), 'utf-8');
+    this.fsOps.renameSync(tmp, this.filePath);
   }
 
   recordApplied(rec: FixRecord): void {

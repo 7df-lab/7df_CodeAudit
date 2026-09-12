@@ -398,6 +398,43 @@ func precisionRecall(tp, fp, fn int32) (precision, recall, f1 float32) {
 	return
 }
 
+// quadrantCounts — 按 (file_path, start_line) 位置键四象限分类并统计 severity 分歧。
+// 三处共用同一口径（ADR-133）：CompareResults / CalculateMetrics / GenerateComparisonReport。
+func quadrantCounts(sast, ai []*pb.UnifiedFinding) (both, sastOnly, aiOnly, disagreement int32) {
+	type locationKey struct {
+		FilePath  string
+		StartLine int32
+	}
+	keyOf := func(f *pb.UnifiedFinding) locationKey {
+		return locationKey{f.GetLocation().GetFilePath(), f.GetLocation().GetStartLine()}
+	}
+	sastIdx, aiIdx := map[locationKey]*pb.UnifiedFinding{}, map[locationKey]*pb.UnifiedFinding{}
+	for _, f := range sast {
+		sastIdx[keyOf(f)] = f
+	}
+	for _, f := range ai {
+		aiIdx[keyOf(f)] = f
+	}
+	seen := map[locationKey]bool{}
+	for k, sf := range sastIdx {
+		seen[k] = true
+		if af, ok := aiIdx[k]; ok {
+			both++
+			if sf.GetSeverity() != af.GetSeverity() {
+				disagreement++
+			}
+		} else {
+			sastOnly++
+		}
+	}
+	for k := range aiIdx {
+		if !seen[k] {
+			aiOnly++
+		}
+	}
+	return
+}
+
 // CompareResults compares SAST and AI results.
 // 依据: codeaudit_common.proto L1056 (CompareResults)
 func (h *SASTFusionHandler) CompareResults(ctx context.Context, req *pb.CompareResultsRequest) (*pb.CompareResultsResponse, error) {
@@ -410,40 +447,7 @@ func (h *SASTFusionHandler) CompareResults(ctx context.Context, req *pb.CompareR
 	}
 
 	// 四象限分类
-	bothFound, sastOnly, aiOnly, disagreement := int32(0), int32(0), int32(0), int32(0)
-	{
-		type locationKey struct {
-			FilePath  string
-			StartLine int32
-		}
-		sastByLoc := make(map[locationKey]*pb.UnifiedFinding)
-		for _, f := range sastFindings {
-			loc := f.GetLocation()
-			sastByLoc[locationKey{FilePath: loc.GetFilePath(), StartLine: loc.GetStartLine()}] = f
-		}
-		aiByLoc := make(map[locationKey]*pb.UnifiedFinding)
-		for _, f := range aiFindings {
-			loc := f.GetLocation()
-			aiByLoc[locationKey{FilePath: loc.GetFilePath(), StartLine: loc.GetStartLine()}] = f
-		}
-		seenLocs := make(map[locationKey]bool)
-		for key, sastF := range sastByLoc {
-			seenLocs[key] = true
-			if aiF, ok := aiByLoc[key]; ok {
-				bothFound++
-				if sastF.GetSeverity() != aiF.GetSeverity() {
-					disagreement++
-				}
-			} else {
-				sastOnly++
-			}
-		}
-		for key := range aiByLoc {
-			if !seenLocs[key] {
-				aiOnly++
-			}
-		}
-	}
+	bothFound, sastOnly, aiOnly, disagreement := quadrantCounts(sastFindings, aiFindings)
 
 	// 依据: proto L481-L489 ComparisonSummary + L491-L501 ComparisonMetrics（真实计算, ADR-133）
 	sPrec, sRec, sF1 := precisionRecall(bothFound, sastOnly, aiOnly)
@@ -517,35 +521,7 @@ func (h *SASTFusionHandler) CalculateMetrics(ctx context.Context, req *pb.Calcul
 	}
 
 	sast, ai := splitBySource(findings)
-	both, sastOnly, aiOnly := int32(0), int32(0), int32(0)
-	{
-		type locationKey struct {
-			FilePath  string
-			StartLine int32
-		}
-		keyOf := func(f *pb.UnifiedFinding) locationKey {
-			return locationKey{f.GetLocation().GetFilePath(), f.GetLocation().GetStartLine()}
-		}
-		sastIdx, aiIdx := map[locationKey]bool{}, map[locationKey]bool{}
-		for _, f := range sast {
-			sastIdx[keyOf(f)] = true
-		}
-		for _, f := range ai {
-			aiIdx[keyOf(f)] = true
-		}
-		for k := range sastIdx {
-			if aiIdx[k] {
-				both++
-			} else {
-				sastOnly++
-			}
-		}
-		for k := range aiIdx {
-			if !sastIdx[k] {
-				aiOnly++
-			}
-		}
-	}
+	both, sastOnly, aiOnly, _ := quadrantCounts(sast, ai)
 	sPrec, sRec, sF1 := precisionRecall(both, sastOnly, aiOnly)
 	aPrec, aRec, aF1 := precisionRecall(both, aiOnly, sastOnly)
 	return &pb.ComparisonMetrics{
@@ -586,40 +562,7 @@ func (h *SASTFusionHandler) GenerateComparisonReport(ctx context.Context, req *p
 	sast, ai := splitBySource(findings)
 
 	// 四象限（与 CompareResults 同口径）
-	bothFound, sastOnly, aiOnly, disagreement := int32(0), int32(0), int32(0), int32(0)
-	{
-		type locationKey struct {
-			FilePath  string
-			StartLine int32
-		}
-		keyOf := func(f *pb.UnifiedFinding) locationKey {
-			return locationKey{f.GetLocation().GetFilePath(), f.GetLocation().GetStartLine()}
-		}
-		sastIdx, aiIdx := map[locationKey]*pb.UnifiedFinding{}, map[locationKey]*pb.UnifiedFinding{}
-		for _, f := range sast {
-			sastIdx[keyOf(f)] = f
-		}
-		for _, f := range ai {
-			aiIdx[keyOf(f)] = f
-		}
-		seen := map[locationKey]bool{}
-		for k, sf := range sastIdx {
-			seen[k] = true
-			if af, ok := aiIdx[k]; ok {
-				bothFound++
-				if sf.GetSeverity() != af.GetSeverity() {
-					disagreement++
-				}
-			} else {
-				sastOnly++
-			}
-		}
-		for k := range aiIdx {
-			if !seen[k] {
-				aiOnly++
-			}
-		}
-	}
+	bothFound, sastOnly, aiOnly, disagreement := quadrantCounts(sast, ai)
 	sPrec, sRec, sF1 := precisionRecall(bothFound, sastOnly, aiOnly)
 	aPrec, aRec, aF1 := precisionRecall(bothFound, aiOnly, sastOnly)
 

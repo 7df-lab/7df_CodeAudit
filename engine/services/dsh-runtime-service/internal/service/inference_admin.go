@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 
 	pb "github.com/codeaudit/proto-gen"
 	"github.com/codeaudit/services/dsh-runtime-service/internal/sandbox"
@@ -96,6 +97,13 @@ func (s *DSHRuntimeServiceImpl) UpsertInferenceProvider(ctx context.Context, req
 	if req.GetName() == "" || req.GetType() == "" {
 		return nil, status.Error(codes.InvalidArgument, "name and type are required")
 	}
+	// R55（2026-09-11 报障修复）: 网关（上游闭源件）按约定大写键解析端点——openai 系认
+	// config.OPENAI_BASE_URL / credentials.OPENAI_API_KEY，anthropic 认 BASE_URL/API_KEY。
+	// 小写别名键会被静默存储但不被识别，切路由连通性验证时才失败（用户无从归因）。
+	// 入口拦截常见别名键，报错指路约定键名；其余自定义键不受影响。
+	if err := rejectInferenceAliasKeys(req.GetType(), req.GetConfig(), req.GetCredentials()); err != nil {
+		return nil, err
+	}
 	r, err := inferenceRunner()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "config: %v", err)
@@ -165,4 +173,53 @@ func (s *DSHRuntimeServiceImpl) SetInferenceRoute(ctx context.Context, req *pb.S
 			&pb.ValidatedEndpoint{Url: e.URL, Protocol: e.Protocol})
 	}
 	return out, nil
+}
+
+
+// inferenceCanonicalKeys — 网关约定的端点/凭据键（精确大小写），直接放行。
+var inferenceCanonicalKeys = map[string]bool{
+	"OPENAI_BASE_URL": true, "OPENAI_API_KEY": true,
+	"BASE_URL": true, "API_KEY": true,
+	"DEEPSEEK_BASE_URL": true, "DEEPSEEK_API_KEY": true,
+}
+
+// inferenceAliasKeys — 小写别名 → [openai 系约定键, anthropic 约定键]。
+// R55 补遗（2026-09-11 审计）：约定键的全小写形态（openai_base_url 等）比裸别名更
+// 常见的直觉输入，同样静默存储不被网关识别——一并拦截。
+var inferenceAliasKeys = map[string][2]string{
+	"base_url":         {"OPENAI_BASE_URL", "BASE_URL"},
+	"baseurl":          {"OPENAI_BASE_URL", "BASE_URL"},
+	"api_key":          {"OPENAI_API_KEY", "API_KEY"},
+	"apikey":           {"OPENAI_API_KEY", "API_KEY"},
+	"openai_base_url":  {"OPENAI_BASE_URL", "BASE_URL"},
+	"openai_api_key":   {"OPENAI_API_KEY", "API_KEY"},
+	"deepseek_base_url": {"DEEPSEEK_BASE_URL", "BASE_URL"},
+	"deepseek_api_key":  {"DEEPSEEK_API_KEY", "API_KEY"},
+}
+
+// rejectInferenceAliasKeys — 已知别名键（大小写不敏感命中、且非精确约定键）→ InvalidArgument。
+func rejectInferenceAliasKeys(typ string, config, credentials map[string]string) error {
+	anthropic := strings.EqualFold(typ, "anthropic")
+	inspect := func(m map[string]string) error {
+		for k := range m {
+			if inferenceCanonicalKeys[k] {
+				continue // 精确约定键（含 anthropic 的 BASE_URL/API_KEY）放行
+			}
+			pair, alias := inferenceAliasKeys[strings.ToLower(k)]
+			if !alias {
+				continue
+			}
+			want := pair[0]
+			if anthropic {
+				want = pair[1]
+			}
+			return status.Errorf(codes.InvalidArgument,
+				"键 %q 是网关约定键的别名：网关只认约定大写键 %q（type=%s），小写键会被静默忽略导致路由验证失败（R55）", k, want, typ)
+		}
+		return nil
+	}
+	if err := inspect(config); err != nil {
+		return err
+	}
+	return inspect(credentials)
 }

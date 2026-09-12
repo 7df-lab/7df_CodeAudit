@@ -59,11 +59,13 @@ mutation-check **要求工作区干净**（git status 无未提交改动）—�
 | P-13 | 下载扩展名恒定 | 报告下载恒 `.bin` 无法关联格式（2026-09-06 修复） | reportFileExt 丢失 | dict.test.ts | — | M7 |
 | P-14 | 会话请求体不契约 | logout 空 body 恒 400 被清会话掩盖；register 邀请码空串误传 | 请求体形状无锚 | session.test.tsx（logout 携带 token / invite 剔除） | — | M9 / M10 |
 | P-15 | 状态机镜像漂移 | 按钮可见性与后端权威脱节（如 RUNNING 丢暂停） | ALLOWED_ACTIONS 手改 | stateMachine.test.ts（全分支） | — | M3 |
-| P-16 | 上传优先级矛盾态 | 「输入框置灰但列表有文件」，任务仍走 storage 通道（ADR-202） | onRemove 未同步清 file_id | TaskNewPage.test.tsx（移除恢复手填） | — | — |
-| P-17 | 参数跨步丢失 | 创建 POST body 为 sast_tools:[]/config:{}，任务必然失败（ADR-154，GUI 实测） | Step 卸载注销 Form 字段、确认页 validateFields 取空 | TaskNewPage.test.tsx（请求体矩阵①②） | — | — |
+| P-16 | 上传优先级矛盾态 | 「输入框置灰但列表有文件」，任务仍走 storage 通道（ADR-202） | onRemove 未同步清 file_id | ~~TaskNewPage.test.tsx（移除恢复手填）~~——任务级上传档随 2026-09-09 人类指令退役（向导无上传控件）；项目弹窗保留同型 onRemove 清零逻辑（ProjectsPage.tsx，防 file_id 残留跨项目） | — | — |
+| P-17 | 参数跨步丢失 | 创建 POST body 为 sast_tools:[]/config:{}，任务必然失败（ADR-154，GUI 实测） | Step 卸载注销 Form 字段、确认页 validateFields 取空 | TaskNewPage.test.tsx（请求体矩阵——2026-09-09 起锁定"config 无任务级源码键"） | — | — |
 | P-18 | 静默失败无反馈 | 创建失败用户停在确认页无任何提示（ADR-154） | mutation 无 onError | TaskNewPage/ProjectsPage 断言 + 响亮失败测试台 | — | — |
 | P-19 | 客户端直连微服务 | 浏览器绕过同源容器直连网关/服务（破坏 14号 P1 拓扑与 nginx 安全边界） | 绝对 URL 进入 api/fetch 调用 | —（拓扑纪律） | **G-05** | — |
 | P-20 | WS 断流观测空白 | 长任务非收束断线后面板空白直到重连/下一轮询拍（服务端游标已越过 WS pend 内容，只能经快照回填；gw-f6a3523 实证，116af13 修复） | onclose 只等 5s 重连不补拉；401 断线由单飞刷新自愈 token 竞态 | TaskDetailPage.test.tsx（「断线立即补拉」「AI 帧逐帧到达」两锁，116af13） | — | M12 |
+| P-21 | 写入方误标"人工" | 机器写入的 verdict+reasoning（规则兜底/quality-validator 降级，[降级] 前缀或无前缀）被"有理由=人工"启发式标为人工（2026-09-09 用户报障；引擎侧已统一 [降级] 前缀，engine 96a8bae6/ADR-223） | 前缀识别缺第三类机器标记 | FindingDetailPage.test.tsx（[降级] → 「写入方：系统（自动降级标记）」用例） | — | — |
+| P-22 | boot 瞬时失败误判未登录 | 续签成功但 /users/me 被瞬时限流（429 风暴，GUI 巡检 2026-09-10 实证）：user=null → 活跃用户被静默甩到登录页，会话看似随机失效 | boot 链把 me 首次失败与「无凭据」混为一谈，无退避重试 | session.test.tsx「P-22 续签成功但 me 被瞬时限流（429）」 | — | M13 |
 
 ## 4. 锁的三种形态（写法规范）
 

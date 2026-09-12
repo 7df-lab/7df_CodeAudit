@@ -58,11 +58,8 @@ var AgentConfigs = map[AgentType]AgentConfig{
 	},
 }
 
-var (
-	ErrMaxIterationsExceeded = errors.New("maximum iterations exceeded")
-	ErrSandboxTimeout        = errors.New("sandbox execution timeout")
-	ErrSandboxViolation      = errors.New("sandbox security violation")
-)
+// ErrMaxIterationsExceeded — Iterate 超上限时返回（依据: 07 §8.1 超限中断语义）。
+var ErrMaxIterationsExceeded = errors.New("maximum iterations exceeded")
 
 // Agent represents a running analysis agent instance.
 type Agent struct {

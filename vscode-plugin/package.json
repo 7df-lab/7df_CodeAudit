@@ -31,7 +31,7 @@
         "codeaudit.consoleUrl": {
           "type": "string",
           "default": "",
-          "description": "CodeAudit Web 控制台地址（默认空=由 serverUrl 推导同主机 :4173；控制台使用浏览器登录态，无需配置 token）"
+          "description": "CodeAudit Web 控制台地址（默认空=由 serverUrl 推导同主机 :80；控制台使用浏览器登录态，无需配置 token）"
         },
         "codeaudit.projectId": {
           "type": "string",

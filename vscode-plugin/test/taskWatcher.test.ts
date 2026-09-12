@@ -165,4 +165,79 @@ describe('TaskWatcher', () => {
     assert.strictEqual(gone.length, 1);
     assert.match(gone[0], /404/);
   });
+
+  it('轮询在途 404 返回前 watcher 已被 close（换任务替换/切绑收口）→ 不得触发 onTaskGone（回归锁 B5-1）', async () => {
+    const gone: string[] = [];
+    let rejectSnap!: (e: unknown) => void;
+    const gate = new Promise((_res, rej) => { rejectSnap = rej; });
+    const { watcher } = makeWatcher({
+      makeSocket: () => { throw new Error('no WS'); },
+      onTaskGone: (detail) => gone.push(detail),
+      client: {
+        rateLimitUntil: 0,
+        taskSnapshot: () => gate, // 首轮轮询挂起（在途）
+      } as unknown as CodeAuditClient,
+    });
+    watcher.start();
+    watcher.close(); // 在途期间被替换关闭（watchTask 换新任务 / bindTask 收口）
+    rejectSnap(new Error('GET /v1/tasks/t1/snapshot -> 404: {"error":"NotFound: task t1 not found"}'));
+    await new Promise((r) => setTimeout(r, 0)); // 微任务收敛（catch 分支执行完）
+    assert.strictEqual(gone.length, 0, '已关闭 watcher 的在途 404 不得触发 onTaskGone（归属可能已切到新任务）');
+  });
+
+  it('WS 在途终态帧在 close 后到达：settle 复查 closed，不二次 emit terminal/snapshot（回归锁：terminal 双发收尾重跑）', async () => {
+    let snaps = 0;
+    const { watcher, sockets } = makeWatcher({
+      client: {
+        rateLimitUntil: 0,
+        taskSnapshot: async () => {
+          snaps++;
+          return snap('TASK_STATUS_RUNNING'); // 轮询路径恒 RUNNING：terminal 只能来自 WS 帧
+        },
+      } as unknown as CodeAuditClient,
+    });
+    const terminals: string[] = [];
+    const snapshotEvents: string[] = [];
+    watcher.on('terminal', (s: string) => terminals.push(s));
+    watcher.on('snapshot', (s: TaskSnapshot) => snapshotEvents.push(s.task.status));
+    watcher.start();
+    sockets.delivered[0].open!();
+    // 第一条终态帧：settle → emit terminal → close()
+    sockets.delivered[0].msg!(JSON.stringify(snap('TASK_STATUS_COMPLETED')));
+    assert.deepStrictEqual(terminals, ['TASK_STATUS_COMPLETED'], '终态帧触发一次 terminal');
+    // close() 后已缓冲的第二条终态帧（服务端完成瞬间连推/在途帧）不得再 emit
+    sockets.delivered[0].msg!(JSON.stringify(snap('TASK_STATUS_COMPLETED')));
+    assert.strictEqual(terminals.length, 1, 'closed 后在途帧不得二次 emit terminal（收尾重跑=双通知/重复拉取）');
+    assert.strictEqual(snapshotEvents.filter((s) => s === 'TASK_STATUS_COMPLETED').length, 1, 'closed 后在途帧不得二次 emit snapshot');
+    await new Promise((r) => setTimeout(r, 0)); // 轮询微任务收敛（closed 复查后不 settle）
+    assert.strictEqual(snaps, 1);
+  });
+
+  it('轮询 404 与迟到 WS 1011 双通道竞态：onTaskGone 恰一次，404 收束时 socket 被 close（回归锁：双通道双触发）', async () => {
+    const gone: string[] = [];
+    let wsClosed = 0;
+    const made: { onclose?: (ev?: { code?: number; reason?: string }) => void }[] = [];
+    const { watcher, runDue } = makeWatcher({
+      onTaskGone: (detail) => gone.push(detail),
+      client: {
+        rateLimitUntil: 0,
+        taskSnapshot: async () => {
+          throw new Error('GET /v1/tasks/t1/snapshot -> 404: {"error":"NotFound: task t1 not found"}');
+        },
+      } as unknown as CodeAuditClient,
+      makeSocket: () => {
+        const ws: WebSocketLike = { close: () => { wsClosed++; } };
+        made.push(ws);
+        return ws;
+      },
+    });
+    watcher.start();
+    await new Promise((r) => setTimeout(r, 0)); // 首轮轮询 404 → close() 收束 + onTaskGone#1
+    assert.strictEqual(gone.length, 1);
+    assert.ok(wsClosed >= 1, '404 收束必须 close socket（不能只置标志留活连接）');
+    // 服务端已发出的 1011 close 帧随后到达：被 closed 复查拦截，不二次 onTaskGone
+    made[0].onclose?.({ code: 1011, reason: 'task t1 not found' });
+    runDue();
+    assert.strictEqual(gone.length, 1, '迟到 1011 不得二次 onTaskGone（用户会收到两次「已删除」警告）');
+  });
 });

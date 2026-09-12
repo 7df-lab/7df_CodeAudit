@@ -291,6 +291,41 @@ sec_b() {
   ( cd "$ROOT" && REMOTE='' bash "$LIFE_SH" nonsense ) >/dev/null 2>&1
   RC=$?
   t "T-B9  未知子命令 → usage exit 2"                 test $RC -eq 2
+
+  # ---- B10 liveness probe 位置参数传递（§14 加固：host/port 零插值防注入）----
+  # 桩 bash 放独立目录（不进 $STUBS——外层 `bash $LIFE_SH` 解析会中招），只记录
+  # 参数绝不执行；旧形态（双引号内插）下 -c 脚本文本会携带注入串 → T-B10b/c 红。
+  new_case b10
+  cp "$TOML" "$CASE_DIR/deploy/gateway.toml"
+  touch "$CASE_DIR/jwt/signing.pem"
+  echo 'container_id=stub123' > "$STUB_CTRL"
+  PROBE_STUBS="$WORK/stubs-probe"; rm -rf "$PROBE_STUBS"; mkdir -p "$PROBE_STUBS"
+  REAL_BASH="$(command -v bash)"
+  cat > "$PROBE_STUBS/bash" <<'STUB'
+#!/bin/sh
+# 桩 bash：逐参记录后即退——捕获 probe 请求执行的脚本文本与参数形状，绝不执行。
+# 注意 shebang 必须是绝对路径解释器：`#!/usr/bin/env bash` 会经 PATH 再解析到
+# 本桩自身（本桩恰名 bash）→ 无限重入，5s 后被 timeout 击杀、日志空白。
+LOG="${STUB_LOG:?STUB_LOG required}"
+i=0; for a in "$@"; do printf 'ARG[%d]=%s\n' "$i" "$a" >> "$LOG"; i=$((i+1)); done
+exit 0
+STUB
+  chmod +x "$PROBE_STUBS/bash"
+  PWN="$WORK/pwn-marker"
+  HOSTILE="1.2.3.4; touch $PWN"
+  ( cd "$ROOT" && REMOTE='' DEPLOY_DIR="$CASE_DIR/deploy" JWT_DIR="$CASE_DIR/jwt" \
+    LIVENESS_HOST="$HOSTILE" LIVENESS_PORT=8080 \
+    PATH="$PROBE_STUBS:$STUBS:$PATH" "$REAL_BASH" "$LIFE_SH" status ) >/dev/null 2>&1
+  RC=$?
+  t "T-B10a 恶意 LIVENESS_HOST 下 status 仍走通（桩应答 liveness）" test $RC -eq 0
+  t "T-B10b probe 脚本文本为常量（exec …\$1/\$2 位置参数形态，零插值）" \
+    grep -qxF 'ARG[1]=exec 3<>/dev/tcp/$1/$2' "$STUB_LOG"
+  t "T-B10c 注入痕迹不进待执行脚本文本（ARG[1] 纯常量；恶意串只作惰性参数存在）" \
+    bash -c "! grep '^ARG\[1\]=' '$STUB_LOG' | grep -q 'touch'"
+  t "T-B10d 恶意 host 作为单一独立 argv 传递（\$1 整体，不拆不拼）" \
+    grep -qxF "ARG[3]=$HOSTILE" "$STUB_LOG"
+  t "T-B10e 注入命令未被执行（标记文件不存在）" \
+    bash -c "! test -e '$PWN'"
 }
 
 # =============================================================================
@@ -332,6 +367,9 @@ sec_c() {
     test "$(grep -cE '^server_sans[[:space:]]*=' "$CASE_DIR/deploy/gateway.toml")" = 1
   t "T-C1d 改写留时间戳备份" \
     bash -c "compgen -G '$CASE_DIR/deploy/gateway.toml.bak.*' >/dev/null"
+  local bak; bak="$(compgen -G "$CASE_DIR/deploy/gateway.toml.bak.*" | sed -n '1p')"
+  t "T-C1d2 备份内容=改写前内容（备份必须先于 sed/awk 改写）" \
+    grep -qF '["*.old.example"]' "$bak"
   t "T-C1e 钉域后 compose restart（保留规格口径）"    grep -qF 'restart gateway' "$STUB_LOG"
   t "T-C1f 容器在位时绝不 up -d"                      bash -c "! grep -qF 'up -d gateway' '$STUB_LOG'"
   local md5_before; md5_before="$(md5sum "$CASE_DIR/deploy/gateway.toml" | cut -d' ' -f1)"
@@ -377,8 +415,9 @@ sec_c() {
   RC=$?
   t "T-C5a JWT 缺失时 ensure 仍走通（自举）"          test $RC -eq 0
   t "T-C5b 触发一次性 generate-certs"                 grep -qF 'generate-certs' "$STUB_LOG"
+  # B2-3 后 output-dir 随 JWT_DIR 推导（本用例 JWT_DIR=$CASE_DIR/jwt）
   t "T-C5c generate-certs 参数指向 bind 内目录+正确 SAN" \
-    grep -qF -- '--output-dir /var/lib/openshell/tls' "$STUB_LOG" \
+    grep -qF -- "--output-dir $CASE_DIR/jwt" "$STUB_LOG" \
     -a grep -qF -- '--server-san host.openshell.internal' "$STUB_LOG"
   : > "$STUB_LOG"
   touch "$CASE_DIR/jwt/signing.pem"
@@ -415,6 +454,58 @@ sec_c() {
   t "T-C7a 容器缺失 ensure 先 up -d 走通"             test $RC -eq 0
   t "T-C7b up -d 紧随容器探测、先于 liveness（时序契约）" \
     bash -c "grep -A1 -F 'ps -q gateway' '$STUB_LOG' | tail -1 | grep -qF 'up -d gateway'"
+
+  # ---- C8 sed 替换文本转义（§14 加固：ROUTING_DOMAIN 含 | & / 不损坏 TOML）----
+  # 旧形态（$line 未转义直拼 s||| 替换文本）：| 提前闭段+& 展开全匹配 → sed 报错
+  # 或写坏 server_sans 行 → ensure 失败/文件损坏，以下用例红。
+  new_case c8; mk_fixture_toml wrong; touch "$CASE_DIR/jwt/signing.pem"
+  echo 'container_id=stub123' > "$STUB_CTRL"
+  HOSTILE_DOM='pipe|dom.test&done/2'
+  ( cd "$ROOT" && REMOTE='' DEPLOY_DIR="$CASE_DIR/deploy" JWT_DIR="$CASE_DIR/jwt" \
+    ROUTING_DOMAIN="$HOSTILE_DOM" \
+    LIVENESS_HOST=127.0.0.1 LIVENESS_PORT=$LIVENESS_PORT LIVENESS_TIMEOUT_SECS=10 \
+    PATH="$STUBS:$PATH" bash "$LIFE_SH" ensure ) >"$WORK/out" 2>&1
+  RC=$?
+  t "T-C8a 含元字符路由域 ensure 走通（替换分支）"      test $RC -eq 0
+  t "T-C8b TOML 完好：恰好一行 server_sans 且为字面强制域（awk 键值断言）" \
+    test "$(grep -cE '^server_sans[[:space:]]*=' "$CASE_DIR/deploy/gateway.toml")" = 1 \
+    -a "$(grep -cF "server_sans = [\"*.$HOSTILE_DOM\"]" "$CASE_DIR/deploy/gateway.toml")" = 1
+  t "T-C8c 改写后 TOML 仍可 tomllib 解析且值为强制域" \
+    python3 -c '
+import tomllib, sys
+d = tomllib.load(open(sys.argv[1], "rb"))
+v = d["openshell"]["gateway"]["server_sans"]
+assert v == ["*.pipe|dom.test&done/2"], repr(v)
+' "$CASE_DIR/deploy/gateway.toml"
+
+  # 插入分支（表在而 server_sans 缺行 → sed a 追加）同样须经转义
+  new_case c8b
+  cat > "$CASE_DIR/deploy/gateway.toml" <<'FIXTOML'
+[openshell]
+version = 1
+
+[openshell.gateway]
+bind_address = "127.0.0.1:8080"
+
+[openshell.drivers.docker]
+image_pull_policy = "IfNotPresent"
+FIXTOML
+  touch "$CASE_DIR/jwt/signing.pem"
+  echo 'container_id=stub123' > "$STUB_CTRL"
+  ( cd "$ROOT" && REMOTE='' DEPLOY_DIR="$CASE_DIR/deploy" JWT_DIR="$CASE_DIR/jwt" \
+    ROUTING_DOMAIN="$HOSTILE_DOM" \
+    LIVENESS_HOST=127.0.0.1 LIVENESS_PORT=$LIVENESS_PORT LIVENESS_TIMEOUT_SECS=10 \
+    PATH="$STUBS:$PATH" bash "$LIFE_SH" ensure ) >"$WORK/out" 2>&1
+  RC=$?
+  t "T-C8d 含元字符路由域 ensure 走通（插入分支）"      test $RC -eq 0
+  t "T-C8e 插入行字面落位（awk 键值断言）" \
+    grep -qF "server_sans = [\"*.$HOSTILE_DOM\"]" "$CASE_DIR/deploy/gateway.toml"
+  t "T-C8f 插入分支 TOML 可解析且值为强制域" \
+    python3 -c '
+import tomllib, sys
+d = tomllib.load(open(sys.argv[1], "rb"))
+assert d["openshell"]["gateway"]["server_sans"] == ["*.pipe|dom.test&done/2"]
+' "$CASE_DIR/deploy/gateway.toml"
 }
 
 # =============================================================================
@@ -456,7 +547,8 @@ sec_d() {
 }
 
 # =============================================================================
-# E deploy.sh 行为级（stub pct push + 差量→bak→push→ensure 全时序）
+# E deploy.sh 行为级（REMOTE='' 本机契约 + 差量→bak→push→ensure 时序）
+#   B1-5 起 push 仅限 REMOTE 非空（远程模式）；REMOTE='' 断言绝不调 pct
 # =============================================================================
 
 sec_e() {
@@ -477,24 +569,39 @@ sec_e() {
     test $RC -eq 0 -a "$(grep -cF 'in sync, ensure only' "$WORK/out")" = 1
   t "T-E1b 无文件被推"                                bash -c "! grep -q pushed '$WORK/out'"
 
-  # 漂移：远端副本（fixture）被改 → check 报告不改 → deploy 留 bak→push→ensure 自愈
+  # 漂移：远端副本（fixture）被改 → check 报告不改 → REMOTE='' 本机模式
+  # （B1-5 契约）：pct push 属远程动作必须跳过，ensure 收尾就地治愈路由域
   sed -i 's/sandbox\.codeaudit\.internal/old.example/' "$CASE_DIR/deploy/gateway.toml"
   ( cd "$ROOT" && REMOTE='' VMID='' DEPLOY_DIR="$CASE_DIR/deploy" JWT_DIR="$CASE_DIR/jwt" \
     PATH="$STUBS:$PATH" bash "$DEPLOY_SH" check ) >"$WORK/out" 2>&1
   RC=$?
-  t "T-E2a check 报 drift 且 exit 0（漂移≠失败）" \
-    test $RC -eq 0 -a "$(grep -cF 'drift: gateway.toml' "$WORK/out")" = 1
+  # B2-2（2026-09-11 审计）：漂移必须 exit 1——伞仓 sandbox-deploy check 按退出码聚合，
+  # 恒 0 令 CD↔LXC 漂移在门禁静默通过（原"漂移≠失败"口径与上游门禁语义冲突，按审计修正）
+  t "T-E2a check 报 drift 且 exit 1（漂移=门禁失败，B2-2）" \
+    test $RC -eq 1 -a "$(grep -cF 'drift: gateway.toml' "$WORK/out")" = 1
+  : > "$STUB_LOG"
   ( cd "$ROOT" && REMOTE='' VMID='' DEPLOY_DIR="$CASE_DIR/deploy" JWT_DIR="$CASE_DIR/jwt" \
     LIVENESS_HOST=127.0.0.1 LIVENESS_PORT=$LIVENESS_PORT LIVENESS_TIMEOUT_SECS=10 \
     PATH="$STUBS:$PATH" bash "$DEPLOY_SH" deploy ) >"$WORK/out" 2>&1
   RC=$?
-  t "T-E2b deploy 推送漂移文件 exit 0"                test $RC -eq 0
-  t "T-E2c 推送前远端留 .bak 时间戳备份" \
-    bash -c "compgen -G '$CASE_DIR/deploy/gateway.toml.bak.*' >/dev/null"
-  t "T-E2d 文件经桩 pct push 下发"                    grep -qF 'pushed: gateway.toml' "$WORK/out"
-  t "T-E2e 下发后远端副本与仓内一致（自愈）" \
-    bash -c "cmp -s '$ROOT/gateway.toml' '$CASE_DIR/deploy/gateway.toml'"
-  t "T-E2f 未漂移文件不重推"                          test "$(grep -cF 'pushed:' "$WORK/out")" = 1
+  t "T-E2b REMOTE='' 漂移 deploy → exit 0 + 跳过推送提示" \
+    test $RC -eq 0 -a "$(grep -cF 'REMOTE 空=本机模式，跳过推送' "$WORK/out")" = 1
+  t "T-E2c 本机模式绝不调用 pct（push 路径纳入 REMOTE 契约）" \
+    bash -c "! grep -q '^pct ' '$STUB_LOG'"
+  t "T-E2d 无 pushed 字样（不得谎报推送）" \
+    bash -c "! grep -qF 'pushed:' '$WORK/out'"
+  t "T-E2e ensure 收尾就地治愈路由域（事实源=仓内目录）" \
+    grep -qF 'server_sans = ["*.sandbox.codeaudit.internal"]' "$CASE_DIR/deploy/gateway.toml"
+
+  # B2-3（2026-09-11 审计）：JWT_DIR 覆盖时 generate-certs 的 mount/output 必须由
+  # $JWT_DIR 推导——原硬编码 /var/lib/openshell 令密钥落不到检查路径（每轮重复生成）
+  rm -f "$CASE_DIR/jwt/signing.pem"
+  : > "$STUB_LOG"
+  ( cd "$ROOT" && REMOTE='' VMID='' DEPLOY_DIR="$CASE_DIR/deploy" JWT_DIR="$CASE_DIR/jwt"     LIVENESS_HOST=127.0.0.1 LIVENESS_PORT=$LIVENESS_PORT LIVENESS_TIMEOUT_SECS=10     PATH="$STUBS:$PATH" bash "$DEPLOY_SH" deploy ) >"$WORK/out" 2>&1
+  t "T-E2f generate-certs 的 --output-dir 随 JWT_DIR 推导（B2-3）" \
+    grep -qF -- "--output-dir $CASE_DIR/jwt" "$STUB_LOG"
+  t "T-E2g generate-certs 的 mount 随 JWT 父目录推导（B2-3）" \
+    grep -qF -- "-v $CASE_DIR:$CASE_DIR" "$STUB_LOG"
 
   ( cd "$ROOT" && REMOTE='' bash "$DEPLOY_SH" nonsense ) >/dev/null 2>&1
   RC=$?

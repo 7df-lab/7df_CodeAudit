@@ -4,7 +4,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ApiError, CodeAuditClient, type TokenStore } from './apiClient';
+import { CodeAuditClient, type TokenStore } from './apiClient';
 import { selectLowRiskFixCandidates } from './lowRiskApply';
 import { computePatchChanges, listUpdatedFiles, PatchActionType, type PatchFileChange } from './applyPatch';
 import { buildViewUpdate, renderAiContextHtml } from './aiContextView';
@@ -18,7 +18,8 @@ import { applyFrame, buildProgressItems, createProgressState, sandboxPackCheck, 
 import { buildTree, findingDescription, findingLabel, pickFindingAtLine, rollbackPickItems, type TreeNode } from './treeModel';
 import { TaskWatcher } from './taskWatcher';
 import { zipFiles } from './workspaceZip';
-import type { TaskSnapshot, TaskSummary, UnifiedFinding } from './types';
+import { buildDiffHint, collectGitAnchor, collectGitChanges, countNewCommits, previewText, sameAnchorNoChange } from './gitAnchor';
+import type { GitAnchor, TaskSnapshot, TaskSummary, UnifiedFinding } from './types';
 import { isTerminalTaskStatus } from './types';
 
 class SecretTokenStore implements TokenStore {
@@ -46,12 +47,17 @@ class SecretTokenStore implements TokenStore {
   async boot(): Promise<void> {
     this.refreshCache = await this.secrets.get('codeaudit.refresh') ?? '';
   }
-  clear(): void {
+  /**
+   * silent=true：用户主动登出等"已知晓"的清除——不触发 onCleared 的
+   * "登录会话已失效"告警（logout 命令自己出"已退出"提示，双告警误导）。
+   * refresh 失败/凭据被动清除仍走非静默路径（真正需要告知的会话失效）。
+   */
+  clear(silent = false): void {
     const had = !!this.access || !!this.refreshCache;
     this.access = '';
     this.refreshCache = '';
     void this.secrets.delete('codeaudit.refresh');
-    if (had) this.onCleared?.();
+    if (had && !silent) this.onCleared?.();
   }
 }
 
@@ -169,6 +175,17 @@ class FindingDetailProvider implements vscode.WebviewViewProvider {
 const asFinding = (arg: unknown): UnifiedFinding | undefined =>
   arg && typeof arg === 'object' && 'finding' in arg ? (arg as { finding: UnifiedFinding }).finding : (arg as UnifiedFinding | undefined);
 
+// fire-and-forget 命令收口（B2-6）：async 命令体内未被自身 try/catch 吸收的异常，
+// 不再变成无声的 unhandled rejection，统一以错误通知浮出（各 do* 正常失败路径
+// 已自行弹错，此处是最后兜底）。
+const guardCmd = (p: Promise<void>): void => {
+  p.catch((err: unknown) => vscode.window.showErrorMessage(`CodeAudit 操作失败：${err instanceof Error ? err.message : String(err)}`));
+};
+
+// 打包清单文件数上限（B5-2）：findFiles 的 max 参数。命中上限=清单被截断，超出
+// 部分静默不进审计——必须显式告知，由用户收紧 excludes 或确认按当前清单继续。
+const PACK_FILE_CAP = 20_000;
+
 export function activate(context: vscode.ExtensionContext): void {
   const cfg = () => vscode.workspace.getConfiguration('codeaudit');
   const secrets = context.secrets;
@@ -207,9 +224,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // 漏洞详情视图：点击漏洞时顶替"任务进度"（when 上下文互斥）。onAction 回调引用的
   // doFixFinding/doRollbackFix/doOpenFinding 在 activate 下方定义，回调仅由用户点击触发，安全。
   const detailView = new FindingDetailProvider((action, f) => {
-    if (action === 'openLocation') void doOpenFinding(f, { preserveFocus: false });
-    else if (action === 'fix') void doFixFinding(f);
-    else if (action === 'rollback') void doRollbackFix(f);
+    if (action === 'openLocation') guardCmd(doOpenFinding(f, { preserveFocus: false }));
+    else if (action === 'fix') guardCmd(doFixFinding(f));
+    else if (action === 'rollback') guardCmd(doRollbackFix(f));
   });
   // 点击漏洞（树上条目/详情里的"打开代码位置"）：跳转编辑器 + 任务进度切换为漏洞详情
   const showFindingDetail = (f: UnifiedFinding): void => {
@@ -469,6 +486,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const doLogin = async (): Promise<void> => {
     const serverUrl = await vscode.window.showInputBox({ prompt: '平台网关地址', value: cfg().get('serverUrl', '') });
     if (serverUrl === undefined) return;
+    // 空地址（空串/纯空白）拒绝：写入会让 baseUrl 变 ''，后续相对路径 fetch 报难懂错误
+    if (!serverUrl.trim()) {
+      vscode.window.showWarningMessage('网关地址不能为空——配置未修改，请重新执行「CodeAudit: 登录平台」并输入平台网关地址');
+      return;
+    }
     await cfg().update('serverUrl', serverUrl, vscode.ConfigurationTarget.Global);
     client.baseUrl = serverUrl.replace(/\/+$/, '');
     const username = await vscode.window.showInputBox({ prompt: '用户名' });
@@ -479,8 +501,10 @@ export function activate(context: vscode.ExtensionContext): void {
       const resp = await client.login(username, password);
       setCtx('codeaudit.loggedIn', true);
       updateStatusBar();
-      log.info(`登录成功：${client.baseUrl}（有效期 ${Math.round(resp.expires_in_s / 60)}min）`);
-      vscode.window.showInformationMessage(`CodeAudit 登录成功（有效期 ${Math.round(resp.expires_in_s / 60)}min）`);
+      // expires_in_s 归一（B8）：protojson int64 可能为十进制字符串，消费点 Number() 兜底
+      const expiresInMin = Math.round(Number(resp.expires_in_s) / 60);
+      log.info(`登录成功：${client.baseUrl}（有效期 ${expiresInMin}min）`);
+      vscode.window.showInformationMessage(`CodeAudit 登录成功（有效期 ${expiresInMin}min）`);
     } catch (e) {
       log.error(`登录失败 ${client.baseUrl}：${(e as Error).message}（若本机有代理，检查 VS Code http.proxy/noProxy 设置或以无代理环境启动 VS Code）`);
       vscode.window.showErrorMessage(`CodeAudit 登录失败：${(e as Error).message}`);
@@ -512,6 +536,20 @@ export function activate(context: vscode.ExtensionContext): void {
     await cfg().update('projectId', picked.project.project_id, vscode.ConfigurationTarget.Workspace);
     setCtx('codeaudit.boundProject', true);
     vscode.window.showInformationMessage(`已绑定项目：${picked.label}（写入工作区 .vscode/settings.json）`);
+    // 绑定即自动同步平台已有风险（人类指令 2026-09-12）：该项目有已完成任务时拉取其
+    // 发现（bindTask 带轻通知），空面板立即可见；无完成任务/拉取失败静默仅日志——绑定
+    // 流程不被打扰。仅在空闲时触发：扫描发起中/活跃非终态任务时同步会撞 bindTask 的
+    // 切换确认门（B2-5），跳过不打扰。
+    if (!scanning && !(watcher && progress && !isTerminalTaskStatus(progress.status))) {
+      void (async () => {
+        try {
+          const tid = await latestCompletedTask(picked.project.project_id);
+          if (tid) await bindTask(tid);
+        } catch (e) {
+          log.warn(`绑定项目后自动同步失败（可稍后执行「CodeAudit: 刷新扫描结果」）：${(e as Error).message}`);
+        }
+      })();
+    }
   };
 
   // —— 扫描 ——
@@ -530,34 +568,109 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // 扫描互斥：运行中禁止重复发起——每次扫描都会让平台创建沙箱执行任务（真实资源消耗）
   let scanning = false;
+  // 修复互斥（B2-6，同 scanning 模式）：补丁应用含多步 await（开文档/applyEdit/fs 落盘），
+  // 并发两发会交叠改盘/互相踩 checkpoint——同一时刻只放行一个 applyMachinePatch
+  let fixing = false;
+  // 本次扫描是否经用户选择走增量（ADR-225：完成态口径与降级提示的展示开关）
+  let incrementalRequested = false;
 
   const doScan = async (): Promise<void> => {
     if (scanning) {
       vscode.window.showWarningMessage(`代码审计进行中（任务 ${lastTaskId.slice(0, 8)}…），完成后方可再次发起；进度见状态栏`);
       return;
     }
-    const projectId = await requireReady();
-    if (!projectId) return;
-    const root = vscode.workspace.workspaceFolders?.[0];
-    if (!root) {
-      vscode.window.showErrorMessage('没有打开的工作区');
-      return;
-    }
-    // 连通性前置探测：isLoggedIn 只代表本地有凭据。网关不可达时若无此检查，
-    // 用户会等打包/上传走完才看到 ECONNREFUSED（白打一次包还误以为是扫描问题）
-    try {
-      await client.listTools();
-    } catch (e) {
-      const offlineHint = client.offline ? '（网关不可达：检查 serverUrl 与网络/代理）' : '';
-      vscode.window.showErrorMessage(`无法连接平台${offlineHint}：${(e as Error).message}——未发起扫描`);
-      return;
-    }
+    // 互斥立即置位（B2-1）：原先 scanning=true 在 listTools 网络往返之后才置位，
+    // 并发第二次调用可穿过守卫造成双上传/双沙箱消耗。预检失败/用户取消/中途异常
+    // 的全部早退路径经 finally 统一复位；唯一例外是任务成功启动（started=true）——
+    // 互斥保持，交由 watcher 终态/onTaskGone 释放。
     scanning = true;
-    setPhase('打包中…');
+    let started = false;
     try {
+      const projectId = await requireReady();
+      if (!projectId) return;
+      const root = vscode.workspace.workspaceFolders?.[0];
+      if (!root) {
+        vscode.window.showErrorMessage('没有打开的工作区');
+        return;
+      }
+      // 连通性前置探测：isLoggedIn 只代表本地有凭据。网关不可达时若无此检查，
+      // 用户会等打包/上传走完才看到 ECONNREFUSED（白打一次包还误以为是扫描问题）
+      try {
+        await client.listTools();
+      } catch (e) {
+        const offlineHint = client.offline ? '（网关不可达：检查 serverUrl 与网络/代理）' : '';
+        vscode.window.showErrorMessage(`无法连接平台${offlineHint}：${(e as Error).message}——未发起扫描`);
+        return;
+      }
+      setPhase('打包中…');
+      // ---- 增量入口（ADR-225 D4/D5，验收 F16-F19）：基线探测 + 锚点采集 + 询问 ----
+      // 有基线 → QuickPick 三选（增量/全量/取消）；无基线 → 直接全量零询问；
+      // 基线探测失败 → 诚实降级全量（warn 日志），绝不阻塞扫描主路径。
+      incrementalRequested = false;
+      // 本次扫描的增量口径先落局部变量：watchTask 入口会按"新任务"复位
+      // incrementalRequested（B5-2 防跨任务串口径），启动 watcher 后再回填
+      let incRequested = false;
+      let incrementalPayload: { baseline_task_id?: string; git_anchor?: GitAnchor | null; diff_hint?: string } | undefined;
+      try {
+        const tasks = await client.listTasks(projectId);
+        const baseline = tasks.find((t) => t.status === 'TASK_STATUS_COMPLETED') ?? null;
+        const anchor = await collectGitAnchor();
+        const changes = anchor ? await collectGitChanges(root.uri.fsPath) : [];
+        if (baseline) {
+          // F17 无变更预检：锚点完全一致（commit 同 + 双方无未提交改动）才提示；
+          // 预检只是建议，服务端内容 diff 才是权威——用户可选"仍然扫描"
+          if (sameAnchorNoChange(anchor, baseline.git_anchor)) {
+            const go = await vscode.window.showInformationMessage(
+              `代码较上次扫描（任务 ${baseline.task_id.slice(0, 8)}…）无变更——增量与全量都将得到相同结果`,
+              { modal: true },
+              '仍然扫描',
+            );
+            if (go !== '仍然扫描') return; // 复位收敛进 finally（B2-1）
+          }
+          // F18 变更预告（非 git 工作区无此行，布局不塌陷）
+          const preview = anchor ? previewText(await countNewCommits(baseline.git_anchor?.commit ?? ''), changes) : '';
+          const picked = await vscode.window.showQuickPick(
+            [
+              {
+                label: `增量扫描（基于 ${baseline.task_id.slice(0, 8)}… · ${(baseline.created_at ?? '').replace('T', ' ').slice(0, 16)}）`,
+                description: preview,
+                detail: '仅扫描相对基线的变更文件；未变更文件的发现与人工裁决从基线继承',
+                incremental: true,
+              },
+              {
+                label: '全量扫描',
+                description: '',
+                detail: '扫描整个工作区（不与基线对比）',
+                incremental: false,
+              },
+            ],
+            { placeHolder: '检测到已完成的扫描任务——选择本次扫描方式（Esc 取消）' },
+          );
+          if (!picked) return; // 取消：无上传、无任务、无状态残留（A19.3；复位收敛进 finally）
+          if (picked.incremental) {
+            incRequested = true;
+            incrementalPayload = {
+              git_anchor: anchor,
+              diff_hint: buildDiffHint(changes) || undefined,
+            };
+            log.info(`增量扫描：基线 ${baseline.task_id}${anchor ? `，锚点 ${anchor.commit.slice(0, 7)}${anchor.dirty ? '（含未提交改动）' : ''}` : '（非 git 工作区，纯内容对比）'}`);
+          }
+        }
+      } catch (e) {
+        log.warn(`增量基线探测失败，本次按全量：${(e as Error).message}`);
+      }
       const excludes = cfg().get<string[]>('excludeGlobs', []);
-      const uris = await vscode.workspace.findFiles('**/*', `{${excludes.join(',')}}`, 20000);
+      const uris = await vscode.workspace.findFiles('**/*', `{${excludes.join(',')}}`, PACK_FILE_CAP);
       log.info(`打包清单：findFiles 命中 ${uris.length} 个文件（排除规则 ${excludes.length} 条，根 ${root.uri.fsPath}）`);
+      // 命中上限（B5-2）：清单被截断（超出 PACK_FILE_CAP 的文件静默不进审计）——
+      // 弹警告让用户收紧 codeaudit.excludeGlobs 重试，或显式确认按当前清单继续
+      if (uris.length >= PACK_FILE_CAP) {
+        const go = await vscode.window.showWarningMessage(
+          `打包清单已达 ${PACK_FILE_CAP} 个文件上限——超出部分不会进入本次审计。建议收紧 codeaudit.excludeGlobs（如排除依赖/构建产物目录）后重试，或按当前清单继续`,
+          '继续打包',
+        );
+        if (go !== '继续打包') return; // 取消：零上传零建任务（复位收敛进 finally，B2-1）
+      }
       const files = uris.map((u) => ({ relPath: path.relative(root.uri.fsPath, u.fsPath).replace(/\\/g, '/'), absPath: u.fsPath }));
       // 防空包：曾实测 VS Code 冷启动后短窗内 findFiles 返回不全（3900→1 个文件），
       // 空包上传会白耗平台沙箱并产出误导性"0 发现"，故低于阈值即中止
@@ -595,6 +708,7 @@ export function activate(context: vscode.ExtensionContext): void {
         cfg().get('scanMode', 'SCAN_MODE_PARALLEL'),
         cfg().get<string[]>('sastTools', []),
         taskConfig,
+        incrementalPayload,
       );
       lastTaskId = task.task_id;
       void context.workspaceState.update('codeaudit.lastTaskId', task.task_id);
@@ -603,19 +717,31 @@ export function activate(context: vscode.ExtensionContext): void {
       phase = ''; // 任务已建立：状态栏切到 percent 驱动
       vscode.window.showInformationMessage(`代码审计已开始（任务 ${task.task_id.slice(0, 8)}）——进度见状态栏与“CodeAudit-任务进度”面板，AI 交互上下文可实时查看`);
       watchTask(task.task_id, blob.size);
+      // watchTask 入口已复位 incrementalRequested（B5-2 防跨任务串口径），此处按本次
+      // 扫描实际选定的口径回填——顺序不得颠倒，否则增量完成口径通知丢失（R58）
+      incrementalRequested = incRequested;
+      started = true; // 任务已建立：互斥保持，由 watcher 终态/onTaskGone 释放
       // 扫描启动即自动展开 AI 交互上下文（codeaudit.autoOpenAiContext 可关；不抢编辑器焦点）
       if (cfg().get('autoOpenAiContext', true)) showAiContext(true);
     } catch (e) {
-      scanning = false;
-      phase = '';
-      updateStatusBar();
       vscode.window.showErrorMessage(`扫描发起失败：${(e as Error).message}`);
+    } finally {
+      if (!started) {
+        scanning = false;
+        phase = '';
+        updateStatusBar();
+      }
     }
   };
 
   const watchTask = (taskId: string, expectedUploadBytes = 0, resumeState = false): void => {
     watcher?.close();
     cancelRequested = false;
+    // 增量口径不得跨任务串用（B5-2）：新任务跟踪开始即复位——上一任务若在增量完成
+    // 通知展示前被切走（早退路径不经过 `incrementalRequested = false` 收尾），
+    // 残留的 true 会让历史/新任务完成时误弹"增量扫描完成"。doScan 在启动 watcher
+    // 后按本次实际选定的口径回填。
+    incrementalRequested = false;
     if (!resumeState) {
       // 新任务开始：侧栏从"漏洞详情"切回"任务进度"（进度实时演进重新有价值）
       setCtx('codeaudit.findingDetail', false);
@@ -651,6 +777,11 @@ export function activate(context: vscode.ExtensionContext): void {
         else log.info(`WS 关闭：${detail || '(正常)'}`);
       },
       onTaskGone: (detail) => {
+        // 归属守卫（B5-1，R58/B2-2 同族）：回调到达时任务可能已切走——本 watcher 被
+        // watchTask/bindTask 替换关闭（close）前，其轮询在途 404 / WS 在途 1011 close 帧
+        // 仍会走到这里。旧任务的"已删除"不得把新任务的 progress 标 DEAD、误释 scanning
+        // 互斥（新扫描进行中会被解锁 → 重复沙箱消耗）或误清 taskRunning 上下文。
+        if (taskId !== lastTaskId || (progress && progress.taskId !== taskId)) return;
         // 平台已删除/归档该任务：终止同步（重连死循环防护），本地状态落终态"异常终止"
         // ——否则 progress 停在非终态，状态栏仍显示"暂停扫描"（点了只会再报 404）
         scanning = false;
@@ -692,13 +823,14 @@ export function activate(context: vscode.ExtensionContext): void {
       refreshProgressUi();
     });
     watcher.on('terminal', (taskStatus: string) => {
-      scanning = false; // 终态（完成/失败/超时/死亡/取消）一律释放互斥
-      setCtx('codeaudit.taskRunning', false);
-      setCtx('codeaudit.taskPaused', false);
       log.info(`任务终态 ${taskStatus}：logs=${progress?.logs.length ?? 0} ai=${progress?.aiCursor ?? 0}B wsLive=${progress?.wsLive ?? false}`);
       void (async () => {
-        // 竞态守卫：任务已切走（lastTaskId 变更）时，在途的收尾不得覆盖新绑定任务的结果
+        // 竞态守卫（B2-2）：任务已切走（lastTaskId 变更）时，在途收尾既不得覆盖新绑定
+        // 任务的结果，也不得误释新任务的扫描互斥/运行态上下文
         if (taskId !== lastTaskId) return;
+        scanning = false; // 终态（完成/失败/超时/死亡/取消）一律释放互斥
+        setCtx('codeaudit.taskRunning', false);
+        setCtx('codeaudit.taskPaused', false);
         if (taskStatus === 'TASK_STATUS_CANCELLED' || (cancelRequested && taskStatus !== 'TASK_STATUS_COMPLETED')) {
           updateStatusBar();
           vscode.window.showWarningMessage('代码审计已取消（任务未完成，结果不可用）');
@@ -711,12 +843,57 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         setPhase('拉取结果…');
         try {
-          findingsSource = 'scan';
           const findings = await client.listFindings(taskId);
+          // await 后复查（B2-2 TOCTOU）：拉取期间用户可能已切换绑定到其他任务，
+          // 旧任务的收尾不得 renderFindings/clearTaskUi 覆盖/误清新任务的 UI 与互斥
+          if (taskId !== lastTaskId || progress?.taskId !== taskId) return;
+          findingsSource = 'scan';
           renderFindings(findings, { resetTracking: true }); // 新扫描结果是行号的新真相
           clearTaskUi();
-          vscode.window.showInformationMessage(`CodeAudit 扫描完成：${findings.length} 条发现`);
+          // ADR-225 增量完成口径（A20.1）：变更 N · 删除 D · 继承 M · 新发现 K；
+          // 降级如实提示（incremental_degraded_reason）；数值以平台快照为准，不做本地推算
+          if (incrementalRequested) {
+            incrementalRequested = false;
+            let changedN = 0;
+            let deletedN = 0;
+            let degraded = '';
+            let anchorShort = '';
+            let metaUnavailable = false;
+            try {
+              const snap = await client.taskSnapshot(taskId);
+              // 二次 await 后复查（B2-2）：增量元数据不得写进已切换的其他任务。
+              // 只查 lastTaskId——本任务收尾已走 clearTaskUi（progress 置 null 是预期），
+              // 若再查 progress?.taskId 会恒真早退，完成口径通知永不显示（R58）。
+              if (taskId !== lastTaskId) return;
+              changedN = snap.task.changed_files?.length ?? 0;
+              deletedN = snap.task.deleted_files?.length ?? 0;
+              degraded = snap.task.config?.incremental_degraded_reason ?? '';
+              anchorShort = snap.task.git_anchor?.commit ? snap.task.git_anchor.commit.slice(0, 7) : '';
+            } catch (e) {
+              metaUnavailable = true;
+              log.warn(`增量元数据拉取失败（变更/删除数不展示）：${(e as Error).message}`);
+            }
+            const inherited = findings.filter((x) => x.inherited_from_task_id).length;
+            const fresh = findings.length - inherited;
+            const at = anchorShort ? `@ ${anchorShort}` : '';
+            if (degraded) {
+              vscode.window.showWarningMessage(`增量不可用，已执行全量（${degraded}）——${findings.length} 条发现 ${at}`.trim());
+            } else if (metaUnavailable) {
+              // 元数据不可得时不得展示「变更 0 · 删除 0」——会被读成"确认无变更"
+              vscode.window.showInformationMessage(
+                `CodeAudit 增量扫描完成：${findings.length} 条发现（继承 ${inherited} · 新发现 ${fresh}）——增量统计（变更/删除数）拉取失败，未展示`.trim(),
+              );
+            } else {
+              vscode.window.showInformationMessage(
+                `CodeAudit 增量扫描完成：${findings.length} 条发现（变更 ${changedN} · 删除 ${deletedN} · 继承 ${inherited} · 新发现 ${fresh}）${at}`.trim(),
+              );
+            }
+          } else {
+            vscode.window.showInformationMessage(`CodeAudit 扫描完成：${findings.length} 条发现`);
+          }
         } catch (e) {
+          // 失败收尾同样先复查归属（B2-2）：旧任务的拉取失败不得清掉新任务 UI
+          if (taskId !== lastTaskId || progress?.taskId !== taskId) return;
           clearTaskUi();
           vscode.window.showErrorMessage(`拉取结果失败：${(e as Error).message}`);
         }
@@ -770,8 +947,8 @@ export function activate(context: vscode.ExtensionContext): void {
       { placeHolder: `任务 ${progress.taskId.slice(0, 8)}… 进行中——选择操作` },
     );
     if (!picked) return;
-    if (picked.action === 'pause') void doPauseScan();
-    else if (picked.action === 'cancel') void doCancelScan();
+    if (picked.action === 'pause') guardCmd(doPauseScan());
+    else if (picked.action === 'cancel') guardCmd(doCancelScan());
     else showAiContext();
   };
 
@@ -805,7 +982,8 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showInformationMessage(`无法打开 ${f.location?.file_path}：文件在工作区中不存在或不可读（详情视图仍可查看该发现）`);
       return;
     }
-    const line = Math.max(0, (f.location?.start_line ?? 1) - 1);
+    // 跳转行号与诊断同源：优先 trackedLines 校准值（修复/回滚后行漂移），缺省回退扫描原始行
+    const line = Math.max(0, (trackedLines.get(f.finding_id) ?? f.location?.start_line ?? 1) - 1);
     await vscode.window.showTextDocument(doc, { selection: new vscode.Range(line, 0, line, 0), preserveFocus: opts?.preserveFocus ?? true });
   };
 
@@ -878,9 +1056,23 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     const fixed = result.lines;
     const fuzzNote = result.fuzz > 0 ? ` [容错匹配 fuzz=${result.fuzz}]` : '';
+    // 写盘互斥（B2-6 扩展）：兜底路径改盘段与 applyMachinePatch/回滚共用同一互斥
+    // ——并发交叠会互相踩 checkpoint/登记；进行中直接拒绝（不改盘、不建 checkpoint）
+    if (fixing) {
+      vscode.window.showWarningMessage('另一个修复/回滚正在写盘，请稍候再试');
+      return;
+    }
+    fixing = true;
+    try {
     // 一键修复（无确认门）：checkpoint → 落盘 → 展示变更 diff → 告知（可随时回滚）
+    // checkpoint 落盘失败不炸主流程（B2-6）：修复仍可应用，但须让用户知道没有回滚点
     const beforeContent = doc.getText();
-    const cpId = checkpoints.save({ [uri.fsPath]: beforeContent });
+    let cpId: string | null = null;
+    try {
+      cpId = checkpoints.save({ [uri.fsPath]: beforeContent });
+    } catch (e) {
+      vscode.window.showErrorMessage(`checkpoint 创建失败（本次修复将无法回滚，请检查磁盘/权限）：${(e as Error).message}`);
+    }
     const edit = new vscode.WorkspaceEdit();
     const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
     edit.replace(uri, fullRange, fixed.join(doc.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n'));
@@ -897,16 +1089,21 @@ export function activate(context: vscode.ExtensionContext): void {
         const bp = buildFilePatch(beforeContent, fixedContent);
         const patches: Record<string, FilePatch> | undefined =
           bp && bp.hunks.length > 0 ? { [uri.fsPath]: { oldPath: relPath, newPath: relPath, hunks: bp.hunks } } : undefined;
-        fixRegistry.recordApplied({
-          findingId: f.finding_id,
-          label,
-          checkpointId: cpId,
-          files: [uri.fsPath],
-          appliedAt: Date.now(),
-          state: 'applied',
-          patches,
-          linesBefore: { [uri.fsPath]: linesSnapshotForFile(relPath) },
-        });
+        // 登记写盘失败不炸主流程（B2-6）：修复已落盘是事实，但须告知回滚入口可能不可用
+        try {
+          fixRegistry.recordApplied({
+            findingId: f.finding_id,
+            label,
+            checkpointId: cpId,
+            files: [uri.fsPath],
+            appliedAt: Date.now(),
+            state: 'applied',
+            patches,
+            linesBefore: { [uri.fsPath]: linesSnapshotForFile(relPath) },
+          });
+        } catch (e) {
+          vscode.window.showErrorMessage(`修复登记写入失败（“已修复”徽章与回滚入口可能不可用）：${(e as Error).message}`);
+        }
         if (bp) applyTrackedShifts({ [uri.fsPath]: bp.shifts });
       }
       // 变更审阅视图：左=修复前快照（虚拟文档），右=当前文件（实时）
@@ -920,6 +1117,9 @@ export function activate(context: vscode.ExtensionContext): void {
     } else {
       vscode.window.showErrorMessage('修复应用失败：VS Code 拒绝了编辑（applyEdit=false）');
     }
+    } finally {
+      fixing = false;
+    }
   };
 
   // —— 机器补丁（diff_patch，apply_patch 语法）——
@@ -927,13 +1127,14 @@ export function activate(context: vscode.ExtensionContext): void {
   // 落盘 + 登记。任一校验失败 → 整体拒绝（返回原因，不弹 UI、不改盘），绝不部分
   // 应用、绝不静默错切。逐文件 diff 审阅数据一并返回：手动路径打开审阅视图，
   // 自动路径不用（避免轰炸编辑器）。
-  const applyMachinePatch = async (
+  type MachinePatchResult =
+    | { ok: true; fileCount: number; fuzz: number; saveFailures: number; saveTotal: number; diffs: { fileLabel: string; beforeUri: vscode.Uri; rightUri: vscode.Uri }[] }
+    | { ok: false; reason: string };
+
+  const applyMachinePatchInner = async (
     f: UnifiedFinding,
     label: string,
-  ): Promise<
-    | { ok: true; fileCount: number; fuzz: number; saveFailures: number; saveTotal: number; diffs: { fileLabel: string; beforeUri: vscode.Uri; rightUri: vscode.Uri }[] }
-    | { ok: false; reason: string }
-  > => {
+  ): Promise<MachinePatchResult> => {
     let computed: { changes: Record<string, PatchFileChange>; fuzz: number };
     const docs = new Map<string, vscode.TextDocument>(); // 补丁路径 → 已打开文档（Update/Delete 段）
     try {
@@ -982,8 +1183,14 @@ export function activate(context: vscode.ExtensionContext): void {
       else snapshot[e.abs] = null; // Add 目标
       if (e.moveAbs) snapshot[e.moveAbs] = null; // Move 目标
     }
-    const cpId = checkpoints.save(snapshot);
-    const touchedFiles = [...new Set([...Object.keys(snapshot)])];
+    // 创建失败不炸主流程（B2-6）：修复仍可应用，但必须让用户知道本次没有回滚点
+    let cpId: string | null = null;
+    try {
+      cpId = checkpoints.save(snapshot);
+    } catch (e) {
+      vscode.window.showErrorMessage(`checkpoint 创建失败（本次修复将无法回滚，请检查磁盘/权限）：${(e as Error).message}`);
+    }
+    const touchedFiles = Object.keys(snapshot);
 
     // 应用：Update 走 WorkspaceEdit+保存（保留撤销栈，缓冲区即真相）；
     // Add/Move 目标与 Delete/Move 源走 fs（VS Code 随磁盘变更自动刷新）。
@@ -991,12 +1198,16 @@ export function activate(context: vscode.ExtensionContext): void {
     // 还原已执行部分）——任何失败路径都必须兑现"整体拒绝，绝不部分应用"。
     const edit = new vscode.WorkspaceEdit();
     const toSave: vscode.TextDocument[] = [];
+    // 被 applyEdit 改写过缓冲区的 Update 文档（abs → doc）：fs 阶段失败还原时，
+    // 这些文档的缓冲区已带新内容，仅还原磁盘会残留脏缓冲区（随手保存即复活补丁）
+    const editedDocs = new Map<string, vscode.TextDocument>();
     const writes: { abs: string; content: string }[] = [];
     const deletes: string[] = [];
     for (const e of plan) {
       if (e.change.type === PatchActionType.UPDATE && e.change.newContent !== undefined && e.doc && !e.moveAbs) {
         edit.replace(e.uri, new vscode.Range(e.doc.positionAt(0), e.doc.positionAt(e.doc.getText().length)), e.change.newContent);
         toSave.push(e.doc);
+        editedDocs.set(e.abs, e.doc);
       } else if (e.change.type === PatchActionType.UPDATE && e.change.newContent !== undefined && e.moveAbs) {
         writes.push({ abs: e.moveAbs, content: e.change.newContent });
         deletes.push(e.abs);
@@ -1021,11 +1232,28 @@ export function activate(context: vscode.ExtensionContext): void {
       for (const d of deletes) await fs.promises.rm(d, { force: true });
     } catch (e) {
       // fs 阶段失败（Windows EBUSY/EACCES 等）：先用 checkpoint 把已执行的写入/删除
-      // 尽力还原，再整体报败——绝不留下"半应用"状态
+      // 尽力还原，再整体报败——绝不留下"半应用"状态。Update 文档的缓冲区已被
+      // applyEdit 改写，仅还原磁盘会残留脏缓冲区（随手保存即复活补丁），所以对
+      // 这类文档用 WorkspaceEdit.replace 回写旧内容并保存（缓冲区+磁盘同还原，B2-6）
+      const undo = new vscode.WorkspaceEdit();
+      const undoDocs: vscode.TextDocument[] = [];
       for (const [abs, content] of Object.entries(snapshot)) {
         try {
+          const edited = editedDocs.get(abs);
+          if (edited && content !== null) {
+            undo.replace(edited.uri, new vscode.Range(edited.positionAt(0), edited.positionAt(edited.getText().length)), content);
+            undoDocs.push(edited);
+            continue;
+          }
           if (content === null) await fs.promises.rm(abs, { force: true });
           else await fs.promises.writeFile(abs, content, 'utf8');
+        } catch {
+          /* 尽力而为：主因随 reason 上报 */
+        }
+      }
+      if (undo.size > 0) {
+        try {
+          if (await vscode.workspace.applyEdit(undo)) await Promise.all(undoDocs.map((d) => d.save()));
         } catch {
           /* 尽力而为：主因随 reason 上报 */
         }
@@ -1067,7 +1295,13 @@ export function activate(context: vscode.ExtensionContext): void {
       // 回滚（跳回该修复前状态）时据此精确恢复行号
       const linesBefore: Record<string, Record<string, number>> = {};
       for (const e of plan) linesBefore[e.abs] = linesSnapshotForFile(e.rel);
-      fixRegistry.recordApplied({ findingId: f.finding_id, label, checkpointId: cpId, files: touchedFiles, appliedAt: Date.now(), state: 'applied', patches, linesBefore });
+      // 登记写盘失败不炸主流程（B2-6）：修复已落盘是事实，但用户必须知道
+      // "已修复"徽章/按发现回滚入口可能不可用
+      try {
+        fixRegistry.recordApplied({ findingId: f.finding_id, label, checkpointId: cpId, files: touchedFiles, appliedAt: Date.now(), state: 'applied', patches, linesBefore });
+      } catch (e) {
+        vscode.window.showErrorMessage(`修复登记写入失败（“已修复”徽章与回滚入口可能不可用）：${(e as Error).message}`);
+      }
       if (patchesOk) applyTrackedShifts(shiftsByFile);
     }
     // 逐文件 diff 审阅数据：左=修复前快照（虚拟文档），右=当前文件（实时）。
@@ -1079,6 +1313,18 @@ export function activate(context: vscode.ExtensionContext): void {
       return { fileLabel: e.change.movePath ? `${e.rel} → ${e.change.movePath}` : e.rel, beforeUri, rightUri };
     });
     return { ok: true, fileCount: plan.length, fuzz: computed.fuzz, saveFailures, saveTotal, diffs };
+  };
+
+  // 修复互斥外壳（B2-6，同 scanning 模式）：进入即占坑，任何返回路径经 finally 复位；
+  // 并发第二发直接整体拒绝（不改盘、不建 checkpoint）
+  const applyMachinePatch = async (f: UnifiedFinding, label: string): Promise<MachinePatchResult> => {
+    if (fixing) return { ok: false, reason: '另一个修复正在应用中，请稍候再试' };
+    fixing = true;
+    try {
+      return await applyMachinePatchInner(f, label);
+    } finally {
+      fixing = false;
+    }
   };
 
   const doApplyPatchFix = async (f: UnifiedFinding, label = f.title || f.cwe_id || `${f.location?.file_path ?? '?'}:${f.location?.start_line ?? '?'}`): Promise<void> => {
@@ -1132,12 +1378,19 @@ export function activate(context: vscode.ExtensionContext): void {
     let applied = 0;
     let skipped = 0;
     for (const p of picked) {
-      const r = await applyMachinePatch(p.finding, p.label);
-      if (r.ok) {
-        applied++;
-      } else {
+      // 逐条 try/catch（B2-6）：单条异常（含 applyMachinePatch 之外的意外抛错）
+      // 跳过并记日志，绝不中断其余候选——"单条失败跳过继续"语义
+      try {
+        const r = await applyMachinePatch(p.finding, p.label);
+        if (r.ok) {
+          applied++;
+        } else {
+          skipped++;
+          log.warn(`低风险修复跳过「${p.label}」：${r.reason}`);
+        }
+      } catch (e) {
         skipped++;
-        log.warn(`低风险修复跳过「${p.label}」：${r.reason}`);
+        log.warn(`低风险修复跳过「${p.label}」：${(e as Error).message}`);
       }
     }
     renderFindings(currentFindings); // 刷新"✔ 已修复"徽章
@@ -1264,7 +1517,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // 按发现回滚：优先外科回滚（逆补丁，不影响同文件更晚修复）；无补丁数据或
   // 锚定失败则降级 checkpoint 整文件覆盖（更晚修复被覆盖时明确警告，由用户裁决）。
   // 状态翻为 rolledback（可重新应用）。
-  const rollbackRecord = async (rec: FixRecord): Promise<void> => {
+  const rollbackRecordInner = async (rec: FixRecord): Promise<void> => {
     const later = fixRegistry.appliedRecords().filter((r) => r.appliedAt > rec.appliedAt && r.files.some((x) => rec.files.includes(x)));
     if (rec.patches && Object.keys(rec.patches).length > 0) {
       const surgical = await trySurgicalRollback(rec);
@@ -1332,6 +1585,22 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.showInformationMessage(`${summary}——「${rec.label}」已回滚，可重新执行 AI 修复再次应用`);
   };
 
+  // 写盘互斥外壳（B2-6 扩展）：回滚与修复（applyMachinePatch/兜底路径）共用同一互斥——
+  // 回滚的整文件覆盖/逆补丁应用也是多步 await 的改盘操作，与进行中的修复交叠会互相踩
+  // checkpoint/登记；任一进行中直接拒绝另一路（不改盘、不消耗 checkpoint）
+  const rollbackRecord = async (rec: FixRecord): Promise<void> => {
+    if (fixing) {
+      vscode.window.showWarningMessage('另一个修复/回滚正在写盘，请稍候再试');
+      return;
+    }
+    fixing = true;
+    try {
+      await rollbackRecordInner(rec);
+    } finally {
+      fixing = false;
+    }
+  };
+
   // 命令入口"回滚此漏洞修复"（树上已修复条目的内联按钮/右键）。
   // 无参调用（命令面板）与 doFixFinding 对称：QuickPick 列出可回滚项，
   // 不再只弹"去面板找按钮"的提示
@@ -1373,8 +1642,18 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showInformationMessage('没有可回滚的修复 checkpoint');
       return;
     }
-    const summary = await writeRestored(restored);
-    if (summary !== null) vscode.window.showInformationMessage(summary);
+    // 无登记兜底也走写盘互斥（B2-6 扩展）：writeRestored 与进行中的修复交叠会互相踩
+    if (fixing) {
+      vscode.window.showWarningMessage('另一个修复/回滚正在写盘，请稍候再试');
+      return;
+    }
+    fixing = true;
+    try {
+      const summary = await writeRestored(restored);
+      if (summary !== null) vscode.window.showInformationMessage(summary);
+    } finally {
+      fixing = false;
+    }
   };
 
   // 绑定/切换到指定任务并拉取历史数据（不重扫）：一次快照重建进度视图终态
@@ -1383,6 +1662,18 @@ export function activate(context: vscode.ExtensionContext): void {
     // 切换标志须在 lastTaskId 赋值前捕获：换绑任务=新发现集（行号跟踪清零），
     // 同任务重绑定（启动恢复/刷新兜底）保留本地校准，否则重载即丢修复后行号
     const isSwitch = taskId !== lastTaskId;
+    // 切换守卫（B2-5）：有扫描发起中或活跃跟踪的非终态任务时，切绑会停止本地进度
+    // 跟踪——弹确认，取消则不动（恢复/刷新兜底是同任务重绑或空闲态，不触发）
+    if (isSwitch && (scanning || (watcher && progress && !isTerminalTaskStatus(progress.status)))) {
+      const go = await vscode.window.showWarningMessage(
+        `当前有任务正在进行中——切换绑定到任务 ${taskId.slice(0, 8)}… 将停止本地进度跟踪（任务本身在平台继续运行，可随时切回）。确认切换？`,
+        '确认切换',
+      );
+      if (go !== '确认切换') return;
+    }
+    // 回滚快照（B2-5）：findings 拉取失败时复原绑定态，不留"进度已换、结果还是旧
+    // 任务"的半绑定状态
+    const prev = { lastTaskId, progress, findingsSource, cancelRequested, phase, incrementalRequested };
     try {
       const snap = await client.taskSnapshot(taskId);
       // 切换绑定前先收口旧跟踪：旧 watcher 的 snapshot/terminal 事件不得再写进
@@ -1392,6 +1683,8 @@ export function activate(context: vscode.ExtensionContext): void {
       watcher = null;
       scanning = false;
       cancelRequested = false;
+      incrementalRequested = false; // 增量口径不跨任务串用（B5-2）：绑定历史任务=新口径上下文
+      phase = ''; // 扫描/收尾阶段文案不跨任务残留（旧任务 terminal 已 setPhase 而收尾被切绑打断的场景）
       progress = createProgressState(taskId);
       applyFrame(progress, snap);
       lastTaskId = taskId;
@@ -1418,12 +1711,48 @@ export function activate(context: vscode.ExtensionContext): void {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (/404/.test(msg) && /not found/i.test(msg)) {
-        // 上次任务已被平台删除/归档：清掉本地绑定指针，避免下次启动再恢复一个 404 任务
-        lastTaskId = '';
-        void context.workspaceState.update('codeaudit.lastTaskId', undefined);
-        log.warn(`上次任务已不存在（平台删除/归档），已清除本地绑定：${msg}`);
+        // 目标任务已在平台删除/归档。两径分治（防死锁）：
+        // ① taskId 即持久化指针指向的任务（restoreLastTask 恢复场景，无旧任务在跟）：
+        //    清指针防重载再恢复死任务——原行为保留；
+        // ② 切换/兜底绑定到刚被删除的任务：旧绑定态必须原样保留（内存与持久化指针
+        //    都不动）——旧任务可能仍在跟踪，清空 lastTaskId 会让其 terminal 收尾被
+        //    归属守卫吞掉（scanning 互斥死锁、完成通知/结果永不落地），持久化指针
+        //    被清还会让重载丢掉仍健康的旧任务绑定。
+        if (taskId === prev.lastTaskId) {
+          lastTaskId = '';
+          void context.workspaceState.update('codeaudit.lastTaskId', undefined);
+          log.warn(`上次任务已不存在（平台删除/归档），已清除本地绑定：${msg}`);
+          return;
+        }
+        log.warn(`绑定任务 ${taskId.slice(0, 8)}… 失败：已在平台删除/归档，保留当前绑定不变：${msg}`);
+        if (!opts.silent) {
+          vscode.window.showWarningMessage(`任务 ${taskId.slice(0, 8)}… 已在平台删除或归档，未切换绑定（当前任务不受影响）`);
+        }
         return;
       }
+      // findings 拉取失败（快照已成功、绑定态已换）：复原进度/绑定指针/来源并重建
+      // UI（B2-5）；原非终态任务重新续订跟踪，保持与切换前一致
+      lastTaskId = prev.lastTaskId;
+      void context.workspaceState.update('codeaudit.lastTaskId', prev.lastTaskId || undefined);
+      progress = prev.progress;
+      findingsSource = prev.findingsSource;
+      cancelRequested = prev.cancelRequested;
+      incrementalRequested = prev.incrementalRequested;
+      phase = prev.phase;
+      if (progress) {
+        setCtx('codeaudit.hasTask', true);
+        setCtx('codeaudit.taskRunning', !isTerminalTaskStatus(progress.status));
+        setCtx('codeaudit.taskPaused', progress.status === 'TASK_STATUS_PAUSED');
+        progressTree.setItems(buildProgressItems(progress));
+        if (!isTerminalTaskStatus(progress.status)) watchTask(progress.taskId, 0, true);
+      } else {
+        setCtx('codeaudit.hasTask', false);
+        setCtx('codeaudit.taskRunning', false);
+        setCtx('codeaudit.taskPaused', false);
+        progressTree.setItems([]);
+      }
+      updateStatusBar();
+      refreshProgressUi();
       if (!opts.silent) vscode.window.showErrorMessage(`绑定任务失败：${msg}`);
     }
   };
@@ -1513,10 +1842,10 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const doOpenConsole = (): void => {
-    // 控制台是独立 Web 前端（默认与网关同主机 :4173，cookie 登录）；serverUrl 是 API 网关，
+    // 控制台是独立 Web 前端（默认与网关同主机、端口 80，cookie 登录）；serverUrl 是 API 网关，
     // 浏览器直开网关路径只会拿到 401 JSON（网关只认 Authorization 头，不认 query token）
     const explicit = cfg().get<string>('consoleUrl', '').trim();
-    const base = (explicit || cfg().get('serverUrl', '').replace(/:\d+(?=\/|$)/, ':4173')).replace(/\/$/, '');
+    const base = (explicit || cfg().get('serverUrl', '').replace(/:\d+(?=\/|$)/, '')).replace(/\/$/, '');
     const url = lastTaskId ? `${base}/tasks/${lastTaskId}` : base;
     void vscode.env.openExternal(vscode.Uri.parse(url));
   };
@@ -1556,9 +1885,10 @@ export function activate(context: vscode.ExtensionContext): void {
       const diags = diagnostics.get(doc.uri) ?? [];
       const hit = diags.find((d) => d.range.intersection(range));
       if (!hit) return [];
-      // 反向映射必须按行定位：同文件多条发现时按文件取首条会把补丁应用到错误目标
+      // 反向映射必须按行定位：同文件多条发现时按文件取首条会把补丁应用到错误目标；
+      // 行号口径与诊断同源传 trackedLines 校准表——修复/回滚行漂移后灯泡不失效
       const relPath = path.relative(vscode.workspace.workspaceFolders?.[0].uri.fsPath ?? '', doc.uri.fsPath).replace(/\\/g, '/');
-      const f = pickFindingAtLine(currentFindings, relPath, hit.range.start.line);
+      const f = pickFindingAtLine(currentFindings, relPath, hit.range.start.line, trackedLinesSnapshot());
       if (!f) return [];
       const action = new vscode.CodeAction('CodeAudit: AI 修复此漏洞', vscode.CodeActionKind.QuickFix);
       action.command = { command: 'codeaudit.fixFinding', title: 'AI 修复', arguments: [f] };
@@ -1633,21 +1963,21 @@ export function activate(context: vscode.ExtensionContext): void {
       updateStatusBar();
       vscode.window.showInformationMessage('已退出 CodeAudit 登录');
     }),
-    vscode.commands.registerCommand('codeaudit.selectProject', () => void doSelectProject()),
-    vscode.commands.registerCommand('codeaudit.scanWorkspace', () => void doScan()),
-    vscode.commands.registerCommand('codeaudit.refreshFindings', () => void doRefresh()),
-    vscode.commands.registerCommand('codeaudit.selectTask', () => void doSelectTask()),
-    vscode.commands.registerCommand('codeaudit.openFinding', (f?: unknown) => void doOpenFinding(asFinding(f))),
-    vscode.commands.registerCommand('codeaudit.fixFinding', (f?: unknown) => void doFixFinding(asFinding(f))),
-    vscode.commands.registerCommand('codeaudit.applyLowRiskFixes', () => void doApplyLowRiskFixes()),
-    vscode.commands.registerCommand('codeaudit.rollbackFixes', () => void doRollback()),
-    vscode.commands.registerCommand('codeaudit.rollbackFix', (arg?: unknown) => void doRollbackFix(arg)),
+    vscode.commands.registerCommand('codeaudit.selectProject', () => guardCmd(doSelectProject())),
+    vscode.commands.registerCommand('codeaudit.scanWorkspace', () => guardCmd(doScan())),
+    vscode.commands.registerCommand('codeaudit.refreshFindings', () => guardCmd(doRefresh())),
+    vscode.commands.registerCommand('codeaudit.selectTask', () => guardCmd(doSelectTask())),
+    vscode.commands.registerCommand('codeaudit.openFinding', (f?: unknown) => guardCmd(doOpenFinding(asFinding(f)))),
+    vscode.commands.registerCommand('codeaudit.fixFinding', (f?: unknown) => guardCmd(doFixFinding(asFinding(f)))),
+    vscode.commands.registerCommand('codeaudit.applyLowRiskFixes', () => guardCmd(doApplyLowRiskFixes())),
+    vscode.commands.registerCommand('codeaudit.rollbackFixes', () => guardCmd(doRollback())),
+    vscode.commands.registerCommand('codeaudit.rollbackFix', (arg?: unknown) => guardCmd(doRollbackFix(arg))),
     vscode.commands.registerCommand('codeaudit.openConsole', doOpenConsole),
     vscode.commands.registerCommand('codeaudit.showAiContext', () => showAiContext()),
-    vscode.commands.registerCommand('codeaudit.cancelScan', () => void doCancelScan()),
-    vscode.commands.registerCommand('codeaudit.runningMenu', () => void doRunningMenu()),
-    vscode.commands.registerCommand('codeaudit.pauseScan', () => void doPauseScan()),
-    vscode.commands.registerCommand('codeaudit.resumeScan', () => void doResumeScan()),
+    vscode.commands.registerCommand('codeaudit.cancelScan', () => guardCmd(doCancelScan())),
+    vscode.commands.registerCommand('codeaudit.runningMenu', () => guardCmd(doRunningMenu())),
+    vscode.commands.registerCommand('codeaudit.pauseScan', () => guardCmd(doPauseScan())),
+    vscode.commands.registerCommand('codeaudit.resumeScan', () => guardCmd(doResumeScan())),
     vscode.commands.registerCommand('codeaudit.clearFindings', () => doClearFindings()),
     vscode.commands.registerCommand('codeaudit.copyFindingId', (arg?: unknown) => {
       const f = asFinding(arg);
@@ -1673,5 +2003,7 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  /* watcher 由订阅机制随扩展停用关闭 */
+  // 事实口径（B2-8，原注释"watcher 由订阅机制随扩展停用关闭"失实）：
+  // TaskWatcher 不进 context.subscriptions——其关闭时机为新任务 watchTask 替换、
+  // 任务终态自关、bindTask 收口三条路径；扩展停用不做额外清理（定时器随宿主进程终止）。
 }

@@ -191,7 +191,10 @@ if not changed:
 # ---- 第二阶段: 保留文档里的 .agent 死链修补 + 基建运维语中性化 ----
 # engine/.agent 已被 artifacts 删除，保留文档中对它的引用改为发布副本的真实入口；
 # pct exec 107 揭示生产宿主管理路径，中性化（经验：deploy/ 系文档含运维命令，需覆盖）
-REF_TARGETS = sorted(glob.glob("docs/*.md") + glob.glob("*/REGRESSIONS.md") +
+# 经验(2026-09-13)：docs/designs/ 设计工作稿被代码头注释与 e2e 用例按路径引用，
+# 文件必须保留（不可入 artifacts 删除清单），但其 .agent 引用同样要修补——纳入本阶段。
+REF_TARGETS = sorted(glob.glob("docs/*.md") + glob.glob("docs/designs/*.md") +
+                     glob.glob("*/REGRESSIONS.md") +
                      glob.glob("deploy/*.md") + glob.glob("deploy/*/*.md"))
 REF_RULES = [
     (r'`bash \.agent/verify\.sh`', '`make verify`'),
@@ -217,6 +220,75 @@ for path in REF_TARGETS:
 if ref_changed:
     print('[remarks] 死链修补 %s %d 个:' % ('将改动' if dry else '了', len(ref_changed)))
     for p in ref_changed:
+        print('       ' + p)
+
+# ---- 第三阶段: docs/designs 设计工作稿的开发过程叙事清除 ----
+# 经验(2026-09-13, 同步批次沉淀): AI 会话产出的功能设计稿有四类过程叙事不入发布，
+# 可按通用类正则沉淀（文件本体保留——代码注释/e2e 按路径引用它们）：
+#   a) 日期+轮次定稿标记（YYYY-MM-DD N轮定/轮修订/轮补/与用户对齐/定稿行）
+#   b) 【已实现|补齐|偏离记录|实现口径修订 日期】实现状态注记
+#   c) .agent 工作流引用（claim 协调段/status.md 回写/evidence 归档）
+#   d) "同 commit 演进/写码前逐条确认"类协作纪律语
+DESIGN_TARGETS = sorted(glob.glob("docs/designs/*.md"))
+DESIGN_RULES = [
+    # a) 引言行与决策记录标题的定稿叙事
+    (r'^> \d{4}-\d{2}-\d{2} 设计讨论定稿（本文=开发依据；实现期发现与本文冲突时，先改本文再写码）。$',
+     '> 本文为功能设计文档；实现与本文冲突时先修订本文。'),
+    (r'^> \d{4}-\d{2}-\d{2} [一二三四五六七八九十]+轮定稿。', '> '),
+    (r'^> 与设计文档同 commit 演进；实现期发现验收标准不可达/不合理，先改本文再改码。$',
+     '> 实现发现验收标准不可达/不合理时，先修订本文再改码。'),
+    (r'（与本文同 commit 演进）', ''),
+    (r'^## 0\. 决策记录（\d{4}-\d{2}-\d{2} 与用户对齐）$', '## 0. 关键设计决策'),
+    # a) 表格/小节标题内嵌的日期轮次标记
+    (r'（\d{4}-\d{2}-\d{2} (?:与用户对齐|[一二三四五六七八九十]+轮定)）', ''),
+    (r'（\d{4}-\d{2}-\d{2} [一二三四五六七八九十]+轮修订）：', '：'),
+    (r'，\d{4}-\d{2}-\d{2} [一二三四五六七八九十]+轮补）', '）'),
+    (r'，\d{4}-\d{2}-\d{2} [一二三四五六七八九十]+轮修订：', '：'),
+    (r'（[一二三四五六七八九十]+轮修订：', '（'),
+    (r'[一二三四五六七八九十]+轮定 (D\d) 后再进一步', r'\1 后再进一步'),
+    (r'（本轮新增，[^）]*）', ''),
+    (r'（何时丢弃，[^）]*）', ''),
+    (r'（§4\.10，本轮重点）', '（§4.10）'),
+    (r'（设计的地基，实现前不必重查）', '（设计地基）'),
+    (r'^## 9\. 实现期核对点（写码前逐条确认）$', '## 9. 实现核对点'),
+    (r'实现期核对点 §10-', '§9-'),
+    # b) 实现状态注记括号
+    (r'^(\s*)\*\*【已实现 \d{4}-\d{2}-\d{2}】\*\* ', r'\1- '),
+    (r'^(\s*)\*\*【补齐 \d{4}-\d{2}-\d{2}】\*\* ', r'\1'),
+    (r'\*\*【偏离记录\+补齐 \d{4}-\d{2}-\d{2}】\*\*', '**实现偏离与补齐**'),
+    (r'\*\*【实现口径修订 \d{4}-\d{2}-\d{2}】\*\*', '**实现口径**'),
+    (r'随 A19 补课交付（vscode-plugin test/）', '见 vscode-plugin test/'),
+    # c) .agent 工作流引用（verify.sh 死链规则已在第二阶段覆盖 `bash .agent/verify.sh`）
+    (r'(?<![\w./`])verify\.sh', 'make verify'),
+    (r'新 ADR（engine `\.agent` 惯例，本机）', '新 ADR'),
+    (r'新 ADR 落 engine `\.agent`（增量扫描设计决策：D1-D6 摘要\+偏离处）；',
+     '新 ADR 记录增量扫描设计决策（D1-D6 摘要+偏离处）；'),
+    (r'证据归档 `\.agent/evidence/`（U8）', '证据归档本机（不入 git）'),
+    # d) 协作纪律语 + 会话协调切片注
+    (r'（须 web 会话可认领时）', ''),
+    (r'（需 sim 栈，注意会话锁）', '（需模拟栈）'),
+    (r'\(incremental-scan\.md\) v4）', '(incremental-scan.md)）'),
+    # 文档尾部"纪律清单（开发阶段）"整节删除（claim/U2/status.md 全是会话工作流）
+    (r'\n## 10\. 纪律清单（开发阶段）\n[\s\S]*$', '\n'),
+]
+design_changed = []
+for path in DESIGN_TARGETS:
+    try:
+        raw = open(path, 'rb').read().decode('utf-8').replace('\r\n', '\n')
+    except (UnicodeDecodeError, FileNotFoundError):
+        continue
+    text = raw
+    for pat, rep in DESIGN_RULES:
+        text = re.sub(pat, rep if rep is not None else '', text, flags=re.M)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'[ \t]+$', '', text, flags=re.M)
+    if text != raw:
+        design_changed.append(path)
+        if not dry:
+            open(path, 'wb').write(text.encode('utf-8'))
+if design_changed:
+    print('[remarks] 设计稿叙事清除 %s %d 个:' % ('将改动' if dry else '了', len(design_changed)))
+    for p in design_changed:
         print('       ' + p)
 PYEOF
 }

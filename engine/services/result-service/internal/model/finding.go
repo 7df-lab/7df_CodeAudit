@@ -28,6 +28,9 @@ type Finding struct {
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 	RequestID       string    `json:"request_id"` // 幂等键 - 依据: 03 §2
+	// ADR-225 增量扫描继承标记：空=本任务实扫产出；非空=从该基线任务复制的继承项
+	//（继承行连带 verdict/AI 建议终态复制；复制不是引用，本任务上的变更不回写基线）
+	InheritedFrom string `json:"inherited_from_task_id"`
 }
 
 // 依据: codeaudit_common.proto L1246-L1253 FindingFeedback

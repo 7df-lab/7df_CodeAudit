@@ -49,7 +49,6 @@ ROUTING_DOMAIN="${ROUTING_DOMAIN:-sandbox.codeaudit.internal}"
 LIVENESS_HOST="${LIVENESS_HOST:-127.0.0.1}"
 LIVENESS_PORT="${LIVENESS_PORT:-8080}"
 LIVENESS_TIMEOUT_SECS="${LIVENESS_TIMEOUT_SECS:-60}"
-#   ROUTING_DOMAIN   enforced service routing domain   (default: sandbox.codeaudit.internal)
 # JWT 签名密钥目录（gateway.toml gateway_jwt 段指向的同一路径）；镜像与
 # compose 保持同源（IMAGE_TAG 变更时两处同步）。
 JWT_DIR="${JWT_DIR:-/var/lib/openshell/tls/jwt}"
@@ -69,9 +68,11 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 configured_server_sans() {
     # stdout: the TOML value of the first `server_sans = ...` line, or "" when
     # absent (gateway then falls back to the default openshell.localhost).
+    # 首行用 `sed -n '1p'` 而非 `head -1`（B1-4 审计加固）：head 命中即退出，
+    # 双行场景上游 sed 收 SIGPIPE（pipefail 下 141），sed -n '1p' 读全输入无此险。
     run_remote sed -n -E \
         's/^server_sans[[:space:]]*=[[:space:]]*(.+)$/\1/p' \
-        "$(toml_path)" | head -1 | tr -d '\r'
+        "$(toml_path)" | sed -n '1p' | tr -d '\r'
 }
 
 patch_server_sans() {
@@ -82,13 +83,23 @@ patch_server_sans() {
 set -euo pipefail
 domain="$1"; toml="$2"
 line="server_sans = [\"*.$domain\"]"
+# sed 替换文本转义（§14 加固）：$line 要内插进 s||| 替换文本与 a 追加文本——
+# 域名含 | \ & / 时未转义会破坏 sed 脚本（| 提前闭段/& 展开全匹配/\ 吞字符），
+# 损坏 gateway.toml。esc_sed 后拼，写盘的是字面域。
+esc_sed() { printf '%s' "$1" | sed -e 's/[\\|&/]/\\&/g'; }
+esc_line="$(esc_sed "$line")"
 [ -f "$toml" ] || { echo "missing $toml" >&2; exit 1; }
 backup="$toml.bak.$(date +%Y%m%d%H%M%S)"
+# 备份必须先于改写（B1-1 审计修复 2026-09-11）：cp 放在 sed/awk 之后备份的
+# 是改写后的新文件，.bak 的回滚语义尽失。失败不阻断钉域（|| true），但告警
+# 到 stderr，不得静默。
+cp "$toml" "$backup" 2>/dev/null \
+    || echo "WARNING: backup cp failed: $toml -> $backup" >&2
 if grep -Eq '^server_sans[[:space:]]*=' "$toml"; then
-    sed -i -E "s|^server_sans[[:space:]]*=.*|$line|" "$toml"
+    sed -i -E "s|^server_sans[[:space:]]*=.*|$esc_line|" "$toml"
     echo "rewrote server_sans -> $line"
 elif grep -q '^\[openshell\.gateway\]' "$toml"; then
-    sed -i "/^\[openshell\.gateway\]/a $line" "$toml"
+    sed -i "/^\[openshell\.gateway\]/a $esc_line" "$toml"
     echo "inserted $line under [openshell.gateway]"
 else
     echo "no [openshell.gateway] table in $toml" >&2; exit 1
@@ -96,7 +107,6 @@ fi
 # keep exactly one server_sans line
 awk '/^server_sans[[:space:]]*=/{n++; if (n > 1) next} {print}' \
     "$toml" > "$toml.tmp" && mv "$toml.tmp" "$toml"
-cp "$toml" "$backup" 2>/dev/null || true
 echo "backup: $backup"
 PATCH
 }
@@ -104,20 +114,23 @@ PATCH
 # -- liveness ----------------------------------------------------------------
 
 tcp_ok() {
-    run_remote bash -c \
-        "exec 3<>/dev/tcp/$LIVENESS_HOST/$LIVENESS_PORT" \
+    # timeout 5（B1-4 审计加固）：/dev/tcp 无内建超时，对 DROP/半开目标会挂死
+    # 到 LIVENESS_TIMEOUT_SECS 整窗，拖垮 wait_liveness 轮询与 status/verify。
+    # 单次探测上限 5s；pct 路径下 timeout 在 LXC 内执行（coreutils 标配）。
+    # 位置参数传递（§14 加固）：host/port 经 "$1"/"$2" 进脚本文本零插值——
+    # 含空格/元字符的值只作为独立 argv，不构成 probe shell 注入面。
+    run_remote timeout 5 bash -c \
+        'exec 3<>/dev/tcp/$1/$2' _ "$LIVENESS_HOST" "$LIVENESS_PORT" \
         >/dev/null 2>&1
 }
 
 wait_liveness() {
     local deadline=$(( $(date +%s) + LIVENESS_TIMEOUT_SECS ))
-#   ROUTING_DOMAIN   enforced service routing domain   (default: sandbox.codeaudit.internal)
     while [ "$(date +%s)" -lt "$deadline" ]; do
         if tcp_ok; then echo "gateway liveness OK ($LIVENESS_HOST:$LIVENESS_PORT)"; return 0; fi
         sleep 2
     done
     die "gateway not accepting connections on $LIVENESS_HOST:$LIVENESS_PORT within ${LIVENESS_TIMEOUT_SECS}s; check: $0 logs"
-#   ROUTING_DOMAIN   enforced service routing domain   (default: sandbox.codeaudit.internal)
 }
 
 # -- subcommands ---------------------------------------------------------------
@@ -149,18 +162,22 @@ ensure_jwt_keys() {
     # 与 compose 同款 bind（同路径宿主目录），产物正好落在网关读取的位置。
     if run_remote test -f "$JWT_DIR/signing.pem"; then return 0; fi
     echo "JWT signing keys absent at $JWT_DIR — one-shot generate-certs ..."
+    # B2-3（2026-09-11 审计）：mount/output 由 $JWT_DIR 推导——原硬编码 /var/lib/openshell，
+    # JWT_DIR 覆盖后密钥落不到检查路径 → 每轮 ensure 重复 generate 且网关依旧无钥
+    jwt_parent="$(dirname "$JWT_DIR")"
     run_remote docker run --rm --user 0 \
-        -v /var/lib/openshell:/var/lib/openshell \
+        -v "$jwt_parent":"$jwt_parent" \
         "$GATEWAY_IMAGE" generate-certs \
-        --output-dir /var/lib/openshell/tls \
+        --output-dir "$JWT_DIR" \
         --server-san host.openshell.internal
 }
 
 configured_supervisor_image() {
     # stdout: gateway.toml 的 supervisor_image 值（空=用镜像默认）
+    # 同 configured_server_sans：`sed -n '1p'` 取首行，避免 head 的 SIGPIPE。
     run_remote sed -n -E \
         's/^[[:space:]]*supervisor_image[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
-        "$(toml_path)" | head -1 | tr -d '\r'
+        "$(toml_path)" | sed -n '1p' | tr -d '\r'
 }
 
 ensure_supervisor_image() {

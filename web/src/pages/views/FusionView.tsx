@@ -12,11 +12,14 @@ export default function FusionView({ taskId }: { taskId: string }) {
     queryFn: async () =>
       (await api.get('/v1/findings', { params: { task_id: taskId, pagination: { page_size: 100 } } })).data as {
         findings: UnifiedFinding[];
+        pagination?: { has_next?: boolean };
       },
   });
 
   if (isLoading) return <Typography.Text type="secondary">加载中…</Typography.Text>;
   const findings = data?.findings ?? [];
+  // B3-4（审计修复）：视图单页拉 100 条截断——has_next=true 时如实提示，不再静默丢剩余
+  const truncated = data?.pagination?.has_next === true;
 
   // dedup_group 非空 → 组视图；空 → 未合并分区
   const groups = new Map<string, UnifiedFinding[]>();
@@ -33,9 +36,15 @@ export default function FusionView({ taskId }: { taskId: string }) {
 
   return (
     <div>
-      <Typography.Title level={4}>融合视图（合并组 → 去重对齐）</Typography.Title>
+      <Typography.Title level={4}>融合结果</Typography.Title>
+      {truncated && (
+        <Typography.Paragraph type="warning" style={{ marginBottom: 8 }}>
+          仅显示前 100 条，请用发现页完整审阅
+        </Typography.Paragraph>
+      )}
       <Typography.Paragraph type="secondary">
-        依据 proto L84-86：组内成员共享 dedup_group，primary 为保留的 SAST 主发现；下方“未合并发现”为单侧独有项。
+        同一位置的多个来源发现已合并为一条：扫描工具发现作为主条目，AI 结论并入其中；
+        下方“独立发现”为仅单一来源报告的问题。
       </Typography.Paragraph>
 
       {groups.size === 0 && uniques.length === 0 && (
@@ -46,18 +55,18 @@ export default function FusionView({ taskId }: { taskId: string }) {
         const primary = members.find((m) => m.source_tool !== 'ai_agent') ?? members[0];
         const others = members.filter((m) => m.finding_id !== primary.finding_id);
         return (
-          <Card key={gid} size="small" style={{ marginBottom: 12 }} title={`合并组 ${gid}（${members.length} 条）`}>
+          <Card key={gid} size="small" style={{ marginBottom: 12 }} title={`合并组 ${gid.replace(/^group_/, '')}（${members.length} 条）`}>
             <Typography.Text strong>
-              primary: <Tag color="blue">{primary.source_tool}</Tag> {primary.title}
+              主条目：<Tag color="blue">{primary.source_tool}</Tag> {primary.title}
             </Typography.Text>
             <div style={{ marginTop: 8 }}>
-              <Typography.Text type="secondary">组成员：</Typography.Text>
+              <Typography.Text type="secondary">并入的发现：</Typography.Text>
               {others.map((o) => (
                 <Tag key={o.finding_id}>
                   {o.source_tool}: {o.title}
                 </Tag>
               ))}
-              {others.length === 0 && <Tag>无（其余成员已按去重对齐并入 primary）</Tag>}
+              {others.length === 0 && <Tag>无（其余成员与主条目相同，已合并）</Tag>}
             </div>
             <div style={{ marginTop: 8 }}>
               <Tag color="red">{zh(SEVERITY, primary.severity)}</Tag>
@@ -70,7 +79,7 @@ export default function FusionView({ taskId }: { taskId: string }) {
       {uniques.length > 0 && (
         <>
           <Typography.Title level={5} style={{ marginTop: 16 }}>
-            未合并发现（is_unique，单侧独有）
+            独立发现（仅单一来源报告）
           </Typography.Title>
           <Row gutter={[8, 8]}>
             {uniques.map((f) => (

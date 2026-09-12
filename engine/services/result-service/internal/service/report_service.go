@@ -110,11 +110,11 @@ func (s *ReportServiceImpl) GenerateReport(ctx context.Context, req *pb.Generate
 		if err := s.repo.CreateReport(report); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to save report: %v", err)
 		}
-		return &pb.GenerateReportResponse{
-			Result: &pb.ReportResult{
-				ReportId: report.ID,
-			},
-		}, nil
+		// R66（2026-09-12 待办收尾）：FAILED 报告对调用方如实报错——此前 success 返回
+		// 令编排照发 done:report（阶段绿勾），与 R56 降级可感知精神相悖。FAILED 行仍
+		// 落库（重试同 ID 重建语义不变，R7）；FailedPrecondition 供编排/web 降级标注。
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"report content generation failed (report_id=%s, retry reuses same id): %v", report.ID, err)
 	}
 
 	report.Content = content
@@ -130,7 +130,9 @@ func (s *ReportServiceImpl) GenerateReport(ctx context.Context, req *pb.Generate
 	// MinIO（FilePath=reports/<report_id>.json → reports 桶），url 从占位 report://
 	// 换成真实对象地址。降级诚实: storage 未配置/不可达时仅 WARN，报告本体仍在 PG。
 	if s.storageAddr != "" {
-		if url, uerr := s.uploadReportToStorage(ctx, report); uerr != nil {
+		arcCtx, arcCancel := context.WithTimeout(ctx, 120*time.Second) // R63: 归档超时（原裸 ctx）
+	defer arcCancel()
+	if url, uerr := s.uploadReportToStorage(arcCtx, report); uerr != nil {
 			log.Printf("[report] storage archive FAILED for %s: %v (PG copy intact)", report.ID, uerr)
 		} else {
 			report.Url = url
@@ -187,7 +189,7 @@ func (s *ReportServiceImpl) uploadReportToStorage(ctx context.Context, r *model.
 	if err != nil {
 		return "", fmt.Errorf("CloseAndRecv: %w", err)
 	}
-	return "minio://reports/" + stored.GetFilePath(), nil
+	return "minio://" + stored.GetFilePath(), nil // R63: FilePath 已含 reports/ 域前缀（storage_archive.go:65 同口径；原双前缀畸形）
 }
 
 // GetReport - 依据: codeaudit_common.proto L944 + L1263
@@ -387,8 +389,9 @@ func (s *ReportServiceImpl) generateReportContent(taskID string, templateName st
 	return string(encoded), nil
 }
 
-// renderHTMLReport — 服务端 HTML 报告（无外部依赖，go html/template 免注入按默认转义）。
-// 内容全部来自真实聚合（P4）；含代码片段列（ADR-141）。
+// renderHTMLReport — 服务端 HTML 报告（手写拼接，逐字段 htmlEsc 转义）。
+// 内容全部来自真实聚合（P4）；含代码片段列（ADR-141）——code 字段来自被扫源码
+// （攻击者可控），漏转义即存储型 XSS（web 报告窗口渲染，R42）。
 func renderHTMLReport(payload map[string]interface{}, items []map[string]interface{}) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">")
@@ -420,7 +423,7 @@ func renderHTMLReport(payload map[string]interface{}, items []map[string]interfa
 		b.WriteString(fmt.Sprintf("<td>%s</td>", htmlEsc(strOf(it["verdict"]))))
 		b.WriteString(fmt.Sprintf("<td>%s</td>", htmlEsc(strOf(it["title"]))))
 		snippet := snippetOf(it)
-		b.WriteString(fmt.Sprintf("<td><pre>%s</pre></td>", snippet))
+		b.WriteString(fmt.Sprintf("<td><pre>%s</pre></td>", htmlEsc(snippet)))
 		b.WriteString("</tr>")
 	}
 	b.WriteString("</table></body></html>")
@@ -465,9 +468,17 @@ func (s *ReportServiceImpl) modelToProto(r *model.Report) *pb.Report {
 		ReportId:    r.ID,
 		TaskId:      r.TaskID,
 		Format:      pb.ReportFormat(pb.ReportFormat_value[r.Format]), // ADR-142: 回读持久化格式
-		Url:         fmt.Sprintf("report://%s", r.ID),                 // 内容经 DownloadReport 流式取用
+		Url:         reportURL(r), // R44: 已归档用真实 Url，未归档回落伪协议（内容经 DownloadReport）
 		GeneratedAt: timestamppb.New(r.CreatedAt),
 	}
+}
+
+// reportURL — 归档优先：storage 归档地址真实可取；否则 report://<id> 伪协议。
+func reportURL(r *model.Report) string {
+	if r.Url != "" {
+		return r.Url
+	}
+	return fmt.Sprintf("report://%s", r.ID)
 }
 
 // Helper: templateModelToProto converts model.ReportTemplate to proto (proto L1268 真实字段)

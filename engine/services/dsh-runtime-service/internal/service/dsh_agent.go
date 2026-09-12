@@ -151,7 +151,10 @@ func (s *DSHRuntimeServiceImpl) VerifySASTResults(ctx context.Context, req *pb.V
 	}
 
 	// 从 result-service 拉取待验证实体（09 §2：findings 权威存储在 result-service）
-	findings := fetchFindingsByIDs(req.GetFindingIds())
+	findings, err := fetchFindingsByIDs(req.GetFindingIds())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "fetch findings: %v", err)
+	}
 
 	// ADR-173 沙箱优先：整项目代码上传沙箱磁盘，逐条 prompt 交 DSH 自行阅读完整源码
 	// 判定真伪（数据流/净化/可达性在项目全文上核对），逐条取回结论后销毁沙箱。
@@ -173,7 +176,7 @@ func (s *DSHRuntimeServiceImpl) VerifySASTResults(ctx context.Context, req *pb.V
 			OriginalFindingId: f.GetFindingId(),
 			Verdict:           pb.AIVerdict_AI_VERDICT_NEEDS_MANUAL,
 			Confidence:        0.3,
-			Reasoning:         "[降级] 沙箱 DSH 不可用，未做 AI 语义审查，需人工复核（07 §10）",
+			Reasoning:         "[降级] 沙箱 DSH 不可用，未做 AI 语义审查，需人工复核",
 		})
 	}
 	return &pb.VerifySASTResultsResponse{Verified: verified}, nil
@@ -257,7 +260,10 @@ func (s *DSHRuntimeServiceImpl) ReviewSASTResults(ctx context.Context, req *pb.R
 		return nil, status.Error(codes.InvalidArgument, "RequestMetadata.request_id is required (R4)")
 	}
 
-	findings := fetchFindingsByIDs(req.GetSastFindingIds())
+	findings, err := fetchFindingsByIDs(req.GetSastFindingIds())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "fetch findings: %v", err)
+	}
 
 	// ADR-140/166: 沙箱可用时优先逐条 LLM 交叉验证（04 §3.4 步骤2 真实语义审核）
 	if reviews2, opinions2, err := sandboxReview(ctx, req.GetTaskId(), req.GetProjectPath(), findings, taskLogSink(req.GetTaskId(), "sandbox")); err == nil {
@@ -314,7 +320,7 @@ func (s *DSHRuntimeServiceImpl) ReviewSASTResults(ctx context.Context, req *pb.R
 			FindingId:  f.GetFindingId(),
 			Opinion:    opinion,
 			Confidence: 0.3,
-			Reasoning:  "[降级] 沙箱 DSH 不可用，未做 AI 语义审查，需人工复核（07 §10）",
+			Reasoning:  "[降级] 沙箱 DSH 不可用，未做 AI 语义审查，需人工复核",
 		})
 	}
 

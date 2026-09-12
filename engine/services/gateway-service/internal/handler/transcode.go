@@ -456,7 +456,7 @@ func (t *Transcoder) tasks(w http.ResponseWriter, r *http.Request, rest []string
 		})
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "snapshot":
 		// ADR-170: 详情页聚合快照——task+progress+logs+ai-log 单口轮询（3s=20/min），
-		// 替代此前 4 个独立轮询器 ~90/min 触发 07 §7 单用户 50/min 限流（429 页面冻结）
+		// 替代此前 4 个独立轮询器 ~90/min，会吃满 07 §7 单用户限流预算（429 页面冻结）
 		t.taskSnapshot(w, r, rest[0])
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "ws":
 		// ADR-172: WebSocket 秒级推送（人类指令 2026-09-01）——升级后服务端 1s 聚合推帧，
@@ -970,15 +970,19 @@ func (t *Transcoder) notifications(w http.ResponseWriter, r *http.Request, rest 
 		if r.URL.Query().Get("unread_only") == "true" {
 			req.UnreadOnly = true
 		}
-		t.call(w, t.storageConn, "NotificationService/ListNotifications", func(ctx context.Context) (proto.Message, error) {
-			return client.ListNotifications(ctx, req)
+		nctx, ncancel := context.WithTimeout(r.Context(), t.callTimeout) // R63
+		defer ncancel()
+		t.call(w, t.storageConn, "NotificationService/ListNotifications", func(context.Context) (proto.Message, error) {
+			return client.ListNotifications(nctx, req)
 		})
 	case len(rest) == 2 && rest[1] == "read" && r.Method == http.MethodPost:
 		// ADR-212: 归属核验前置（零 proto 改动）——MarkNotificationRead 仅凭
 		// notification_id 且后端无从获知调用者，任何登录用户此前可标记任意用户
 		// 的通知已读（IDOR）。先 List 本人通知校验成员再标记。
 		userID, _ := r.Context().Value(middleware.UserIDKey).(string)
-		owned, lerr := client.ListNotifications(r.Context(), &pb.ListNotificationsRequest{UserId: userID})
+		nctx, ncancel := context.WithTimeout(r.Context(), t.callTimeout) // R63: 组合操作超时（原裸 ctx 可悬挂）
+		defer ncancel()
+		owned, lerr := client.ListNotifications(nctx, &pb.ListNotificationsRequest{UserId: userID})
 		if lerr != nil {
 			writeError(w, http.StatusBadGateway, "ownership check failed: "+lerr.Error())
 			return
@@ -998,7 +1002,26 @@ func (t *Transcoder) notifications(w http.ResponseWriter, r *http.Request, rest 
 		t.call(w, t.storageConn, "NotificationService/MarkNotificationRead", func(ctx context.Context) (proto.Message, error) {
 			return client.MarkNotificationRead(ctx, req)
 		})
+	case len(rest) == 1 && rest[0] == "read-all" && r.Method == http.MethodPost:
+		// ADR-222: 一键全部已读——组合式实现（零 proto 改动，ADR-212 同款就地组合）：
+		// List 本人未读（user_id 强制 JWT，归属天然安全）→ 逐条 MarkNotificationRead。
+		// 单条失败不整批失败：计数如实返回，残留未读由前端失效重查自然呈现。
+		userID, _ := r.Context().Value(middleware.UserIDKey).(string)
+		owned, lerr := client.ListNotifications(r.Context(), &pb.ListNotificationsRequest{UserId: userID, UnreadOnly: true})
+		if lerr != nil {
+			writeError(w, http.StatusBadGateway, "list unread failed: "+lerr.Error())
+			return
+		}
+		marked := 0
+		for _, n := range owned.GetNotifications() {
+			if _, err := client.MarkNotificationRead(r.Context(), &pb.MarkNotificationReadRequest{NotificationId: n.GetNotificationId()}); err == nil {
+				marked++
+			}
+		}
+		b, _ := json.Marshal(map[string]int{"marked": marked})
+		writeJSON(w, http.StatusOK, b)
 	default:
-		writeError(w, http.StatusNotFound, "unknown notifications route")
+		writeError(w, http.StatusNotFound,
+			"use GET /v1/notifications, POST /v1/notifications/read-all, POST /v1/notifications/{id}/read")
 	}
 }

@@ -4,8 +4,12 @@
 人类指令"消除重复接口实现"退役，git 历史可考）整体迁移 FastAPI/uvicorn：
   - 路由声明式注册（替代 regex ROUTES 表 + 手写 dispatch）；
   - 鉴权收敛为依赖注入（/healthz 豁免，其余 Bearer token）；
-  - 异常处理器统一错误契约 {"error": msg}（ApiError/LookupError/404 no route/兜底 502），
+  - 异常处理器统一错误契约 {"error": msg}（ApiError/LookupError/404 no route/
+    兜底 500 "internal error"——B3-3：细节进服务端 stderr，且 502 会让上游按
+    "网关不可达"误重试/降级），
     JSON 端点手工解包 body 保持既有错误语义（"invalid JSON body"/413/非对象 400）；
+  - async 端点的南向调用一律 run_in_threadpool（B3-1：同步 gRPC 调用裸跑在
+    event loop 上会阻塞探活与全部并发请求，对齐 _handle_upload 既有形态）；
   - /files 流式上传：原始 body spool 到磁盘（有界内存）后沿用 upload.py 流式解析器，
     接口层收沙箱 name（+?workspace=，缺省 default）内部自解析 UUID（ADR-173）。
 
@@ -13,10 +17,11 @@
 """
 from __future__ import annotations
 
-import base64  # noqa: F401 — exec 端点 stdin_b64 解码
+import base64
 import hmac
 import json
 import re
+import sys
 import tempfile
 from typing import Any, Dict, Iterator, Optional
 from urllib.parse import parse_qs
@@ -31,6 +36,10 @@ from .gateway import GatewayFacade
 from .upload import StreamingMultipartParser, UploadError, boundary_from_content_type
 
 MAX_BODY_BYTES = 20 * 1024 * 1024
+# wait_ready 服务端超时上限（B3-1）：缺省 300s，硬上限 600s——客户端曾可传
+# 1e9 让南向连接无限占用；超过上限 = 客户端错误 400。
+WAIT_READY_TIMEOUT_DEFAULT = 300.0
+WAIT_READY_TIMEOUT_MAX = 600.0
 
 facade = GatewayFacade()
 
@@ -75,12 +84,25 @@ def _opt_str(body: Dict[str, Any], key: str) -> Optional[str]:
 
 
 async def _json_body(request: Request) -> Dict[str, Any]:
-    length = int(request.headers.get("Content-Length") or 0)
-    if length == 0:
-        return {}
-    if length > MAX_BODY_BYTES:
-        raise ApiError(413, f"body too large ({length} bytes)")
-    raw = await request.body()
+    # B1-13 审计修复：Transfer-Encoding: chunked 请求没有 Content-Length，
+    # 原 length==0 短路把整个 body 丢弃（静默当空对象 → 400 missing field）。
+    # chunked 改走流式读取，同样受 MAX_BODY_BYTES 上限约束。
+    if "chunked" in (request.headers.get("Transfer-Encoding") or "").lower():
+        chunks: list = []
+        received = 0
+        async for chunk in request.stream():
+            received += len(chunk)
+            if received > MAX_BODY_BYTES:
+                raise ApiError(413, f"body too large (>{MAX_BODY_BYTES} bytes)")
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+    else:
+        length = int(request.headers.get("Content-Length") or 0)
+        if length == 0:
+            return {}
+        if length > MAX_BODY_BYTES:
+            raise ApiError(413, f"body too large ({length} bytes)")
+        raw = await request.body()
     if not raw:
         return {}
     try:
@@ -113,12 +135,28 @@ def _query_int(request: Request, key: str, default: int) -> int:
 
 
 def _int_field(body: Dict[str, Any], key: str) -> int:
+    """B3-3 严格化（_opt_bool 同款）：只收 int。bool（int 子类，恒真陷阱）、
+    float（含整值形式）、字符串数字一律 400——原 int() 强转放过这些垃圾
+    类型（"8123"/8123.5/True 都曾被静默接受）。"""
     raw = body[key]
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
+    if isinstance(raw, bool) or not isinstance(raw, int):
         raise ApiError(400, f"invalid field {key}={raw!r} "
                             "(expect integer)") from None
+    return raw
+
+
+def _opt_bool(body: Dict[str, Any], key: str) -> bool:
+    """可选布尔字段（B1-12 审计修复）：只接受 JSON 布尔或 "true"/"false"
+    字符串，其余 400。bool("false") is True 的恒真陷阱在此堵死——字符串
+    "false" 曾把 domain/no_verify 打开（行为与字面相反）。缺省/None → False。"""
+    value = body.get(key)
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    raise ApiError(400, f'field {key} must be boolean or "true"/"false"')
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +164,15 @@ def _int_field(body: Dict[str, Any], key: str) -> int:
 # ---------------------------------------------------------------------------
 
 async def require_token(request: Request) -> None:
-    token = config.manager_token()
+    # B3-2 fail-closed：tokenFile 已配置但读失败（EACCES/EIO）时鉴权材料
+    # 不可得——503 + 服务端 stderr 日志，绝不静默放行（原实现吞异常当
+    # 无 token，读失败瞬间整面鉴权失效）。
+    try:
+        token = config.manager_token()
+    except config.TokenFileError as exc:
+        print(f"[manager] auth fail-closed: {exc}", file=sys.stderr, flush=True)
+        raise ApiError(503, "token unavailable (auth source unreadable)") \
+            from exc
     if not token:
         return
     # 常量时间比较（bytes 形态，避免非 ASCII 头触发 TypeError）
@@ -159,8 +205,13 @@ def create_app() -> FastAPI:
         return JSONResponse({"error": str(exc.detail)}, status_code=exc.status_code)
 
     @app.exception_handler(Exception)
-    async def _unhandled(_req: Request, exc: Exception):
-        return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=502)
+    async def _unhandled(req: Request, exc: Exception):
+        # B3-3：兜底 = 500 + 通用文案。原 502 让上游把服务端缺陷按"网关
+        # 不可达"重试/降级，且 {type: msg} 直接向客户端泄漏内部细节；
+        # 细节只进服务端 stderr 日志。
+        print(f"[manager] unhandled error on {req.method} {req.url.path}: "
+              f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        return JSONResponse({"error": "internal error"}, status_code=500)
 
     # -- health（豁免鉴权，探活口径不变） -----------------------------------
 
@@ -182,9 +233,9 @@ def create_app() -> FastAPI:
         _need_str(body, "workspace")
         name = _opt_str(body, "name")
         try:
-            return facade.create(workspace=body["workspace"],
-                                 name=name or "",
-                                 spec=body.get("spec") or {})
+            return await run_in_threadpool(
+                facade.create, workspace=body["workspace"],
+                name=name or "", spec=body.get("spec") or {})
         except ValueError as exc:  # json_format.ParseError 是 ValueError 子类
             raise ApiError(400, f"invalid spec: {exc}") from exc
 
@@ -205,14 +256,20 @@ def create_app() -> FastAPI:
     async def wait_ready(name: str, request: Request) -> Dict[str, Any]:
         body = await _json_body(request)
         _need_str(body, "workspace")
-        raw_timeout = body.get("timeout_seconds", 300)
+        raw_timeout = body.get("timeout_seconds", WAIT_READY_TIMEOUT_DEFAULT)
         try:
             timeout = float(raw_timeout)
         except (TypeError, ValueError):
             raise ApiError(400, f"invalid field timeout_seconds={raw_timeout!r} "
                                 "(expect number)") from None
-        return facade.wait_ready(name=name, workspace=body["workspace"],
-                                 timeout_seconds=timeout)
+        # B3-1 服务端上限：客户端曾可传 1e9 让南向连接无限占用。
+        if timeout > WAIT_READY_TIMEOUT_MAX:
+            raise ApiError(400, f"invalid field timeout_seconds={raw_timeout!r} "
+                                f"(exceeds server-side cap of "
+                                f"{WAIT_READY_TIMEOUT_MAX:.0f} seconds)")
+        return await run_in_threadpool(
+            facade.wait_ready, name=name, workspace=body["workspace"],
+            timeout_seconds=timeout)
 
     @app.post("/api/v1/sandboxes/exec", dependencies=[Depends(require_token)])
     async def sandbox_exec(request: Request) -> Dict[str, Any]:
@@ -245,17 +302,20 @@ def create_app() -> FastAPI:
                 stdin = base64.b64decode(body["stdin_b64"])
             except ValueError as exc:  # binascii.Error 的基类
                 raise ApiError(400, f"invalid stdin_b64: {exc}") from exc
-        return facade.exec(sandbox_id=body["sandbox_id"],
-                           command=command,
-                           workdir=workdir,
-                           environment=env,
-                           stdin=stdin,
-                           timeout_seconds=timeout)
+        return await run_in_threadpool(
+            facade.exec, sandbox_id=body["sandbox_id"], command=command,
+            workdir=workdir, environment=env, stdin=stdin,
+            timeout_seconds=timeout)
 
     @app.get("/api/v1/sandboxes/{name}/logs", dependencies=[Depends(require_token)])
     def sandbox_logs(name: str, request: Request) -> Dict[str, Any]:
+        # B1-15 审计修复：GetSandboxLogs 属 ExecSandbox 系 RPC，只认
+        # sandbox_id=UUID——原实现把路由 name 原样当 sandbox_id 查询，网关侧
+        # 必 NOT_FOUND。与 /files 同口径（ADR-173）：接口层收 name 自解析 UUID。
+        workspace = _one(request, "workspace")
+        sandbox_id = facade.resolve_sandbox_id(name=name, workspace=workspace)
         return {"logs": facade.get_logs(
-            sandbox_id=name, workspace=_one(request, "workspace"),
+            sandbox_id=sandbox_id, workspace=workspace,
             lines=_query_int(request, "lines", 2000),
             since_ms=_query_int(request, "since_ms", 0))}
 
@@ -265,8 +325,9 @@ def create_app() -> FastAPI:
         _need(body, "policy")
         _need_str(body, "workspace")
         try:
-            return facade.update_config(name=name, workspace=body["workspace"],
-                                        policy=body["policy"])
+            return await run_in_threadpool(
+                facade.update_config, name=name, workspace=body["workspace"],
+                policy=body["policy"])
         except ValueError as exc:  # json_format.ParseError 是 ValueError 子类
             raise ApiError(400, f"invalid policy: {exc}") from exc
 
@@ -283,10 +344,10 @@ def create_app() -> FastAPI:
         body = await _json_body(request)
         _need(body, "target_port")
         _need_str(body, "workspace", "service")
-        return facade.expose_service(sandbox=name, service=body["service"],
-                                     target_port=_int_field(body, "target_port"),
-                                     workspace=body["workspace"],
-                                     domain=bool(body.get("domain", False)))
+        return await run_in_threadpool(
+            facade.expose_service, sandbox=name, service=body["service"],
+            target_port=_int_field(body, "target_port"),
+            workspace=body["workspace"], domain=_opt_bool(body, "domain"))
 
     @app.get("/api/v1/sandboxes/{name}/services", dependencies=[Depends(require_token)])
     def services_list(name: str, request: Request) -> Dict[str, Any]:
@@ -314,9 +375,10 @@ def create_app() -> FastAPI:
     async def route_set(request: Request) -> Dict[str, Any]:
         body = await _json_body(request)
         _need_str(body, "workspace", "provider", "model")
-        return facade.set_route(workspace=body["workspace"],
-                                provider=body["provider"], model=body["model"],
-                                no_verify=bool(body.get("no_verify", False)))
+        return await run_in_threadpool(
+            facade.set_route, workspace=body["workspace"],
+            provider=body["provider"], model=body["model"],
+            no_verify=_opt_bool(body, "no_verify"))
 
     @app.get("/api/v1/inference/providers", dependencies=[Depends(require_token)])
     def providers_list(request: Request) -> Dict[str, Any]:
@@ -330,10 +392,11 @@ def create_app() -> FastAPI:
     async def providers_upsert(request: Request) -> Dict[str, Any]:
         body = await _json_body(request)
         _need_str(body, "workspace", "name", "type")
-        return facade.upsert_provider(workspace=body["workspace"],
-                                      name=body["name"], type_=body["type"],
-                                      credentials=body.get("credentials") or {},
-                                      conf=body.get("config") or {})
+        return await run_in_threadpool(
+            facade.upsert_provider, workspace=body["workspace"],
+            name=body["name"], type_=body["type"],
+            credentials=body.get("credentials") or {},
+            conf=body.get("config") or {})
 
     @app.delete("/api/v1/inference/providers/{name}",
                 dependencies=[Depends(require_token)])
@@ -365,46 +428,48 @@ async def _handle_upload(name: str, request: Request) -> Dict[str, Any]:
                             f"limit of {limit} (OPENSHELL_MANAGER_MAX_UPLOAD_BYTES; 0 = unlimited)")
 
     tmp: tempfile.SpooledTemporaryFile = tempfile.SpooledTemporaryFile(max_size=1 << 20)
-    received = 0
-    async for chunk in request.stream():  # 有界内存：边收边落 spool
-        received += len(chunk)
-        if limit and received > limit:
-            tmp.close()
-            raise ApiError(413, "upload stream exceeded declared Content-Length / limit")
-        tmp.write(chunk)
-    tmp.seek(0)
-
-    workspace = parse_qs(request.url.query).get("workspace", ["default"])[0]
-
-    def work() -> Dict[str, Any]:
-        try:
-            boundary = boundary_from_content_type(content_type)
-            parser = StreamingMultipartParser(tmp, boundary)
-            fields, file_stream = parser.parse()
-        except UploadError as exc:
-            raise ApiError(400, f"invalid multipart body: {exc}") from exc
-        path = fields.get(b"path", b"").decode("utf-8", errors="replace")
-        mode_raw = fields.get(b"mode")
-        mode = (mode_raw.decode("ascii", errors="replace").strip()
-                if mode_raw else None)
-        if mode is not None and not re.fullmatch(r"[0-7]{3,4}", mode):
-            raise ApiError(400, f"invalid mode: {mode!r} (expect octal like 0644)")
-        if not path.startswith("/"):
-            raise ApiError(400, "path must be absolute")
-
-        def capped() -> "Iterator[bytes]":
-            sent = 0
-            for piece in file_stream:
-                sent += len(piece)
-                if limit and sent > limit:
-                    raise ApiError(413, "upload stream exceeded declared Content-Length / limit")
-                yield piece
-
-        sandbox_id = facade.resolve_sandbox_id(name=name, workspace=workspace)
-        return facade.write_file_stream(sandbox_id=sandbox_id, path=path,
-                                        chunks=capped(), mode=mode or None)
-
+    # B1-12 审计修复：spool 文件全程 try/finally 关闭。原接收循环在 finally
+    # 保护之外，客户端中途断连（request.stream() 抛出）等异常路径会泄漏
+    # spool 临时文件（大文件直落磁盘，靠 GC 兜底不可靠）。
     try:
+        received = 0
+        async for chunk in request.stream():  # 有界内存：边收边落 spool
+            received += len(chunk)
+            if limit and received > limit:
+                raise ApiError(413, "upload stream exceeded declared Content-Length / limit")
+            tmp.write(chunk)
+        tmp.seek(0)
+
+        workspace = parse_qs(request.url.query).get("workspace", ["default"])[0]
+
+        def work() -> Dict[str, Any]:
+            try:
+                boundary = boundary_from_content_type(content_type)
+                parser = StreamingMultipartParser(tmp, boundary)
+                fields, file_stream = parser.parse()
+            except UploadError as exc:
+                raise ApiError(400, f"invalid multipart body: {exc}") from exc
+            path = fields.get(b"path", b"").decode("utf-8", errors="replace")
+            mode_raw = fields.get(b"mode")
+            mode = (mode_raw.decode("ascii", errors="replace").strip()
+                    if mode_raw else None)
+            if mode is not None and not re.fullmatch(r"[0-7]{3,4}", mode):
+                raise ApiError(400, f"invalid mode: {mode!r} (expect octal like 0644)")
+            if not path.startswith("/"):
+                raise ApiError(400, "path must be absolute")
+
+            def capped() -> "Iterator[bytes]":
+                sent = 0
+                for piece in file_stream:
+                    sent += len(piece)
+                    if limit and sent > limit:
+                        raise ApiError(413, "upload stream exceeded declared Content-Length / limit")
+                    yield piece
+
+            sandbox_id = facade.resolve_sandbox_id(name=name, workspace=workspace)
+            return facade.write_file_stream(sandbox_id=sandbox_id, path=path,
+                                            chunks=capped(), mode=mode or None)
+
         return await run_in_threadpool(work)
     except ValueError as exc:
         raise ApiError(400, str(exc)) from exc

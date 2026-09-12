@@ -16,6 +16,7 @@ mirrors the engine's "libs optional" discipline.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import os
 import socket
@@ -235,6 +236,7 @@ def make_app(token_env, client=None):
     cfg.close()
     os.environ["OPENSHELL_MANAGER_CONFIG"] = cfg.name
     config._config_cache = None
+    config._token_cache = None  # B3-2：token 文件结果 5s 缓存逐用例复位
 
     facade = GatewayFacade(client_factory=lambda: client)
     facade._inference_stub = lambda: INFERENCE_FAKE  # test seam
@@ -469,8 +471,10 @@ def test_upstream_error_mapping():
     try:
         status, payload = req("GET", "/api/v1/sandboxes/nope?workspace=default")
         assert status == 404 and "not found" in payload["error"], payload
+        # B3-3 同步收紧：南向未捕获异常走兜底处理器 → 500 + 通用文案
+        # （原 502 让上游按"网关不可达"误重试/降级）
         status, payload = req("GET", "/api/v1/gateway/health")
-        assert status == 502 and "RuntimeError" in payload["error"], payload
+        assert status == 500 and payload == {"error": "internal error"}, payload
     finally:
         server.shutdown()
 
@@ -529,6 +533,7 @@ def test_token_priority_env_over_tokenfile():
     try:
         os.environ["OPENSHELL_MANAGER_CONFIG"] = cfg.name
         config._config_cache = None
+        config._token_cache = None  # B3-2：token 文件结果缓存须逐断言复位
         os.environ.pop("OPENSHELL_MANAGER_TOKEN", None)
         assert config.manager_token() == "file-token", config.manager_token()
         os.environ["OPENSHELL_MANAGER_TOKEN"] = "env-token"
@@ -540,6 +545,7 @@ def test_token_priority_env_over_tokenfile():
             else:
                 os.environ[key] = value
         config._config_cache = None
+        config._token_cache = None
 
 
 def test_service_expose_list_delete():
@@ -991,9 +997,10 @@ def test_upload_to_missing_sandbox_maps_404():
         server.shutdown()
 
 
-def test_upload_failure_cleans_part_and_maps_502():
+def test_upload_failure_cleans_part_and_maps_5xx():
     """R1 族防线：chunk 写失败（远端非零退出）必须 rm -f .part 后上抛
-    502——防失败上传留下 .part 残片/半写文件回归。"""
+    5xx——防失败上传留下 .part 残片/半写文件回归。（B3-3 同步收紧：兜底
+    处理器 502 → 500 "internal error"。）"""
     server, req = make_app(token_env=None)
     try:
         FAKE.fail_exec_containing = "base64 -d"
@@ -1002,7 +1009,7 @@ def test_upload_failure_cleans_part_and_maps_502():
                                      file_content=b"hi")
         status, payload = req("POST", "/api/v1/sandboxes/sb-1/files",
                               raw=body, ctype=ctype)
-        assert status == 502 and "chunk write failed" in payload["error"], payload
+        assert status == 500 and payload == {"error": "internal error"}, payload
         execs = [c for c in FAKE.calls[calls_base:] if c[0] == "exec"]
         assert execs[-1][2] == ["rm", "-f", "/tmp/doomed/f.txt.part"], execs[-1]
     finally:
@@ -1145,6 +1152,146 @@ def test_logs_request_params_passthrough():
         server.shutdown()
 
 
+def test_logs_resolve_name_to_uuid():
+    """B1-15：/logs 路由的沙箱 name 必须先解析成 UUID 再打 GetSandboxLogs。
+
+    GetSandboxLogs 属 ExecSandbox 系 RPC，只认 sandbox_id=UUID（resolve_
+    sandbox_id 文档口径）；原实现把路由 name 原样当 sandbox_id 传，网关侧
+    必 NOT_FOUND。与 /files 同口径（ADR-173）：接口层收 name 自解析。"""
+    server, req = make_app(token_env=None)
+    try:
+        status, payload = req("GET",
+                              "/api/v1/sandboxes/dsh-fake/logs"
+                              "?workspace=default&lines=42&since_ms=77")
+        assert status == 200 and payload["logs"] == [], payload
+        sent = FAKE._stub.last_logs_request
+        assert sent.sandbox_id == "sb-1", \
+            f"logs 查询必须用解析后的 UUID，实际 sandbox_id={sent.sandbox_id!r}"
+    finally:
+        server.shutdown()
+
+
+def test_chunked_json_body_not_dropped():
+    """B1-13：Transfer-Encoding: chunked 的 JSON body 不得被
+    Content-Length==0 短路分支丢弃（原实现静默当空对象 → 400 missing
+    required field(s)，请求体凭空消失）。chunked 走流式读取。"""
+    server, req = make_app(token_env=None)
+    try:
+        port = server.server_address[1]
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        # body 为迭代器且未显式 Content-Length → http.client 自动走 chunked
+        payload = iter([json.dumps({"sandbox_id": "sb-1",
+                                    "command": ["/bin/echo", "hi"]}).encode()])
+        conn.request("POST", "/api/v1/sandboxes/exec", body=payload,
+                     headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        body = json.loads(resp.read())
+        assert resp.status == 200, body
+        assert body["stdout"] == "hello-out", body
+        conn.close()
+    finally:
+        server.shutdown()
+
+
+def test_boolean_string_fields_strict():
+    """B1-12：布尔字段收 true/false 布尔或 "true"/"false" 字符串（字符串
+    "false" 必须解析为 False——曾被 bool() 恒真打开），其余类型 400。"""
+    server, req = make_app(token_env=None)
+    try:
+        # 字符串 "false" 合法且必须解析为 False（修复前 bool("false") 恒真）
+        status, payload = req("POST", "/api/v1/sandboxes/dsh-fake/services",
+                              {"workspace": "default", "service": "bridge",
+                               "target_port": 8080, "domain": "false"})
+        assert status == 200, payload
+        assert FakeAdminStub.SERVICES[("default", "dsh-fake", "bridge")] \
+            .endpoint.domain is False, payload
+        # 非布尔非字符串的垃圾类型 → 400（修复前恒真）
+        status, payload = req("POST", "/api/v1/sandboxes/dsh-fake/services",
+                              {"workspace": "default", "service": "bridge",
+                               "target_port": 8080, "domain": 1})
+        assert status == 400 and "domain" in payload["error"], payload
+        # 字符串 "true" 语义正确（domain 真被置真）
+        status, payload = req("POST", "/api/v1/sandboxes/dsh-fake/services",
+                              {"workspace": "default", "service": "bridge",
+                               "target_port": 8080, "domain": "true"})
+        assert status == 200, payload
+        assert FakeAdminStub.SERVICES[("default", "dsh-fake", "bridge")] \
+            .endpoint.domain is True, payload
+        # 布尔 false 原生通道不受影响
+        status, payload = req("POST", "/api/v1/sandboxes/dsh-fake/services",
+                              {"workspace": "default", "service": "bridge",
+                               "target_port": 8080, "domain": False})
+        assert status == 200, payload
+        assert FakeAdminStub.SERVICES[("default", "dsh-fake", "bridge")] \
+            .endpoint.domain is False, payload
+        # route_set 的 no_verify 同口径
+        status, payload = req("PUT", "/api/v1/inference/route",
+                              {"workspace": "default", "provider": "prov-x",
+                               "model": "model-y", "no_verify": "false"})
+        assert status == 200, payload
+        assert INFERENCE_FAKE.last == ("default", "prov-x", "model-y", False), \
+            INFERENCE_FAKE.last
+        status, payload = req("PUT", "/api/v1/inference/route",
+                              {"workspace": "default", "provider": "prov-x",
+                               "model": "model-y", "no_verify": "true"})
+        assert status == 200, payload
+        assert INFERENCE_FAKE.last == ("default", "prov-x", "model-y", True), \
+            INFERENCE_FAKE.last
+        status, payload = req("PUT", "/api/v1/inference/route",
+                              {"workspace": "default", "provider": "prov-x",
+                               "model": "model-y", "no_verify": 0})
+        assert status == 400 and "no_verify" in payload["error"], payload
+    finally:
+        server.shutdown()
+
+
+def test_upload_spool_closed_on_stream_error():
+    """B1-12：spool 文件全程 try/finally 关闭——收流中途异常（客户端断连，
+    request.stream() 抛出）也必须关闭 spool，不得泄漏临时文件。"""
+    import asyncio
+    opened = []
+
+    class FakeSpool:
+        def __init__(self, *a, **k):
+            opened.append(self)
+            self.closed = False
+
+        def write(self, chunk):
+            pass
+
+        def seek(self, *a):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    async def broken_stream():
+        raise RuntimeError("client disconnected")
+        yield b""  # pragma: no cover — 仅为异步生成器形态
+
+    orig = api.tempfile.SpooledTemporaryFile
+    api.tempfile.SpooledTemporaryFile = FakeSpool
+    server, _req = make_app(token_env=None)  # 借其隔离 config 环境
+    try:
+        from types import SimpleNamespace as NS
+        request = NS(
+            headers={"Content-Type": "multipart/form-data; boundary=xyz",
+                     "Content-Length": "10"},
+            stream=lambda: broken_stream(),
+            url=NS(query=""),
+        )
+        try:
+            asyncio.run(api._handle_upload("dsh-fake", request))
+            raise AssertionError("stream error must propagate")
+        except RuntimeError:
+            pass
+        assert opened and opened[-1].closed, \
+            "spool file must be closed on stream error (try/finally)"
+    finally:
+        api.tempfile.SpooledTemporaryFile = orig
+        server.shutdown()
+
+
 def test_method_not_allowed_error_contract():
     """405 也是 {"error": …} 单键契约（不允许 FastAPI 默认 detail 形态泄漏）。"""
     server, req = make_app(token_env=None)
@@ -1184,6 +1331,236 @@ def test_auth_rejects_lowercase_bearer_scheme():
             assert exc.code == 401, exc.code
     finally:
         server.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# B3 审计修复批（fix-plan-2026-09-11 §5，先红后修）
+# ---------------------------------------------------------------------------
+
+class SlowExecClient(FakeSandboxClient):
+    """模拟慢南向调用（gRPC 在途）：exec 阻塞 2 秒。"""
+
+    def exec(self, sandbox_id, command, *, workdir=None, env=None, stdin=None,
+             timeout_seconds=None):
+        time.sleep(2)
+        return FakeExecResult()
+
+
+def test_slow_exec_does_not_block_healthz():
+    """B3-1：async 端点必须在 event loop 外跑南向调用——慢 exec 在途时
+    /healthz 仍 <0.5s 响应。修复前红：exec 裸调 facade（同步阻塞）劫持
+    整个事件循环，探活/一切并发请求排队 2s。"""
+    server, req = make_app(token_env=None, client=SlowExecClient())
+    try:
+        done = threading.Event()
+
+        def do_exec():
+            status, payload = req("POST", "/api/v1/sandboxes/exec",
+                                  {"sandbox_id": "sb-1",
+                                   "command": ["/bin/sleep", "2"]})
+            assert status == 200, payload
+            done.set()
+
+        threading.Thread(target=do_exec, daemon=True).start()
+        time.sleep(0.5)  # 等 exec 确认进入在途（南向慢调用占线）
+        t0 = time.monotonic()
+        status, payload = req("GET", "/healthz")
+        dt = time.monotonic() - t0
+        assert status == 200, payload
+        assert dt < 0.5, \
+            f"/healthz blocked {dt:.2f}s by in-flight slow exec " \
+            "(async routes must offload facade calls via run_in_threadpool)"
+        assert done.wait(timeout=10), "slow exec must still complete"
+    finally:
+        server.shutdown()
+
+
+def test_wait_ready_timeout_server_side_cap():
+    """B3-1：wait_ready timeout_seconds 服务端上限——缺省 300s、硬上限
+    600s，超限 = 客户端错误 400（客户端曾可传 1e9 让南向连接无限占用）。"""
+    server, req = make_app(token_env=None)
+    try:
+        status, payload = req("POST", "/api/v1/sandboxes/dsh-fake/wait-ready",
+                              {"workspace": "default",
+                               "timeout_seconds": 1e9})
+        assert status == 400 and "timeout_seconds" in payload["error"], payload
+        status, payload = req("POST", "/api/v1/sandboxes/dsh-fake/wait-ready",
+                              {"workspace": "default", "timeout_seconds": 601})
+        assert status == 400, payload
+        # 边界含 600；缺省 300
+        status, payload = req("POST", "/api/v1/sandboxes/dsh-fake/wait-ready",
+                              {"workspace": "default", "timeout_seconds": 600})
+        assert status == 200, payload
+        status, payload = req("POST", "/api/v1/sandboxes/dsh-fake/wait-ready",
+                              {"workspace": "default"})
+        assert status == 200 and FAKE.calls[-1][3] == 300, payload
+    finally:
+        server.shutdown()
+
+
+def test_token_file_auth_and_fail_closed():
+    """B3-2：tokenFile 已配置但读失败（EACCES/EIO 等 OSError）=
+    fail-closed——受保护路由 503，不再静默放行（修复前异常被吞 token 变
+    空 → 鉴权失效）；/healthz 探活豁免不受影响；文件可读时鉴权回归不破。
+
+    读失败复现：常规环境 chmod 000（EACCES）；root 开发机上权限位对
+    root 无效，改用 tokenFile 指向目录（IsADirectoryError，同一 OSError
+    → TokenFileError fail-closed 通道）。"""
+    token_file = tempfile.NamedTemporaryFile("w", suffix=".token", delete=False)
+    token_file.write("file-token")
+    token_file.close()
+    cfg = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+    cfg.write(json.dumps({"tokenFile": token_file.name}))
+    cfg.close()
+    unreadable_dir: str | None = None
+    cfg_broken: str | None = None
+    saved = {k: os.environ.get(k) for k in
+             ("OPENSHELL_MANAGER_TOKEN", "OPENSHELL_MANAGER_CONFIG")}
+    server, req = make_app(token_env=None)
+    try:
+        def point_config_at(cfg_path: str):
+            os.environ["OPENSHELL_MANAGER_CONFIG"] = cfg_path
+            os.environ.pop("OPENSHELL_MANAGER_TOKEN", None)
+            config._config_cache = None
+            config._token_cache = None
+
+        # (a) 可读 tokenFile：正常鉴权（错 token 401 / 对 token 200）
+        point_config_at(cfg.name)
+        status, _ = req("GET", "/api/v1/inference/route?workspace=default")
+        assert status == 401, status
+        status, payload = req("GET", "/api/v1/inference/route?workspace=default",
+                              token="file-token")
+        assert status == 200 and payload["provider"] == "prov-x", payload
+
+        # (b) 读失败 → 503 fail-closed；healthz 不受影响
+        if os.geteuid() == 0:
+            unreadable_dir = tempfile.mkdtemp(suffix=".as-token-file")
+            broken_source = unreadable_dir
+        else:
+            os.chmod(token_file.name, 0o000)
+            broken_source = token_file.name
+        cfg_broken = tempfile.NamedTemporaryFile("w", suffix=".json",
+                                                 delete=False).name
+        with open(cfg_broken, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"tokenFile": broken_source}))
+        point_config_at(cfg_broken)  # 复位 token 缓存（含文件结果 5s 缓存）
+        status, payload = req("GET", "/api/v1/inference/route?workspace=default",
+                              token="file-token")
+        assert status == 503, (status, payload)
+        status, payload = req("GET", "/healthz")
+        assert status == 200 and payload["ok"] is True, payload
+    finally:
+        os.chmod(token_file.name, 0o644)
+        if unreadable_dir:
+            os.rmdir(unreadable_dir)
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        config._config_cache = None
+        config._token_cache = None
+        server.shutdown()
+
+
+def test_manager_token_file_result_cached():
+    """B3-2：manager_token() 文件解析结果 5s 缓存——async 依赖里消除
+    每请求阻塞磁盘 IO；env 优先级不受缓存影响（直读）。"""
+    calls = {"n": 0}
+    orig = config._token_from_file
+    cfg = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+    cfg.write(json.dumps({"tokenFile": "/tmp/fake.token"}))
+    cfg.close()
+    saved = {k: os.environ.get(k) for k in
+             ("OPENSHELL_MANAGER_TOKEN", "OPENSHELL_MANAGER_CONFIG")}
+
+    def counting(token_file):
+        calls["n"] += 1
+        return "cached-token"
+
+    config._token_from_file = counting
+    try:
+        os.environ["OPENSHELL_MANAGER_CONFIG"] = cfg.name
+        os.environ.pop("OPENSHELL_MANAGER_TOKEN", None)
+        config._config_cache = None
+        config._token_cache = None
+        assert config.manager_token() == "cached-token"
+        assert config.manager_token() == "cached-token"
+        assert calls["n"] == 1, \
+            f"token file must be read once per TTL window, read {calls['n']}x"
+        # 缓存过期后重读
+        config._token_cache = ("cached-token", time.monotonic() - 0.001)
+        assert config.manager_token() == "cached-token"
+        assert calls["n"] == 2, calls
+        # env 直读不受缓存影响（优先级契约）
+        os.environ["OPENSHELL_MANAGER_TOKEN"] = "env-token"
+        assert config.manager_token() == "env-token"
+    finally:
+        config._token_from_file = orig
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        config._config_cache = None
+        config._token_cache = None
+
+
+def test_unhandled_exception_maps_500_generic():
+    """B3-3：未捕获异常兜底 = 500 + 通用文案 "internal error"（细节进
+    服务端 stderr 日志）。原 502 会让上游按"网关不可达"误重试/降级，
+    且异常细节（类型+消息）直接泄漏给客户端。"""
+    server, req = make_app(token_env=None)
+    api.facade = GatewayFacade(client_factory=lambda: FailingClient())
+    try:
+        status, payload = req("GET", "/api/v1/gateway/health")
+        assert status == 500, payload
+        assert payload == {"error": "internal error"}, payload
+    finally:
+        server.shutdown()
+
+
+def test_target_port_strict_integer():
+    """B3-3：_int_field 严格化（_opt_bool 同款）——target_port 只收 int：
+    bool（int 子类恒真陷阱）/float（含整值形式）/字符串数字一律 400。
+    原 int() 强转放过 "8123"、8123.5、True 等垃圾类型。"""
+    server, req = make_app(token_env=None)
+    try:
+        for bad in ("8123", 8123.5, 8080.0, True):
+            status, payload = req("POST", "/api/v1/sandboxes/dsh-fake/services",
+                                  {"workspace": "default", "service": "s",
+                                   "target_port": bad})
+            assert status == 400 and "target_port" in payload["error"], \
+                (bad, status, payload)
+        status, payload = req("POST", "/api/v1/sandboxes/dsh-fake/services",
+                              {"workspace": "default", "service": "s",
+                               "target_port": 8123})
+        assert status == 200 and payload["target_port"] == 8123, payload
+    finally:
+        server.shutdown()
+
+
+def test_max_upload_bytes_defaults_to_2gib():
+    """B3-3：maxUploadBytes 缺省 2GiB（2147483648）非零——原缺省 0（不限）
+    让纯防误操作的上限形同虚设（有人误指 50GB 归档时无拦截）。"""
+    saved = {k: os.environ.get(k) for k in
+             ("OPENSHELL_MANAGER_MAX_UPLOAD_BYTES", "OPENSHELL_MANAGER_CONFIG")}
+    try:
+        os.environ.pop("OPENSHELL_MANAGER_MAX_UPLOAD_BYTES", None)
+        cfg = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        cfg.write("{}")
+        cfg.close()
+        os.environ["OPENSHELL_MANAGER_CONFIG"] = cfg.name
+        config._config_cache = None
+        assert config.max_upload_bytes() == 2147483648, \
+            config.max_upload_bytes()
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        config._config_cache = None
 
 
 if __name__ == "__main__":

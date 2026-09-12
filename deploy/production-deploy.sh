@@ -882,7 +882,7 @@ cmd_stop() {
 
 cmd_down() {
     load_env
-    local v=""; [ "${2:-}" = "-v" ] && v="-v"
+    local v=""; [ "${1:-}" = "-v" ] && v="-v"
     compose_web down $v; compose_engine down $v; compose_manager down $v; compose_gateway down $v
     say "down ${v:-（卷保留）} 完成"
 }

@@ -91,7 +91,7 @@ describe('人工复核内容条件（ADR-141；全文端点失败降级回片段
       source_raw: '',
     };
     renderPage();
-    await waitFor(() => expect(screen.getByText(/该发现未携带位置信息/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/该发现未携带代码位置信息/)).toBeTruthy());
   });
   // 2026-08-30 会话#41 回归：atob 的 Latin-1 语义会把 UTF-8 中文拆成乱码
   // （"注入"→"æ³¨å…¥"）——source_raw 必须经字节层 UTF-8 解码。
@@ -128,9 +128,9 @@ describe('源码全文滚动视图（ADR-195）', () => {
     expect(viewer.querySelector('[data-line="12"]')?.textContent).toContain('line-12');
     expect(viewer.querySelector('[data-line="60"]')?.textContent).toContain('line-60'); // 全文非片段
     expect(screen.getByText(/已居中定位到第 12 行（漏洞位置）/)).toBeTruthy();
-    // 无 AI 结论 → 无链路 chips、选择器禁用、提示"仅漏洞所在文件可选"
+    // 无 AI 结论 → 无链路 chips、选择器禁用、提示"（仅漏洞所在文件）"
     expect(screen.queryAllByTestId(/chain-hop-/).length).toBe(0);
-    expect(screen.getByText(/仅漏洞所在文件可选/)).toBeTruthy();
+    expect(screen.getByText(/（仅漏洞所在文件）/)).toBeTruthy();
   });
 
   it('AI 结论链路：chips 按原文顺序渲染，点击切换文件并带上定位行', async () => {

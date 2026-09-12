@@ -12,8 +12,9 @@ CodeAudit 代码审计平台的 VS Code 原生扩展（伞仓子仓 `codeaudit/v
 | 能力 | 说明 |
 |---|---|
 | 登录 | 用户名/密码换 JWT；access/refresh 存 VS Code SecretStorage；401 单飞刷新（并发请求共享一次刷新）；429 按 `retry_after` 退避（5~60s 钳位） |
-| 项目绑定 | QuickPick 选择平台项目，`project_id` 写入工作区 `.vscode/settings.json` |
+| 项目绑定 | QuickPick 选择平台项目，`project_id` 写入工作区 `.vscode/settings.json`；绑定成功且空闲时自动同步该项目最近完成任务的发现（无完成任务/失败静默） |
 | 一键扫描 | `findFiles` 收集（默认 2 万文件上限）→ 防空包阈值检查 → adm-zip 打包 → 上传 → 建任务 → 启动 → 实时跟踪；同一时刻只允许一个扫描（防重复消耗平台沙箱） |
+| 增量扫描（ADR-225） | 项目有已完成任务时询问「增量/全量」；git 工作区自动采集版本锚点（commit/branch/dirty/origin，vscode.git 内置扩展，非 git 自动退化）、无变更预检、变更预告；增量任务完成显示「变更 N · 删除 D · 继承 M · 新发现 K」与降级原因，继承项在结果树带「继承」角标。基线/对比由平台服务端权威计算（diff_hint 仅审计提示） |
 | 任务跟踪 | WS 实时推送 + 断线 5s 重连（带游标续订）+ 10s 快照轮询兜底；支持暂停/恢复/取消 |
 | 实时视图 | 底部面板「AI 交互上下文」webview：任务态头 + 任务日志滚动窗 + AI 正文流式区；postMessage 增量更新，不整页重载，贴底才跟随 |
 | 结果展示 | 行内波浪线 + Problems 面板（source=CodeAudit）；侧栏树按文件分组、组内严重级降序；点击漏洞跳转代码位置并切换出「漏洞详情」视图 |
@@ -25,7 +26,7 @@ CodeAudit 代码审计平台的 VS Code 原生扩展（伞仓子仓 `codeaudit/v
 ## 使用流程
 
 1. **登录**：`CodeAudit: 登录平台` — 输入网关地址（默认 `http://localhost:8080`）、用户名、密码（JWT，与 Web 控制台同一套账号）。
-2. **绑定项目**：`CodeAudit: 选择平台项目并绑定工作区` — 项目 ID 写入工作区 `.vscode/settings.json` 的 `codeaudit.projectId`。
+2. **绑定项目**：`CodeAudit: 选择平台项目并绑定工作区` — 项目 ID 写入工作区 `.vscode/settings.json` 的 `codeaudit.projectId`；该项目在平台已有完成的扫描时自动同步其发现（空闲时；无则面板为空，扫描后即有）。
 3. **扫描**：`CodeAudit: 扫描工作区`（侧栏标题栏 ▶ / 状态栏「▶ 扫描」/ 命令面板 / URI 深链均可触发）。打包上传 → 平台建任务并启动 → 状态栏显示百分比，底部面板自动展开 AI 交互上下文（`codeaudit.autoOpenAiContext` 可关）。
 4. **跟踪**：「任务进度」树实时展示任务头（状态/百分比/WS 或轮询）→ 各阶段（图标/耗时/错误 tooltip）→ AI 交互上下文入口（字节量/流式状态）→ 失败摘要。运行中可暂停/恢复/取消（取消有模态确认）。
 5. **看结果**：完成后自动拉取 findings — Problems 面板 + 侧栏「扫描结果」树；点击条目跳转位置，侧栏「任务进度」切换为「漏洞详情」（严重级徽章/元信息/描述/AI 分析/修复建议/机器补丁 + 操作按钮）。新扫描开始时自动切回「任务进度」。
@@ -39,7 +40,7 @@ CodeAudit 代码审计平台的 VS Code 原生扩展（伞仓子仓 `codeaudit/v
 - 活动栏容器 `codeaudit`：「扫描结果」树、「任务进度」树、「漏洞详情」webview（后两者按 `codeaudit.findingDetail` 上下文互斥切换）
 - 底部面板容器 `codeaudit-panel`：「AI 交互上下文」webview（不占编辑器空间）
 
-**命令清单**（19 个，与 `package.json` contributes 一致）：
+**命令清单**（20 个，与 `package.json` contributes 一致）：
 
 | 命令 | 标题 | 备注 |
 |---|---|---|
@@ -48,6 +49,7 @@ CodeAudit 代码审计平台的 VS Code 原生扩展（伞仓子仓 `codeaudit/v
 | `codeaudit.selectProject` | 选择平台项目并绑定工作区 | |
 | `codeaudit.scanWorkspace` | 扫描工作区 | 扫描互斥：进行中会被拒绝 |
 | `codeaudit.cancelScan` | 取消当前任务 | 模态确认 |
+| `codeaudit.runningMenu` | 运行中任务操作（暂停/取消/上下文） | 状态栏「任务进行中」点击汇聚入口 |
 | `codeaudit.pauseScan` | 暂停扫描 | `when: taskRunning` |
 | `codeaudit.resumeScan` | 恢复扫描 | `when: taskPaused` |
 | `codeaudit.refreshFindings` | 刷新扫描结果 | 本地无任务记录时兜底绑定平台该项目最近完成的任务 |
@@ -61,16 +63,16 @@ CodeAudit 代码审计平台的 VS Code 原生扩展（伞仓子仓 `codeaudit/v
 | `codeaudit.rollbackFixes` | 回滚最近一次批量修复 | 优先走修复登记表，无登记时兜底最近 checkpoint |
 | `codeaudit.rollbackFix` | 回滚此漏洞修复 | 已修复条目的内联按钮/右键 |
 | `codeaudit.openConsole` | 在控制台打开 | 跳 Web 控制台任务页（非网关 API 地址） |
-| `codeaudit.selectTask` | 切换任务 | 列出平台该项目任务（时间倒序），绑定即拉历史结果 |
+| `codeaudit.selectTask` | 切换任务 | 列出平台该项目任务（时间倒序），绑定即拉历史结果；有任务进行中会先弹确认（取消则不动） |
 
-**状态栏**：左侧盾牌图标 + 短态（`未登录` / 打包上传阶段文案 / 任务百分比 / `N 发现` / `空闲`），点击打开 AI 交互上下文；旁边固定槽位的快捷按钮随任务态切换（空闲 ▶扫描 / 运行中 ⏸暂停 / 暂停中 ▶恢复）。
+**状态栏**：左侧盾牌图标 + 短态（`未登录` / 打包上传阶段文案 / 任务百分比 / `N 发现` / `空闲`），点击打开 AI 交互上下文；旁边固定槽位的快捷按钮随任务态切换（空闲 ▶扫描 / 运行中 ⟳任务进行中（暂停/取消/查看上下文操作菜单）/ 暂停中 ▶恢复）。
 
 ## 配置项
 
 | 配置 | 默认值 | 说明 |
 |---|---|---|
 | `codeaudit.serverUrl` | `http://localhost:8080` | 平台网关地址（gateway-service HTTP/WS 入口） |
-| `codeaudit.consoleUrl` | 空 | Web 控制台地址；空 = 由 serverUrl 推导同主机 `:4173`（控制台用浏览器 cookie 登录态，无需 token） |
+| `codeaudit.consoleUrl` | 空 | Web 控制台地址；空 = 由 serverUrl 推导同主机 `:80`（剥离网关端口；控制台用浏览器 cookie 登录态，无需 token） |
 | `codeaudit.projectId` | 空 | 工作区绑定的平台项目（「选择平台项目」命令自动写入） |
 | `codeaudit.scanMode` | `SCAN_MODE_PARALLEL` | 五种扫描模式之一：`SCAN_MODE_SAST_ONLY`（A 纯SAST）/ `SCAN_MODE_AI_ONLY`（B 纯AI）/ `SCAN_MODE_PARALLEL`（C SAST+AI 融合，默认）/ `SCAN_MODE_AI_ENHANCED_SAST`（D AI增强SAST）/ `SCAN_MODE_COMPARE`（E SAST+AI 对比） |
 | `codeaudit.sastTools` | `[]` | SAST 工具列表；空 = 平台按项目语言自动选择 |
@@ -112,7 +114,7 @@ DTO 与平台 proto 对齐（`UnifiedFinding`/`ScanTask`/`TaskProgress` 等 snak
 
 **checkpoint + 修复登记**：
 
-- 应用前把受影响文件内容快照到 `<globalStorage>/checkpoints/cp-<时间戳>-<序号>/`；值为 null 的条目 = 修复前不存在的文件（Add/Move 目标），回滚时删除而非还原。
+- 应用前把受影响文件内容快照到 `<globalStorage>/checkpoints/cp-<时间戳>-<序号>/`；值为 null 的条目 = 修复前不存在的文件（Add/Move 目标），回滚时删除而非还原。同一文件在全部 checkpoint 中的快照份数上限 100，超限自动清理最旧快照（被清理的旧修复回滚时按既有口径提示「checkpoint 缺失或损坏」）。
 - `<globalStorage>/fix-registry.json` 记录每条修复（发现 → checkpoint 映射 + applied/rolledback 状态机），窗口重载后「✔ 已修复」徽章与按发现回滚入口仍在。
 - 应用语义：Update 走 `WorkspaceEdit` + 显式保存（保留撤销栈）；Add/Delete/Move 走 fs。应用后逐文件打开「修复前虚拟文档 ↔ 当前文件」diff 审阅视图——审阅是事后动作而非门禁，不满意随时回滚。
 - 发现应用补丁后**保留**在树和 Problems（应用补丁 ≠ 风险记录消失），仅刷新「✔ 已修复（可回滚）」徽章，内联按钮切换为回滚；回滚后可重新应用（新 checkpoint 覆盖旧记录）。
@@ -133,7 +135,7 @@ DTO 与平台 proto 对齐（`UnifiedFinding`/`ScanTask`/`TaskProgress` 等 snak
 npm install
 npm run compile   # tsc 编译到 out/
 npm run watch     # 增量编译
-npm test          # tsc 编译测试 + mocha 跑全部测试（当前 201 个全过：单测+胶水层行为测试+结构守卫）
+npm test          # tsc 编译测试 + mocha 跑全部测试（当前 262 个全过：单测+胶水层行为测试+结构守卫）
 npm run package   # vsce 打包 vsix + verify-vsix 关卡
 ```
 

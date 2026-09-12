@@ -4,7 +4,8 @@
 export interface LoginResponse {
   access_token: string;
   refresh_token: string;
-  expires_in_s: number;
+  // protojson int64 → 十进制字符串；网关序列化形态不保证（B8 跨仓契约收口），消费点 Number() 归一
+  expires_in_s: string | number;
 }
 
 export interface Project {
@@ -51,6 +52,22 @@ export interface ScanTask {
   status: string;
   stages: TaskStage[];
   error_message: string;
+  // ---- 增量扫描（ADR-225；Prepare 回写快照，重试不重算）----
+  baseline_task_id?: string;
+  changed_files?: string[] | null;
+  deleted_files?: string[] | null;
+  git_anchor?: GitAnchor | null;
+  diff_source?: string;
+  /** 任务 config（增量降级原因 incremental_degraded_reason 等诊断键在此透出） */
+  config?: Record<string, string> | null;
+}
+
+/** 版本锚点（proto GitAnchor，ADR-225 D5：插件经 vscode.git 采集；非 git 工作区为 null） */
+export interface GitAnchor {
+  commit: string;
+  branch: string;
+  dirty: boolean;
+  remote: string;
 }
 
 /** 任务进度（proto TaskProgress；stages 比 ScanTask.stages 更实时，展示优先取此路） */
@@ -97,6 +114,10 @@ export interface TaskSummary {
   created_at: string | null;
   updated_at: string | null;
   error_message: string;
+  // ---- 增量扫描（ADR-225）----
+  baseline_task_id?: string;
+  git_anchor?: GitAnchor | null;
+  config?: Record<string, string> | null;
 }
 
 export interface PaginationResponse {
@@ -137,6 +158,8 @@ export interface UnifiedFinding {
   location?: LocationInfo | null;
   dedup_group: string;
   is_unique: boolean;
+  // 增量扫描继承标记（ADR-225）：空=本任务实扫产出；非空=从该基线任务复制的继承项
+  inherited_from_task_id?: string;
 }
 
 export interface FindingsPage {

@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import { buildViewUpdate, renderAiContextHtml } from '../src/aiContextView';
 import { escapeHtml } from '../src/htmlEscape';
+import { newWebviewScriptCsp, NO_SCRIPT_CSP } from '../src/webviewCsp';
 import { applyFrame, createProgressState } from '../src/progressModel';
 import type { TaskSnapshot } from '../src/types';
 
@@ -57,7 +58,7 @@ describe('aiContextView：renderAiContextHtml 结构与状态', () => {
   it('头部：任务/状态/百分比/连接徽标 + 进度条宽度 + 阶段 chips', () => {
     const html = renderAiContextHtml({ state: mk() });
     assert.match(html, /任务 gw-abcde/);
-    assert.match(html, /运行中 · 42%/);
+    assert.match(html, /执行中 · 42%/);
     assert.match(html, /width:42%/);
     assert.match(html, /chip done[^]*SAST 扫描|SAST 扫描[^]*chip done/);
     assert.match(html, /chip running[^]*AI 推理|AI 推理[^]*chip running/);
@@ -108,7 +109,7 @@ describe('aiContextView：renderAiContextHtml 结构与状态', () => {
     assert.strictEqual(u.type, 'update');
     assert.strictEqual(u.percent, 42);
     assert.match(u.h1Html, /任务 gw-abcde/);
-    assert.match(u.h1Html, /运行中 · 42%/);
+    assert.match(u.h1Html, /执行中 · 42%/);
     assert.match(u.chipsHtml, /chip done/);
     assert.match(u.chipsHtml, /chip running/);
     assert.match(u.logsHtml, /class="log err"/);
@@ -139,5 +140,32 @@ describe('aiContextView：renderAiContextHtml 结构与状态', () => {
     const html = renderAiContextHtml({ state: s });
     assert.ok(html.length < big.length + 64 * 1024, `渲染 HTML 应明显小于原始正文（实际 ${html.length}）`);
     assert.ok(html.includes('x'.repeat(1000)), '尾部内容保留');
+  });
+
+  it('CSP nonce 化（§14 纵深）：主页面 script-src 走 nonce 且无 unsafe-inline，页内脚本携带同值 nonce；空态页 script-src none', () => {
+    const html = renderAiContextHtml({ state: mk() });
+    const meta = html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]*)">/);
+    assert.ok(meta, 'CSP meta 必须存在');
+    const csp = meta[1] as string;
+    assert.ok(csp.includes("default-src 'none'"), 'default-src 不弱化');
+    const scriptDir = csp.split(';').map((d) => d.trim()).find((d) => d.startsWith('script-src')) as string;
+    assert.match(scriptDir, /^script-src 'nonce-[0-9a-f]{32}'$/, 'script-src 必须为 nonce 形态');
+    assert.ok(!scriptDir.includes('unsafe-inline'), 'script-src 不得再含 unsafe-inline');
+    const nonce = (scriptDir.match(/'nonce-([0-9a-f]{32})'/) as RegExpMatchArray)[1];
+    assert.ok(html.includes(`<script nonce="${nonce}">`), '页内贴底/增量脚本必须携带 CSP 同值 nonce');
+    // 随机性：两次渲染 nonce 不同（不可预测，防猜测绕过）
+    const nonce2 = (renderAiContextHtml({ state: mk() }).match(/'nonce-([0-9a-f]{32})'/) as RegExpMatchArray)[1];
+    assert.notStrictEqual(nonce, nonce2, '两次渲染 nonce 必须不同');
+    // 空态页无 inline script——script-src 'none'（更硬），且不含任何活体 script 标签
+    const empty = renderAiContextHtml({ state: null });
+    const emptyMeta = empty.match(/<meta http-equiv="Content-Security-Policy" content="([^"]*)">/);
+    assert.ok((emptyMeta?.[1] as string).includes("script-src 'none'"), '空态页 CSP 必须为 script-src none');
+    assert.ok(!/<script/.test(empty), '空态页不得有 script 标签');
+    // 单元直锁（src/webviewCsp）：nonce 32 位 hex；content 与 NO_SCRIPT_CSP 语义
+    const c = newWebviewScriptCsp();
+    assert.match(c.nonce, /^[0-9a-f]{32}$/, 'nonce 为随机 16 字节 hex');
+    assert.strictEqual(c.content, `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${c.nonce}'`);
+    assert.strictEqual(NO_SCRIPT_CSP, `default-src 'none'; style-src 'unsafe-inline'; script-src 'none'`,
+      '无脚本页 CSP：script-src none（style 内联保留）');
   });
 });

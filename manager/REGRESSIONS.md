@@ -34,6 +34,15 @@
 | R10 | 2026-09-05 | 按 deploy/Dockerfile.manager 部署容器起不来 | 源码已 FastAPI 化而配方停留 stdlib（缺 fastapi/uvicorn）——源码与部署配方漂移 | 部署链纪律：`deploy/deploy.sh check` + 伞仓 check-wiring；离线测试不覆盖（缺口已标记） |
 | R11 | 2026-09-07 | 字符串字段收非字符串（workspace/name/env/workdir/provider/…）透传进 SDK/proto 抛 TypeError → 502 泄漏（上游误判网关不可达而重试/降级）；exec timeout 非数值同样泄漏 | R6 修复只覆盖了数值参数与 proto 解析路径，字符串字段族未收口 | `test_non_string_fields_map_400_not_502`、`test_exec_rejects_bad_env_workdir_and_timeout` |
 | R12 | 2026-09-07 | README 承诺的直跑模式 `python3 tests/test_contract.py` ModuleNotFoundError | `from openshell_manager import …` 在 sys.path.insert 之前执行 | 门禁双模式（verify.sh 同时跑 pytest 与直跑） |
+| R13 | 2026-09-11 | 布尔字段（services `domain`、route `no_verify`）收字符串 `"false"` 被恒真打开（行为与字面相反）；数字等垃圾类型同样恒真 | `bool(body.get(...))` 的 Python 真值语义，非严格解析 | `test_boolean_string_fields_strict`（B1-12 审计批；`_opt_bool` 只收布尔或 "true"/"false" 字符串，其余 400） |
+| R14 | 2026-09-11 | `Transfer-Encoding: chunked` 的 JSON 请求体被整包丢弃（静默当空对象 → 400 missing field） | 无 `Content-Length` 头时 `length==0` 短路，永远读不到 body | `test_chunked_json_body_not_dropped`（B1-13 审计批；chunked 走流式读取，同受 20 MiB 上限） |
+| R15 | 2026-09-11 | `/logs` 把路由里的沙箱名原样当 `sandbox_id` 查 `GetSandboxLogs`（该 RPC 与 /exec 同为 UUID 口径），网关侧必 NOT_FOUND | 接口层缺 name→UUID 解析，违反 ADR-173"REST 路径参数一律接口层解析"总则（docs/api-external 旧 3.9"网关按名解析"说法无实据——proto 字段命名即 `sandbox_id`；线上裁定不可得：现役实例 token 不在本仓，探测 401） | `test_logs_resolve_name_to_uuid`（B1-15 审计批；与 /files 同口径走 `resolve_sandbox_id`） |
+| R16 | 2026-09-11 | 上传收流中途异常（客户端断连）泄漏 spool 临时文件（大文件直落磁盘） | 接收循环在 try/finally 保护之外，仅 `run_in_threadpool(work)` 段有 finally | `test_upload_spool_closed_on_stream_error`（B1-12 审计批；spool 全程 try/finally） |
+| R17 | 2026-09-11 | 七个 async 端点裸调同步 facade（阻塞 gRPC），慢南向调用在途时 /healthz 探活与全部并发请求被劫持（实测排队 1.5s+，gRPC timeout=60s 兜底）；wait_ready 的 timeout_seconds 无服务端上限（客户端可传 1e9 无限占用南向连接） | async def 路由把同步阻塞调用直接跑在事件循环上；缺超时上限校验 | `test_slow_exec_does_not_block_healthz`、`test_wait_ready_timeout_server_side_cap`（B3-1 审计批；统一 `run_in_threadpool` + 缺省 300/硬上限 600） |
+| R18 | 2026-09-11 | tokenFile 已配置但读失败（EACCES/EIO）被吞异常当空 token——读失败瞬间整面鉴权失效（fail-open）；且每请求同步读盘阻塞事件循环 | `_token_from_file` 对一切异常返回 ""；require_token 无 fail-closed 分支 | `test_token_file_auth_and_fail_closed`、`test_manager_token_file_result_cached`（B3-2 审计批；`TokenFileError`→503+stderr、文件结果 5s 缓存） |
+| R19 | 2026-09-11 | 未捕获异常兜底 502 + `ExcType: msg`——上游把服务端缺陷按"网关不可达"误重试/降级，且异常细节直接泄漏给客户端 | 兜底处理器沿用上游失败口径 502 且拼入异常细节 | `test_unhandled_exception_maps_500_generic`、`test_upstream_error_mapping`（B3-3 审计批；500 + `internal error`，细节进服务端 stderr） |
+| R20 | 2026-09-11 | `maxUploadBytes` 缺省 0（不限），纯防误操作的上限形同虚设 | 缺省值与坏值回落都是 0 | `test_max_upload_bytes_defaults_to_2gib`（B3-3 审计批；缺省/回落 2 GiB） |
+| R21 | 2026-09-11 | `_int_field` 用 `int()` 强转放过垃圾类型：target_port 收 "8123"（字符串数字）、8123.5（float）、True（bool 恒真陷阱）均被静默接受 | 宽松类型强转而非严格类型校验（`_opt_bool` 同族缺陷） | `test_target_port_strict_integer`（B3-3 审计批；只收 int） |
 
 ## 已知未覆盖缺口（如实记录，非缺陷）
 

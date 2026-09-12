@@ -52,7 +52,7 @@ func rulescanFallback(taskID, projectPath, reason string, emit TaskLogFunc) []*p
 		f.Description = "[降级·RuleScan] 沙箱 DSH 不可用，本条由内置规则引擎匹配产出（非 AI 语义分析）: " + f.GetDescription()
 		f.AiVerdict = pb.AIVerdict_AI_VERDICT_NEEDS_MANUAL
 		f.AiConfidence = 0.3
-		f.AiReasoning = "[降级] 规则引擎兜底产出，未经 AI 语义审查，需人工复核（07 §10）"
+		f.AiReasoning = "[降级] 规则引擎兜底产出，未经 AI 语义审查，需人工复核"
 		f.Confidence = 0.3
 	}
 	log.Printf("[dsh-runtime][%s] local RuleScan: %d findings in %dms (all marked NEEDS_MANUAL)",

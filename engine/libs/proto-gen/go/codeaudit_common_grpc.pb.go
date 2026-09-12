@@ -1941,6 +1941,7 @@ const (
 	ResultService_GetTaskResultStats_FullMethodName    = "/codeaudit.common.v1.ResultService/GetTaskResultStats"
 	ResultService_ExportFindings_FullMethodName        = "/codeaudit.common.v1.ResultService/ExportFindings"
 	ResultService_SubmitFindingFeedback_FullMethodName = "/codeaudit.common.v1.ResultService/SubmitFindingFeedback"
+	ResultService_InheritFindings_FullMethodName       = "/codeaudit.common.v1.ResultService/InheritFindings"
 )
 
 // ResultServiceClient is the client API for ResultService service.
@@ -1965,6 +1966,9 @@ type ResultServiceClient interface {
 	ExportFindings(ctx context.Context, in *ExportFindingsRequest, opts ...grpc.CallOption) (*ExportFindingsResponse, error)
 	// 误报反馈闭环（评审整合项）
 	SubmitFindingFeedback(ctx context.Context, in *SubmitFindingFeedbackRequest, opts ...grpc.CallOption) (*SubmitFindingFeedbackResponse, error)
+	// 增量扫描继承（ADR-225）：复制基线任务中"未变更文件"的 findings 到新任务
+	// （写路径物化，连带 verdict/AI 建议终态；变更∪删除文件的旧 findings 不继承）
+	InheritFindings(ctx context.Context, in *InheritFindingsRequest, opts ...grpc.CallOption) (*InheritFindingsResponse, error)
 }
 
 type resultServiceClient struct {
@@ -2105,6 +2109,16 @@ func (c *resultServiceClient) SubmitFindingFeedback(ctx context.Context, in *Sub
 	return out, nil
 }
 
+func (c *resultServiceClient) InheritFindings(ctx context.Context, in *InheritFindingsRequest, opts ...grpc.CallOption) (*InheritFindingsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InheritFindingsResponse)
+	err := c.cc.Invoke(ctx, ResultService_InheritFindings_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ResultServiceServer is the server API for ResultService service.
 // All implementations must embed UnimplementedResultServiceServer
 // for forward compatibility.
@@ -2127,6 +2141,9 @@ type ResultServiceServer interface {
 	ExportFindings(context.Context, *ExportFindingsRequest) (*ExportFindingsResponse, error)
 	// 误报反馈闭环（评审整合项）
 	SubmitFindingFeedback(context.Context, *SubmitFindingFeedbackRequest) (*SubmitFindingFeedbackResponse, error)
+	// 增量扫描继承（ADR-225）：复制基线任务中"未变更文件"的 findings 到新任务
+	// （写路径物化，连带 verdict/AI 建议终态；变更∪删除文件的旧 findings 不继承）
+	InheritFindings(context.Context, *InheritFindingsRequest) (*InheritFindingsResponse, error)
 	mustEmbedUnimplementedResultServiceServer()
 }
 
@@ -2175,6 +2192,9 @@ func (UnimplementedResultServiceServer) ExportFindings(context.Context, *ExportF
 }
 func (UnimplementedResultServiceServer) SubmitFindingFeedback(context.Context, *SubmitFindingFeedbackRequest) (*SubmitFindingFeedbackResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitFindingFeedback not implemented")
+}
+func (UnimplementedResultServiceServer) InheritFindings(context.Context, *InheritFindingsRequest) (*InheritFindingsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InheritFindings not implemented")
 }
 func (UnimplementedResultServiceServer) mustEmbedUnimplementedResultServiceServer() {}
 func (UnimplementedResultServiceServer) testEmbeddedByValue()                       {}
@@ -2431,6 +2451,24 @@ func _ResultService_SubmitFindingFeedback_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ResultService_InheritFindings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InheritFindingsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ResultServiceServer).InheritFindings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ResultService_InheritFindings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ResultServiceServer).InheritFindings(ctx, req.(*InheritFindingsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ResultService_ServiceDesc is the grpc.ServiceDesc for ResultService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2489,6 +2527,10 @@ var ResultService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SubmitFindingFeedback",
 			Handler:    _ResultService_SubmitFindingFeedback_Handler,
+		},
+		{
+			MethodName: "InheritFindings",
+			Handler:    _ResultService_InheritFindings_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
@@ -4579,6 +4621,7 @@ const (
 	StorageService_GetFileInfo_FullMethodName     = "/codeaudit.common.v1.StorageService/GetFileInfo"
 	StorageService_DeleteFile_FullMethodName      = "/codeaudit.common.v1.StorageService/DeleteFile"
 	StorageService_ListFiles_FullMethodName       = "/codeaudit.common.v1.StorageService/ListFiles"
+	StorageService_GetStorageMode_FullMethodName  = "/codeaudit.common.v1.StorageService/GetStorageMode"
 )
 
 // StorageServiceClient is the client API for StorageService service.
@@ -4597,6 +4640,9 @@ type StorageServiceClient interface {
 	GetFileInfo(ctx context.Context, in *GetFileInfoRequest, opts ...grpc.CallOption) (*StoredFile, error)
 	DeleteFile(ctx context.Context, in *DeleteFileRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	ListFiles(ctx context.Context, in *ListFilesRequest, opts ...grpc.CallOption) (*ListFilesResponse, error)
+	// 存储档位探测（ADR-225）：mode="s3"（MinIO 持久档）|"memory"（07 §10 降级档，重启即丢）。
+	// 消费方=task-service 卷缓存 GC——memory 档绝不删除卷树（删=数据不可恢复）。
+	GetStorageMode(ctx context.Context, in *GetStorageModeRequest, opts ...grpc.CallOption) (*GetStorageModeResponse, error)
 }
 
 type storageServiceClient struct {
@@ -4679,6 +4725,16 @@ func (c *storageServiceClient) ListFiles(ctx context.Context, in *ListFilesReque
 	return out, nil
 }
 
+func (c *storageServiceClient) GetStorageMode(ctx context.Context, in *GetStorageModeRequest, opts ...grpc.CallOption) (*GetStorageModeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetStorageModeResponse)
+	err := c.cc.Invoke(ctx, StorageService_GetStorageMode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // StorageServiceServer is the server API for StorageService service.
 // All implementations must embed UnimplementedStorageServiceServer
 // for forward compatibility.
@@ -4695,6 +4751,9 @@ type StorageServiceServer interface {
 	GetFileInfo(context.Context, *GetFileInfoRequest) (*StoredFile, error)
 	DeleteFile(context.Context, *DeleteFileRequest) (*emptypb.Empty, error)
 	ListFiles(context.Context, *ListFilesRequest) (*ListFilesResponse, error)
+	// 存储档位探测（ADR-225）：mode="s3"（MinIO 持久档）|"memory"（07 §10 降级档，重启即丢）。
+	// 消费方=task-service 卷缓存 GC——memory 档绝不删除卷树（删=数据不可恢复）。
+	GetStorageMode(context.Context, *GetStorageModeRequest) (*GetStorageModeResponse, error)
 	mustEmbedUnimplementedStorageServiceServer()
 }
 
@@ -4722,6 +4781,9 @@ func (UnimplementedStorageServiceServer) DeleteFile(context.Context, *DeleteFile
 }
 func (UnimplementedStorageServiceServer) ListFiles(context.Context, *ListFilesRequest) (*ListFilesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListFiles not implemented")
+}
+func (UnimplementedStorageServiceServer) GetStorageMode(context.Context, *GetStorageModeRequest) (*GetStorageModeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetStorageMode not implemented")
 }
 func (UnimplementedStorageServiceServer) mustEmbedUnimplementedStorageServiceServer() {}
 func (UnimplementedStorageServiceServer) testEmbeddedByValue()                        {}
@@ -4834,6 +4896,24 @@ func _StorageService_ListFiles_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _StorageService_GetStorageMode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetStorageModeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StorageServiceServer).GetStorageMode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: StorageService_GetStorageMode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StorageServiceServer).GetStorageMode(ctx, req.(*GetStorageModeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // StorageService_ServiceDesc is the grpc.ServiceDesc for StorageService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -4856,6 +4936,10 @@ var StorageService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListFiles",
 			Handler:    _StorageService_ListFiles_Handler,
+		},
+		{
+			MethodName: "GetStorageMode",
+			Handler:    _StorageService_GetStorageMode_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -2,8 +2,8 @@ version: '3.8'
 
 # CodeAudit Console — 前端容器（静态托管 + /v1 反代网关）
 # 用法:
-#   docker compose up -d                      # 网关在宿主机 8080（默认）
-#   CODEAUDIT_GATEWAY_UPSTREAM=gateway.internal:8080 docker compose up -d
+#   docker compose up -d                      # 网关在宿主机 8090（默认，生产事实源口径）
+#   CODEAUDIT_GATEWAY_UPSTREAM=gateway.internal:8090 docker compose up -d
 #   docker compose logs -f console
 services:
   console:
@@ -14,7 +14,7 @@ services:
       - "${CODEAUDIT_CONSOLE_PORT:-8088}:80"
     environment:
       # 浏览器可见流量全部经本容器 /v1 反代；此处只需网关的"容器可达"地址
-      CODEAUDIT_GATEWAY_UPSTREAM: ${CODEAUDIT_GATEWAY_UPSTREAM:-host.docker.internal:8080}
+      CODEAUDIT_GATEWAY_UPSTREAM: ${CODEAUDIT_GATEWAY_UPSTREAM:-host.docker.internal:8090}
     # Linux 无内建 host.docker.internal，显式映射到宿主网关（Docker Desktop 上冗余无害）
     extra_hosts:
       - "host.docker.internal:host-gateway"

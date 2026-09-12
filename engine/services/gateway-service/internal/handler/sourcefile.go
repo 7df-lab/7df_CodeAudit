@@ -49,14 +49,16 @@ func resolveProjectRoot(dir string) string {
 	return cur
 }
 
-// resolveTaskRoot — 任务源根解析（ADR-195 顺序）：
+// resolveTaskRoot — 任务源根解析（ADR-195 顺序 + ADR-225 ⑤流）：
 // ①repos_dir/<task_id>（仓库拉取流）①b uploads-<task_id>/unpacked（ADR-200 storage
 // 拉包流：task-service FetchUploadArchive 的落点布局，2026-09-06 起含剥壳——
 // gw-f6a3523 实证：布局迁移后旧四流对上传流任务全部落空 → 源码全文 404）
 // ②上传目录链接文件 ③project config project_path（ADR-148 上传流）
 // ④唯一内容回退（按 seedPath 在全部上传目录查包含者；唯一命中即用，多命中取
-// mtime 最新——覆盖 ADR-195 之前创建的无链接存量任务）。
-func (t *Transcoder) resolveTaskRoot(ctx context.Context, taskID, projectID, seedPath string) (string, string, error) {
+// mtime 最新——覆盖 ADR-195 之前创建的无链接存量任务）
+// ⑤树 tar 重物化（ADR-225 D6/F14）：卷树被 GC 驱逐后按 task.config.tree_tar_file_id
+// 从 storage 重物化到 gateway 缓存（LRU）；无锚点/失败维持原 404 口径。
+func (t *Transcoder) resolveTaskRoot(ctx context.Context, taskID, projectID, seedPath, treeTarFileID string) (string, string, error) {
 	// ① 仓库拉取流
 	if ReposDir != "" {
 		candidate := filepath.Join(ReposDir, taskID)
@@ -123,7 +125,21 @@ func (t *Transcoder) resolveTaskRoot(ctx context.Context, taskID, projectID, see
 			return hits[0].dir, "upload_content_newest", nil
 		}
 	}
-	return "", "", fmt.Errorf("任务源根不可解析（repo 目录/上传链接/project config 均无，且上传目录中无包含 %q 的源树）；该任务可能运行于环境变量覆盖路径或源目录已清理", seedPath)
+	// ⑤ 树 tar 重物化（ADR-225）：四流全空且任务带树 tar 锚点 → 从 storage 重物化。
+	// 失败如实并入 404（不伪装成功）；root_via=tree_tar_rehydrated 如实披露来源。
+	if root, via, err := t.rehydrateFromTreeTar(taskID, treeTarFileID); err == nil {
+		return root, via, nil
+	}
+	return "", "", fmt.Errorf("任务源根不可解析（repo 目录/上传链接/project config 均无，且上传目录中无包含 %q 的源树%s）；该任务可能运行于环境变量覆盖路径或源目录已清理",
+		seedPath, treeTarHint(treeTarFileID))
+}
+
+// treeTarHint — ⑤流失败时的 404 附注（锚点在但重物化失败 ≠ 从未有过，排障口径）。
+func treeTarHint(treeTarFileID string) string {
+	if treeTarFileID != "" {
+		return "；树 tar 锚点在但重物化失败（storage 不可达/对象损坏，见服务日志）"
+	}
+	return "；任务无树 tar 锚点（ADR-225 之前创建或入桶失败）"
 }
 
 // resolveWithinRoot — 在选定根内解析请求路径（ADR-195）：
@@ -248,7 +264,7 @@ func (t *Transcoder) sourceFile(w http.ResponseWriter, r *http.Request, taskID s
 		return
 	}
 
-	root, rootVia, rerr := t.resolveTaskRoot(ctx, taskID, task.GetProjectId(), pathParam)
+	root, rootVia, rerr := t.resolveTaskRoot(ctx, taskID, task.GetProjectId(), pathParam, task.GetConfig()["tree_tar_file_id"])
 	if rerr != nil {
 		writeError(w, http.StatusNotFound, rerr.Error())
 		return

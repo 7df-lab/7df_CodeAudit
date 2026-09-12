@@ -2,6 +2,8 @@
 package service
 
 import (
+	"encoding/hex"
+	"crypto/rand"
 	"fmt"
 	"time"
 
@@ -142,6 +144,12 @@ func (s *ProjectService) ListMembers(projectID string) []*v1.ProjectMember {
 }
 
 // generateID returns a short random hex string for IDs.
+// R65（2026-09-12 待办收尾）：改 crypto/rand 8 字节——原 UnixNano&0xFFFFFFFF 截断
+// 32 位相差恰 4.295s 的两次生成必然同 ID，且时间戳形态可预测（proj-/user- 共用）。
 func generateID() string {
-	return fmt.Sprintf("%08x", time.Now().UnixNano()&0xFFFFFFFF)
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("crypto/rand unavailable: %v", err)) // 系统级熵源失败=不可继续
+	}
+	return hex.EncodeToString(b)
 }

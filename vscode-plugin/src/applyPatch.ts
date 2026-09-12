@@ -23,7 +23,7 @@
 //   5. 行尾：块运算在 LF 空间进行（模型只产 LF 补丁），输出按各文件自身 EOL 还原
 //      （CRLF 文件不会被整体改写为 LF）；Add 新文件按平台 EOL（win32 为 CRLF）。
 import * as os from 'os';
-import { canonicalize } from './diffParse';
+import { canonicalize, similarity, SIMILARITY_THRESHOLD } from './diffParse';
 
 export const PATCH_MARKERS = {
   BEGIN: '*** Begin Patch',
@@ -396,41 +396,8 @@ export class PatchParser {
 }
 
 // —— findContext（对标 cline apply-patch-parser.ts findContext，含 eof 语义）———
-
-function calculateSimilarity(str1: string, str2: string): number {
-  const longer = str1.length > str2.length ? str1 : str2;
-  const shorter = str1.length > str2.length ? str2 : str1;
-  if (longer.length === 0) {
-    return 1;
-  }
-  const editDistance = levenshteinDistance(shorter, longer);
-  return (longer.length - editDistance) / longer.length;
-}
-
-function levenshteinDistance(str1: string, str2: string): number {
-  const rows = str2.length + 1;
-  const cols = str1.length + 1;
-  const matrix = new Array<number>(rows * cols).fill(0);
-  const at = (r: number, c: number): number => matrix[r * cols + c] ?? 0;
-  const set = (r: number, c: number, value: number): void => {
-    matrix[r * cols + c] = value;
-  };
-
-  for (let i = 0; i <= str2.length; i++) set(i, 0, i);
-  for (let j = 0; j <= str1.length; j++) set(0, j, j);
-
-  for (let i = 1; i <= str2.length; i++) {
-    for (let j = 1; j <= str1.length; j++) {
-      if (str2[i - 1] === str1[j - 1]) {
-        set(i, j, at(i - 1, j - 1));
-      } else {
-        set(i, j, 1 + Math.min(at(i - 1, j - 1), at(i, j - 1), at(i - 1, j)));
-      }
-    }
-  }
-
-  return at(str2.length, str1.length);
-}
+// 相似度判定复用 diffParse 的共享实现（B2-8 收敛：删除本文件曾有的
+// calculateSimilarity/levenshteinDistance 双副本，防两路锚定阈值漂移）。
 
 /**
  * 顺序扫描取首个命中，四级容错（0 精确 / 1 trimEnd / 100 trim / 1000 相似度≥0.66）。
@@ -451,16 +418,15 @@ function findContext(
   const findCore = (startIdx: number): [number, number, number] => {
     const canonicalContext = canonicalize(context.join('\n'));
 
+    // 级 1（精确）只做全等比对：不在本循环逐窗口算 Levenshtein——万行文件且命中靠后时，
+    // 每窗口 O(m²) 相似度会把扩展宿主主线程阻塞到秒级。bestSimilarity 仅失败路径
+    // （返回 -1）消费，而走到 -1 必然经级 4 全窗口扫描完整跟踪，数值不受本级影响。
     for (let i = startIdx; i < lines.length; i++) {
       const segment = canonicalize(
         lines.slice(i, i + context.length).join('\n'),
       );
       if (segment === canonicalContext) {
         return [i, 0, 1];
-      }
-      const similarity = calculateSimilarity(segment, canonicalContext);
-      if (similarity > bestSimilarity) {
-        bestSimilarity = similarity;
       }
     }
 
@@ -494,17 +460,16 @@ function findContext(
       }
     }
 
-    const similarityThreshold = 0.66;
     for (let i = startIdx; i < lines.length; i++) {
       const segment = canonicalize(
         lines.slice(i, i + context.length).join('\n'),
       );
-      const similarity = calculateSimilarity(segment, canonicalContext);
-      if (similarity >= similarityThreshold) {
-        return [i, 1000, similarity];
+      const sim = similarity(segment, canonicalContext);
+      if (sim >= SIMILARITY_THRESHOLD) {
+        return [i, 1000, sim];
       }
-      if (similarity > bestSimilarity) {
-        bestSimilarity = similarity;
+      if (sim > bestSimilarity) {
+        bestSimilarity = sim;
       }
     }
 
@@ -512,12 +477,12 @@ function findContext(
   };
 
   if (eof) {
-    let [newIndex, fuzz, similarity] = findCore(lines.length - context.length);
+    let [newIndex, fuzz, best] = findCore(lines.length - context.length);
     if (newIndex !== -1) {
-      return [newIndex, fuzz, similarity];
+      return [newIndex, fuzz, best];
     }
-    [newIndex, fuzz, similarity] = findCore(start);
-    return [newIndex, fuzz + 10000, similarity];
+    [newIndex, fuzz, best] = findCore(start);
+    return [newIndex, fuzz + 10000, best];
   }
 
   return findCore(start);

@@ -46,7 +46,14 @@ const routes: Record<string, unknown> = {
 const gateway = useFakeGateway(routes);
 
 function renderDetail() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // 镜像生产 QueryClient 全局缺省（main.tsx: retry 1 + refetchOnWindowFocus false）——
+  // 此前只覆写 retry, focus/reconnect 重取保持 react-query 默认 true, 批量并发下
+  // 挂载中的旧实例会被偶发重取翻页（flaky 根因, 2026-09-09）
+  const qc = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false },
+    },
+  });
   const view = render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={['/tasks/t-9']}>
@@ -82,15 +89,19 @@ describe('E-20/I-90 快照增量吸收（轮询与 WS 共用路径，P-06）', (
   });
 
   it('404 → 「任务不存在或已被清除」专页（内存存储重启语义）；非 404 → 「加载失败（500）」+ 重试', async () => {
+    // flaky 根因修复（2026-09-09）：此前 v1（404 页）挂载存活时就翻转全局 snapHandler
+    // 再挂 v2——v1 的任何一次重取都会把它翻成 500 页（自带"重试"），而 RTL 视图查询
+    // 以 body 为界, v2.getByRole 便命中两个"重试"。改为先卸 v1 再翻 handler, 两实例
+    // 生命周期不交叠, 断言确定性成立。
     snapHandler = () => httpError(404, { error: 'task gone' });
     const v1 = renderDetail();
     expect(await v1.findByText(/任务不存在或已被清除/)).toBeTruthy();
+    v1.unmount();
 
     snapHandler = () => httpError(500, { error: 'boom' });
     const v2 = renderDetail();
     expect(await v2.findByText(/加载失败（500）/)).toBeTruthy();
     expect(v2.getByRole('button', { name: /重\s*试/ })).toBeTruthy();
-    v1.unmount();
     v2.unmount();
   });
 });
@@ -167,5 +178,31 @@ describe('收束即补拉（终态+AI 收束 → 失效产出类查询，一次�
     await act(() => qc.refetchQueries({ queryKey: ['task-snapshot', 't-9'] }));
     const findingsCalls = spy.mock.calls.filter((c) => (c[0] as { queryKey: string[] }).queryKey[0] === 'findings');
     expect(findingsCalls.length).toBe(1);
+  });
+});
+
+// 布局改版回归锁（2026-09-09 人类指令）：右侧固定一页——上卡精简（去掉重试次数/
+// 进度/查看报告/重新生成报告）、阶段时间线横排、产出视图固定框内滚动。
+describe('布局改版：上卡精简 + 时间线横排 + 产出框内滚动', () => {
+  it('终态页不再出现重试次数/进度/重新生成报告/查看报告；阶段时间线为横排', async () => {
+    snapHandler = () => snap({
+      task: {
+        ...RUNNING_TASK, status: 'TASK_STATUS_COMPLETED', retry_count: 2,
+        stages: [
+          { stage_id: 'sast', type: 'STAGE_TYPE_SAST_SCAN', status: 'STAGE_STATUS_COMPLETED', started_at: '2026-09-09T00:00:00Z', completed_at: '2026-09-09T00:00:02Z', metadata: {}, error_message: '' },
+          { stage_id: 'ai', type: 'STAGE_TYPE_AI_INFERENCE', status: 'STAGE_STATUS_COMPLETED', started_at: '2026-09-09T00:00:02Z', completed_at: '2026-09-09T00:01:00Z', metadata: {}, error_message: '' },
+        ],
+      },
+      ai: { chunk: '', next_cursor: '0', complete: true, total_bytes: '0' },
+    });
+    renderDetail();
+    await waitFor(() => expect(screen.getByText(/任务 t-9/)).toBeTruthy());
+    await waitFor(() => expect(document.body.querySelector('.ant-steps-horizontal')).toBeTruthy());
+    expect(screen.queryByText('重试次数')).toBeNull();
+    expect(screen.queryByText('进度')).toBeNull();
+    expect(screen.queryByRole('button', { name: '重新生成报告' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '查看报告' })).toBeNull();
+    // 产出视图卡存在且"发现"Tab 默认选中渲染
+    expect(screen.getByRole('tab', { name: '发现', selected: true })).toBeTruthy();
   });
 });

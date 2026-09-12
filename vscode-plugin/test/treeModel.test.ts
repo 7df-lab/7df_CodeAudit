@@ -65,6 +65,20 @@ describe('treeModel', () => {
       const withNull = [...findings, f('noloc', { location: null })];
       assert.strictEqual(pickFindingAtLine(withNull, 'vuln.py', 6)?.finding_id, 'first');
     });
+
+    it('校准行号（trackedLines）：行漂移后按校准行命中，原始行失配不误配（回归锁：行号校准贯通 QuickFix）', () => {
+      // 修复在 first 上方插入 3 行：诊断迁移到校准行（first 7→10、second 20→23，1-based），
+      // 反查必须与诊断同源用校准行——原始行号已漂移，不得再命中（否则灯泡消失/错配）
+      const tracked = { first: 10, second: 23 };
+      assert.strictEqual(pickFindingAtLine(findings, 'vuln.py', 9, tracked)?.finding_id, 'first', '校准起点精确命中');
+      assert.strictEqual(pickFindingAtLine(findings, 'vuln.py', 10, tracked)?.finding_id, 'first', '校准区间命中（跨度平移）');
+      assert.strictEqual(pickFindingAtLine(findings, 'vuln.py', 22, tracked)?.finding_id, 'second', 'second 校准区间 [22,24] 命中');
+      assert.strictEqual(pickFindingAtLine(findings, 'vuln.py', 6, tracked), undefined, '原始行 6（=7-1）已漂移，不得命中 first');
+      assert.strictEqual(pickFindingAtLine(findings, 'vuln.py', 19, tracked), undefined, '原始起点 19 已漂移，不得命中 second');
+      assert.strictEqual(pickFindingAtLine(findings, 'vuln.py', 21, tracked), undefined, '原始区间行 21 已漂移，不得误配');
+      // 不传校准表：保持扫描原始行号口径（兼容旧调用方）
+      assert.strictEqual(pickFindingAtLine(findings, 'vuln.py', 6)?.finding_id, 'first');
+    });
   });
 
   describe('rollbackPickItems（回滚 QuickPick 候选：applied ∩ 当前发现集）', () => {

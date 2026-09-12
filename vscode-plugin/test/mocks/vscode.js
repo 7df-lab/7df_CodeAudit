@@ -54,6 +54,16 @@ class Uri {
     });
   }
   static joinPath(base, ...parts) {
+    // file scheme：以 fsPath 为基准按宿主平台拼接，产物携带 _fsPath——对齐真实 VS Code
+    // 语义（fsPath 恒为宿主平台文件系统形态：Windows 上 joinPath(file://C:/x,'a.py').fsPath
+    // === 'C:\x\a.py'，Linux 上 === '/x/a.py'）。必须用宿主 path.join 而非硬编码
+    // path.win32.join：测试进程读本机真实 fs，POSIX fsPath 被 win32.join 拼成 '\tmp\…'
+    // 后 fs.readFileSync 恒 ENOENT；也不可回退 fsPath 到 path（'/' + segs 形态会把
+    // Windows 盘符路径变成 '/C:\…'，同样 ENOENT——applyMachinePatch 预读全挂）。
+    if (base.scheme === 'file') {
+      const joined = path.join(base.fsPath, ...parts.map((s) => String(s).replace(/^[/\\]+/, '')));
+      return new Uri({ scheme: 'file', path: joined, fsPath: joined });
+    }
     let p = base.path.replace(/\/+$/, '');
     for (const part of parts) p += '/' + String(part).replace(/^\/+/, '');
     const segs = [];
@@ -292,7 +302,8 @@ const window = {
     state.quickPickCalls.push({ items, opts });
     return state.pickQueue.length ? state.pickQueue.shift() : undefined;
   },
-  showInformationMessage(msg) { state.messages.push({ kind: 'info', msg: String(msg) }); return Promise.resolve(state.buttonQueue.shift()); },
+  // 记录完整实参（args[0]=options 如 { modal: true }，其余=按钮文案），供断言弹窗形态（A19 无变更预检）
+  showInformationMessage(msg, ...rest) { state.messages.push({ kind: 'info', msg: String(msg), args: rest }); return Promise.resolve(state.buttonQueue.shift()); },
   showWarningMessage(msg) { state.messages.push({ kind: 'warn', msg: String(msg) }); return Promise.resolve(state.buttonQueue.shift()); },
   showErrorMessage(msg) { state.messages.push({ kind: 'error', msg: String(msg) }); return Promise.resolve(state.buttonQueue.shift()); },
   createStatusBarItem(alignment, priority) {

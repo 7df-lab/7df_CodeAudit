@@ -48,12 +48,12 @@ overlay + env——模拟与生产同构，"在模拟里通过"才对生产有�
 cd codeaudit-umbrella
 cp deploy/env.sim.example deploy/env.sim   # 按需修改密钥/manager 地址
 make deploy-sim                            # 构建+启动+等健康+PG 库表种子
-make test-sim                              # e2e 功能测试套（07 个用例）
+make test-sim                              # e2e 功能测试套（11 个用例）
 make logs-sim [service]                    # 排障
 make down-sim                              # 停栈（数据卷保留）；destroy 彻底重置
 ```
 
-也可直接 `deploy/sim.sh up|down|destroy|status|logs|wait|seed`。
+也可直接 `deploy/sim.sh up|down|destroy|status|chain|logs|wait|seed`（`up` 自动保障沙箱南向链 manager/gateway，`chain` 单独触发拉起/警告；AI 沙箱全链测试依赖该链在位）。
 
 ### 3.1 生产态一键部署（用户自部署入口）
 
@@ -73,7 +73,7 @@ bash deploy/production-deploy.sh status | stop | down [-v]
   LLM provider 不在部署期配置——部署成功后按完成横幅指引自行注册管理。
 - **console 五层验收门**（2026-09-08 扩，dind 实测驱动）：部署收尾对 web console 断言
   `/v1` 401 透传、SPA 深链回退+静态产物可达、nginx WS 升级头、经 console 源登录+带认证
-  200（admin 口令已改则自动跳过，保幂等重跑）、上传体上限（2MB 放行 / 31MB 反代层 413）。
+  200（admin 口令已改则自动跳过，保幂等重跑）、上传体上限（2MB 放行 / 超 100MiB 反代层 413，nginx client_max_body_size 100m）。
 - **沙箱构建素材免下载**（2026-09-08 增）：`pdtools/nuclei-templates/agent-tools` 等 gitignored
   大件部署前先 `fetch.sh --verify` 离线复核（sbom sha256 逐项），**在位即零下载**；缺失/漂移
   才全量拉取（需网络出口，离线主机按 sandbox-artifacts/README 手工补件）；`check` 命令只报
@@ -87,7 +87,7 @@ bash deploy/production-deploy.sh status | stop | down [-v]
 - **解析机制（全新安装零 DNS 依赖，2026-09-08 代码实证）**：用户不需要提供任何 DNS——
   同 compose 网络内服务互访（`project:50052`、`kafka:9092` 等）走 **docker 内嵌 DNS**（127.0.0.11，
   dockerd 自带，与用户环境无关）；跨栈各跳走 `host.docker.internal` hosts 别名（`extra_hosts: host-gateway`
-  注入，非 DNS）或裸 IP（manager）；沙箱服务路由域（缺省 `*.openshell.internal`，字符串）**从不被解析**——
+  注入，非 DNS）或裸 IP（manager）；沙箱服务路由域（缺省 `sandbox.codeaudit.internal`，字符串）**从不被解析**——
   engine dsh-runtime 的 routeReq 等价 `curl --resolve`：拨 `host.docker.internal:8080`、路由域只进
   `Host` 头由网关匹配（`sandbox.go` routeReq；bridge.mjs 零出站连接；dsh-runtime 全服务零
   `net.LookupHost`）。用户以 **IP+端口**直接访问 console（`http://<IP>:8088`）与网关 API
@@ -143,6 +143,8 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\expose-lan.ps1          
 | 07 AI 链路 | 上传型项目（2026-09-07 修正：原挂假仓库项目恒 DEAD，全链从未被行使）：manager+沙箱+LLM 可达 → COMPLETED 且 AI 交互日志非空；沙箱不可达 → COMPLETED 走 RuleScan 兜底（发现标 NEEDS_MANUAL，设计行为）；崩坏 → 诚实失败（终态+完整 error_message，不允许静默挂死） |
 | 08 项目级上传→自动任务（GUI 用户路径回归） | 复刻 GUI 请求序列：上传→建项目→config 关联→空 config 任务→start——回归服务间地址接线（409 锚点）与任务源共享卷（空目录扫描锚点） |
 | 09 可观测面 | 快照聚合含执行日志、通知非空——回归 AppendTaskLog 接线与 storage 存储档位 |
+| 10 provider/路由管理面 | 推理 provider CRUD/凭据不回显/路由切换与恢复（ADR-217 透传链） |
+| 11 增量扫描两连扫 | 服务端内容对比+继承物化：changed/deleted 快照、keep.py 继承、del.py 不复活、零变更全继承、no_baseline 降级链（ADR-225） |
 
 测试原则：只走 gateway/console 的 HTTP 面（黑盒，等价真实用户）；样本漏洞自带
 （SQL 注入+硬编码凭据 Python 文件），不依赖外部仓库。

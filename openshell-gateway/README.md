@@ -96,11 +96,11 @@ LXC 107 上 8080/8081 归本网关占用（CodeAudit API 网关因此改发布 8
 
 ## 纪律
 
-- **路由域**：`server_sans = ["*.openshell.internal"]` 由 `ensure` 幂等
+- **路由域**：`server_sans = ["*.sandbox.codeaudit.internal"]` 由 `ensure` 幂等
   钉住。沙箱暴露服务 URL 形如
-  `http://{workspace}--{sandbox}--{service}.openshell.internal:8080/`；
+  `http://{workspace}--{sandbox}--{service}.sandbox.codeaudit.internal:8080/`；
   旧默认域 `openshell.localhost` 仍被网关接受作兜底。
-- **客户端解析**：`gateway.internal` 与 `*.openshell.internal` →
+- **客户端解析**：`gateway.internal` 与 `*.sandbox.codeaudit.internal` →
   gateway.internal（hosts / 内网 DNS，公共 DNS 不可用）。
 - LXC 运行副本被覆盖前自动留 `*.bak.<时间戳>`。
 

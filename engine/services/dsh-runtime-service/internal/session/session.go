@@ -10,6 +10,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -178,7 +179,7 @@ func (s *Session) ValidateSandboxAccess(command string, paths []string) error {
 		"eval(",
 	}
 	for _, dc := range dangerousCommands {
-		if contains(command, dc) {
+		if strings.Contains(command, dc) {
 			return ErrSandboxViolation
 		}
 	}
@@ -192,19 +193,6 @@ func (s *Session) ValidateSandboxAccess(command string, paths []string) error {
 	}
 
 	return nil
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstring(s, substr))
-}
-
-func containsSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 // isOutOfBounds checks if a path violates sandbox isolation.

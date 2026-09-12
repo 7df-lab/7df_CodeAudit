@@ -198,18 +198,22 @@ func MapEventToNotification(topic string, key []byte, value []byte) (*v1.Notific
 	var (
 		event v1.NotificationEvent
 		title string
+		body  string
 	)
 	switch topic {
 	case "task.created":
 		event = v1.NotificationEvent_NOTIFICATION_EVENT_TASK_CREATED
 		title = "任务已创建"
+		body = "任务 " + p.TaskID + " 已创建"
 	case "task.completed":
 		if containsFailed(p.Status) {
 			event = v1.NotificationEvent_NOTIFICATION_EVENT_TASK_FAILED
 			title = "任务失败"
+			body = "任务 " + p.TaskID + " 执行失败"
 		} else {
 			event = v1.NotificationEvent_NOTIFICATION_EVENT_TASK_COMPLETED
 			title = "任务完成"
+			body = "任务 " + p.TaskID + " 已完成"
 		}
 	case "finding.created":
 		if !isHighSeverity(p.Severity) {
@@ -217,6 +221,7 @@ func MapEventToNotification(topic string, key []byte, value []byte) (*v1.Notific
 		}
 		event = v1.NotificationEvent_NOTIFICATION_EVENT_HIGH_SEVERITY_FOUND
 		title = "高危发现"
+		body = "任务 " + p.TaskID + " 发现高危问题"
 	case "task.stage.completed", "finding.verdict.updated":
 		return nil, "", "topic has no NotificationEvent enum mapping (logged only)"
 	default:
@@ -235,7 +240,7 @@ func MapEventToNotification(topic string, key []byte, value []byte) (*v1.Notific
 		Type:           v1.NotificationType_NOTIFICATION_TYPE_IN_APP,
 		Event:          event,
 		Title:          title,
-		Body:           title + "：task=" + p.TaskID,
+		Body:           body,
 		Payload: map[string]string{
 			"task_id":    p.TaskID,
 			"project_id": p.ProjectID,

@@ -5,6 +5,7 @@
 package service
 
 import (
+	"fmt"
 	"context"
 	"time"
 
@@ -15,11 +16,20 @@ import (
 
 const projectConfigTimeout = 5 * time.Second
 
-// fetchProjectConfigValue — 读项目 config map 单键；RPC 失败/键缺省一律空串（调用方降级到下一档）
+// fetchProjectConfigValue — 读项目 config map 单键；RPC 失败/键缺省返回空串。
+// R63（2026-09-11 审计）：失败原因经 fetchProjectConfigErr 带回（StartTask 拼接进
+// ErrorMessage）——原静默空串会让"项目本有 upload_file_id 但瞬态失败"的任务静默
+// 降级 repo clone 扫错代码。
 func (s *TaskServiceImpl) fetchProjectConfigValue(projectID, key string) string {
+	v, _ := s.fetchProjectConfigValueErr(projectID, key)
+	return v
+}
+
+// fetchProjectConfigValueErr — 同上，附带失败原因（成功时为空串）。
+func (s *TaskServiceImpl) fetchProjectConfigValueErr(projectID, key string) (string, string) {
 	conn, err := grpc.Dial(s.projectAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return ""
+		return "", fmt.Sprintf("项目配置读取失败: %v", err)
 	}
 	defer conn.Close()
 	client := pb.NewProjectServiceClient(conn)
@@ -27,7 +37,7 @@ func (s *TaskServiceImpl) fetchProjectConfigValue(projectID, key string) string 
 	defer cancel()
 	resp, err := client.GetProjectConfig(ctx, &pb.GetProjectConfigRequest{ProjectId: projectID})
 	if err != nil {
-		return ""
+		return "", fmt.Sprintf("项目配置读取失败（GetProjectConfig）: %v", err)
 	}
-	return resp.GetConfig()[key]
+	return resp.GetConfig()[key], ""
 }

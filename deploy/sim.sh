@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-# sim.sh — CodeAudit 生产模拟栈统一入口（up/down/status/logs/wait/seed）
+# sim.sh — CodeAudit 生产模拟栈统一入口（up/down/status/chain/logs/wait/seed）
 #
 # 拓扑同构于 CD 现役生产（base compose + overlay + env），但独立 project name /
 # 网段 / 端口段，与生产栈可在同一 docker daemon 上共存互不干扰。
 #
 # 用法:
-#   ./sim.sh up      # 构建+启动全栈，等待 gateway 健康，初始化 PG 库表
+#   ./sim.sh up      # 构建+启动全栈，自动保障沙箱南向链（manager/gateway），等待 gateway 健康，初始化 PG 库表
 #   ./sim.sh down    # 停止并移除（保留 named volumes，数据可复用）
 #   ./sim.sh destroy # 停止并清除数据卷（完全重置）
 #   ./sim.sh status | logs [service] [N] | wait | seed
@@ -38,7 +38,8 @@ export CODEAUDIT_HOST_STORAGE="${CODEAUDIT_HOST_STORAGE:-15055}"
 export CODEAUDIT_HOST_TASK="${CODEAUDIT_HOST_TASK:-15054}"
 export CODEAUDIT_HOST_SAST_ADAPTER="${CODEAUDIT_HOST_SAST_ADAPTER:-15051}"
 export CODEAUDIT_HOST_RESULT="${CODEAUDIT_HOST_RESULT:-15058}"
-export CODEAUDIT_HOST_DSH="${CODEAUDIT_HOST_DSH_RUNTIME:-15057}"
+export CODEAUDIT_HOST_DSH="${CODEAUDIT_HOST_DSH:-15057}"
+export CODEAUDIT_HOST_GATEWAY="${CODEAUDIT_HOST_GATEWAY:-18080}"
 
 dc() { docker compose -p "$PROJECT" --project-directory "$PLATFORM_DIR" \
     -f "$PLATFORM_DIR/docker-compose.yml" -f "$DEPLOY_DIR/docker-compose.sim.yml" "$@"; }
@@ -47,9 +48,15 @@ gw_url() { echo "http://localhost:${CODEAUDIT_HOST_GATEWAY:-18080}"; }
 
 wait_gateway() {
   local deadline=$(( $(date +%s) + ${HEALTH_TIMEOUT:-420} ))
+  local unhealthy_warned=""
   echo "等待模拟栈 gateway 就绪（${HEALTH_TIMEOUT:-420}s 上限，首次构建较慢）..."
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if dc ps --format '{{.Name}} {{.Health}}' 2>/dev/null | grep -q unhealthy; then :; fi
+    local un
+    un="$(dc ps --format '{{.Name}} {{.Health}}' 2>/dev/null | grep unhealthy | awk '{print $1}' | tr '\n' ' ' || true)"
+    if [ -n "$un" ] && [ "$un" != "$unhealthy_warned" ]; then
+      echo "[wait][警告] 容器不健康: $un（gateway 就绪等待继续，超时则排查）" >&2
+      unhealthy_warned="$un"
+    fi
     if curl -fsS --max-time 3 "$(gw_url)/health" >/dev/null 2>&1; then
       echo "gateway 已就绪: $(gw_url)"; return 0
     fi
@@ -66,10 +73,29 @@ seed_db() {
     || echo "[seed][警告] init-db.sql 执行有误——若库表已存在可忽略" >&2
 }
 
+# 沙箱南向链保障（2026-09-09 人类指令"不应该拉起所有相关的服务吗"）：
+# dsh-runtime → openshell-manager(:18800) → openshell-gateway(:8080) → dsh-pentest-sse 沙箱。
+# manager/gateway 不在 sim compose 内——它们是独立部署面的共享实例（107 宿主上自
+# 2026-09-08 起为 sim 独占依赖）。宿主上存在其容器（无论运行/退出）则自动拉起；
+# 完全缺失则显式警告降级口径，不静默。
+ensure_sandbox_chain() {
+  local name
+  for name in openshell-manager openshell-gateway-gateway-1; do
+    if docker ps --format '{{.Names}}' | grep -qx "$name"; then
+      echo "[chain] $name 运行中"
+    elif docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
+      docker start "$name" >/dev/null && echo "[chain] 已拉起宿主 $name（沙箱南向通道）"
+    else
+      echo "[chain][警告] 宿主无 $name——AI 沙箱链路将降级 RuleScan（设计内降级非缺陷）；全链测试需先按 manager/openshell-gateway 仓部署面安装"
+    fi
+  done
+}
+
 cmd="${1:-up}"; shift || true
 case "$cmd" in
   up)
     dc up -d --build "$@"
+    ensure_sandbox_chain
     wait_gateway
     seed_db
     echo "--- 模拟栈入口 ---"
@@ -80,8 +106,9 @@ case "$cmd" in
   down)   dc down ;;
   destroy) dc down -v ;;
   status) dc ps ;;
-  logs)   local svc="${1:-}"; if [ -n "$svc" ]; then dc logs --tail "${2:-200}" "$svc"; else dc logs --tail "${2:-200}"; fi ;;
+  chain)  ensure_sandbox_chain ;;
+  logs)   svc="${1:-}"; if [ -n "$svc" ]; then dc logs --tail "${2:-200}" "$svc"; else dc logs --tail "${2:-200}"; fi ;;
   wait)   wait_gateway ;;
   seed)   seed_db ;;
-  *) echo "未知命令: $cmd（up|down|destroy|status|logs|wait|seed）" >&2; exit 1 ;;
+  *) echo "未知命令: $cmd（up|down|destroy|status|chain|logs|wait|seed）" >&2; exit 1 ;;
 esac

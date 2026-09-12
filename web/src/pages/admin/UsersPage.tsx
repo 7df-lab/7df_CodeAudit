@@ -2,7 +2,7 @@
 // 列表（GET /v1/users，游标"加载更多"）+ 搜索/状态过滤 + 管理员建号（POST /v1/users）
 // + 启用/停用（PUT /v1/users/{id}，复用既有更新通道）+ 重置密码（POST password:reset）。
 // 非 admin 由 App 路由守卫与本页双重拦截（后端网关 requireAdmin 是最终防线）。
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button, Card, Descriptions, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { useState } from 'react';
 import { api } from '../../api/client';
@@ -31,23 +31,30 @@ export default function UsersPage() {
   const [search, setSearch] = useState('');
   const [usernameContains, setUsernameContains] = useState('');
   const [stateFilter, setStateFilter] = useState<string | undefined>();
-  const [cursor, setCursor] = useState<string>('');
 
-  const listKey = ['users', usernameContains, stateFilter ?? '', cursor] as const;
-  const { data, isLoading, isError, error, refetch } = useQuery({
+  // B3-1（审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询（前页保留，不整表替换）。
+  // 服务端过滤条件 username_contains/state 必须在 queryKey（审计 B3-1）——筛选变化=新查询，
+  // 分页自动重置回首页，旧游标不会在新筛选下错位（游标改由 pageParam 驱动）。
+  const listKey = ['users', usernameContains, stateFilter ?? ''] as const;
+  const {
+    data, isLoading, isError, error, refetch,
+    fetchNextPage, hasNextPage, isFetchingNextPage,
+  } = useInfiniteQuery({
     queryKey: listKey,
     enabled: isAdmin,
     retry: false,
-    queryFn: async () => {
+    queryFn: async ({ pageParam }) => {
       const resp = await api.get<ListResp>('/v1/users', {
         params: {
-          pagination: cursor ? { cursor } : undefined,
+          pagination: pageParam ? { cursor: pageParam } : undefined,
           username_contains: usernameContains || undefined,
           state: stateFilter || undefined,
         },
       });
       return resp.data;
     },
+    initialPageParam: '',
+    getNextPageParam: (last) => (last.pagination?.has_next ? last.pagination?.next_cursor : undefined),
   });
 
   // 建号
@@ -115,7 +122,7 @@ export default function UsersPage() {
     );
   }
 
-  const rows = data?.users ?? [];
+  const rows = data?.pages.flatMap((p) => p.users) ?? [];
   const columns = [
     { title: '用户名', dataIndex: 'username', key: 'username' },
     { title: '邮箱', dataIndex: 'email', key: 'email' },
@@ -172,8 +179,7 @@ export default function UsersPage() {
             allowClear
             style={{ width: 200 }}
             onSearch={(v) => {
-              setCursor('');
-              setUsernameContains(v);
+              setUsernameContains(v); // queryKey 变化即重置分页回首页（B3-1，无需手动清游标）
             }}
             onChange={(e) => setSearch(e.target.value)}
             value={search}
@@ -184,8 +190,7 @@ export default function UsersPage() {
             style={{ width: 120 }}
             options={Object.entries(USER_STATE).map(([value, label]) => ({ value, label }))}
             onChange={(v) => {
-              setCursor('');
-              setStateFilter(v);
+              setStateFilter(v); // 同上：筛选进 queryKey，分页自动重置
             }}
           />
           <Button type="primary" onClick={() => setCreateOpen(true)}>
@@ -203,12 +208,16 @@ export default function UsersPage() {
         columns={columns}
         pagination={false}
         footer={() =>
-          data?.pagination?.has_next ? (
-            <Button size="small" onClick={() => setCursor(data.pagination!.next_cursor ?? '')}>
-              加载更多（已列 {rows.length}/{data.pagination?.total ?? '?'}）
+          hasNextPage ? (
+            <Button
+              size="small"
+              loading={isFetchingNextPage}
+              onClick={() => fetchNextPage()}
+            >
+              加载更多（已列 {rows.length}/{data?.pages[0]?.pagination?.total ?? '?'}）
             </Button>
           ) : (
-            <Typography.Text type="secondary">共 {data?.pagination?.total ?? rows.length} 个用户</Typography.Text>
+            <Typography.Text type="secondary">共 {data?.pages[0]?.pagination?.total ?? rows.length} 个用户</Typography.Text>
           )
         }
       />

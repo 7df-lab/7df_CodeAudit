@@ -4,7 +4,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionProvider, useSession } from '../auth/session';
 import { TOKEN_KEY, clearSession } from '../api/client';
-import { useFakeGateway, type HandlerCtx } from '../testsupport/fakeGateway';
+import { httpError, useFakeGateway, type HandlerCtx } from '../testsupport/fakeGateway';
 
 type SessionApi = ReturnType<typeof useSession>;
 let S: SessionApi | null = null;
@@ -124,6 +124,26 @@ describe('I-30 boot（F5 静默续签，I-13 bootRefresh）', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(meAuthHeader).toBe('Bearer acc-boot');
     expect(localStorage.getItem(TOKEN_KEY)).toBe('ref-new');
+  });
+
+  it('P-22 续签成功但 me 被瞬时限流（429）：退避重试后 user 就位，不误判未登录（GUI 429 风暴实证）', async () => {
+    localStorage.setItem(TOKEN_KEY, 'ref-old');
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ access_token: 'acc-boot', refresh_token: 'ref-new', expires_in_s: 1800 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    ));
+    let meCalls = 0;
+    const meDefault = routes['GET /v1/users/me'];
+    routes['GET /v1/users/me'] = (ctx: HandlerCtx) => {
+      meCalls += 1;
+      if (meCalls === 1) return httpError(429, { retry_after: 1 });
+      return (meDefault as (c: HandlerCtx) => unknown)(ctx);
+    };
+    renderSession();
+    // 旧口径：首次 me 429 即 user=null → 登录页（会话被静默丢弃）；新口径：1s 退避后重试成功
+    await waitFor(() => expect(screen.getByTestId('who').textContent).toBe('alice'), { timeout: 6000 });
+    expect(meCalls).toBeGreaterThanOrEqual(2);
+    routes['GET /v1/users/me'] = meDefault;
   });
 
   it('续签失败（401）：refresh_token 被清、后续 me 请求不携带旧 Bearer、booting 落 false 不卡死', async () => {

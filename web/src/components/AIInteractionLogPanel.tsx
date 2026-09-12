@@ -11,7 +11,13 @@
 //   ⑤ 整页 Modal 保留为辅入口（"整页查看"按钮）。
 import { EyeOutlined } from '@ant-design/icons';
 import { Button, Card, Modal, Tag, Tooltip, Typography } from 'antd';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+
+// 2026-09-12 用户指令：面板内所有字体统一调大 2px（正文 12→14、卡片标题 16→18），
+// 行高按 1.5 比例同步（18→21）；范围=左侧 AI 交互日志面板全部文字（含标签/按钮/空态）。
+const FONT = 14;
+const TITLE_FONT = 18;
+const LINE_HEIGHT = '21px';
 
 type EntryKind = 'turn' | 'meta' | 'reasoning' | 'assistant' | 'task' | 'agent';
 
@@ -92,7 +98,7 @@ function ReasoningBody({ entry, archived }: { entry: TimelineEntry; archived: bo
   // ADR-181：执行未收束前思考流式展开（不折叠）；归档后才允许折叠长思考
   if (!archived) {
     return (
-      <pre style={{ margin: '2px 0 0', fontFamily: 'inherit', fontSize: 12, lineHeight: '18px',
+      <pre style={{ margin: '2px 0 0', fontFamily: 'inherit', fontSize: FONT, lineHeight: LINE_HEIGHT,
         whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: st.bodyColor }}>
         {entry.body}
       </pre>
@@ -100,8 +106,8 @@ function ReasoningBody({ entry, archived }: { entry: TimelineEntry; archived: bo
   }
   return (
     <details>
-      <summary style={{ cursor: 'pointer', fontSize: 12, color: st.labelColor }}>💭 模型思考（已归档，点击展开）</summary>
-      <pre style={{ margin: '2px 0 0', fontFamily: 'inherit', fontSize: 12, lineHeight: '18px',
+      <summary style={{ cursor: 'pointer', fontSize: FONT, color: st.labelColor }}>💭 模型思考（已归档，点击展开）</summary>
+      <pre style={{ margin: '2px 0 0', fontFamily: 'inherit', fontSize: FONT, lineHeight: LINE_HEIGHT,
         whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: st.bodyColor }}>
         {entry.body}
       </pre>
@@ -119,11 +125,11 @@ function FoldableBody({ entry }: { entry: TimelineEntry }) {
   const preview = firstLine.length > 48 ? `${firstLine.slice(0, 48)}…` : firstLine;
   return (
     <details>
-      <summary style={{ cursor: 'pointer', fontSize: 12, color: st.labelColor, fontWeight: 600 }}>
+      <summary style={{ cursor: 'pointer', fontSize: FONT, color: st.labelColor, fontWeight: 600 }}>
         {icon} {entry.label}
         {preview && <span style={{ color: '#8b949e', fontWeight: 400 }}>{` · ${preview}`}</span>}
       </summary>
-      <pre style={{ margin: '2px 0 0', fontFamily: 'inherit', fontSize: 12, lineHeight: '18px',
+      <pre style={{ margin: '2px 0 0', fontFamily: 'inherit', fontSize: FONT, lineHeight: LINE_HEIGHT,
         whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: st.bodyColor }}>
         {entry.body}
       </pre>
@@ -132,8 +138,8 @@ function FoldableBody({ entry }: { entry: TimelineEntry }) {
 }
 
 export default function AIInteractionLogPanel(
-  { text, totalBytes, complete, onRefresh, refreshing, live }:
-  { text: string; totalBytes: number; complete: boolean; onRefresh: () => void; refreshing: boolean; live?: boolean },
+  { text, totalBytes, complete, onRefresh, refreshing, live, degraded, fill }:
+  { text: string; totalBytes: number; complete: boolean; onRefresh: () => void; refreshing: boolean; live?: boolean; degraded?: boolean; fill?: boolean },
 ) {
   // 内联与 Modal 各自持 ref——此前共用一个 boxRef，Modal 内容挂载后 ref 被抢占且关闭后
   // （antd Modal 默认不销毁）仍指向隐藏盒子：内联"自动滚底"永久失效、onScroll 读错盒子。
@@ -171,33 +177,39 @@ export default function AIInteractionLogPanel(
   };
 
   // 时间线正文（内联与 Modal 共用渲染；boxId 区分 testid——内联为主视图；
-  // boxRef 由调用方分别传入，杜绝共享 ref 被 Modal 抢占）
-  const timeline = (boxId: string, height: string, boxRef: typeof inlineBoxRef) => (
+  // boxRef 由调用方分别传入，杜绝共享 ref 被 Modal 抢占）。
+  // boxStyle：高度策略由调用方给——内联在 fill 模式下用 flex 撑满父容器
+  // （任务详情页左栏与右栏总高对齐，2026-09-12 用户指令），否则固定视口高度；Modal 恒定高。
+  const timeline = (boxId: string, boxStyle: CSSProperties, boxRef: typeof inlineBoxRef) => (
     <div
       ref={boxRef}
       onScroll={onScroll}
       style={{
         background: '#0d1117',
         padding: '12px 16px',
-        height,
         overflowY: 'auto',
         borderRadius: 4,
+        ...boxStyle,
       }}
       data-testid={boxId}
     >
       {text.length === 0 ? (
-        <span style={{ fontSize: 12, color: '#8b949e' }}>
-          暂无交互日志——沙箱 AI 分析启动后，任务下发全文、模型思考、模型回复与子任务回报将在此实时滚动。
+        <span style={{ fontSize: FONT, color: '#8b949e' }}>
+          {/* 降级空态（2026-09-11 用户报障）：degraded 由任务详情页按发现级痕迹判定后经
+              props 传入（组件内不重复请求）——空日志如实归因，不再误导用户等待 AI 输出 */}
+          {degraded
+            ? 'AI 已降级（RuleScan 兜底），无 AI 交互日志。'
+            : '暂无交互日志——AI 分析启动后将在此实时展示分析过程。'}
         </span>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {hidden > 0 && (
-            <div style={{ fontSize: 12, color: '#8b949e', display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div style={{ fontSize: FONT, color: '#8b949e', display: 'flex', gap: 12, alignItems: 'center' }}>
               <span>前面还有 {hidden} 条未显示</span>
-              <Button size="small" onClick={() => setWindow((w) => w + WINDOW_STEP)}>
+              <Button size="small" style={{ fontSize: FONT }} onClick={() => setWindow((w) => w + WINDOW_STEP)}>
                 加载更早 {Math.min(WINDOW_STEP, hidden)} 条
               </Button>
-              <Button size="small" onClick={() => setWindow(entries.length)}>
+              <Button size="small" style={{ fontSize: FONT }} onClick={() => setWindow(entries.length)}>
                 显示全部
               </Button>
             </div>
@@ -221,15 +233,15 @@ export default function AIInteractionLogPanel(
                 ) : (
                   <>
                     {e.label && (
-                      <div style={{ fontSize: 12, color: st.labelColor, fontWeight: 600 }}>{e.label}</div>
+                      <div style={{ fontSize: FONT, color: st.labelColor, fontWeight: 600 }}>{e.label}</div>
                     )}
                     {e.body && (
                       <pre
                         style={{
                           margin: 0,
                           fontFamily: 'inherit',
-                          fontSize: 12,
-                          lineHeight: '18px',
+                          fontSize: FONT,
+                          lineHeight: LINE_HEIGHT,
                           whiteSpace: 'pre-wrap',
                           wordBreak: 'break-all',
                           color: st.bodyColor,
@@ -250,18 +262,23 @@ export default function AIInteractionLogPanel(
 
   const statusTags = (
     <span style={{ marginRight: 12 }}>
-      <Tag>{totalBytes > 0 ? `${(totalBytes / 1024).toFixed(1)} KB` : '0 KB'}</Tag>
-      {complete ? <Tag color="success">已收束</Tag> : <Tag color="processing">实时接收中</Tag>}
+      <Tag style={{ fontSize: FONT }}>{totalBytes > 0 ? `${(totalBytes / 1024).toFixed(1)} KB` : '0 KB'}</Tag>
+      {complete
+        ? <Tag color="success" style={{ fontSize: FONT }}>已收束</Tag>
+        : <Tag color="processing" style={{ fontSize: FONT }}>实时接收中</Tag>}
     </span>
   );
 
   return (
     <Card
+      style={fill
+        ? { height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }
+        : undefined}
       title={
-        <span>
+        <span style={{ fontSize: TITLE_FONT }}>
           AI 交互日志{' '}
-          <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-            （沙箱内 DSH ↔ 模型交互时间线，实时滚动）
+          <Typography.Text type="secondary" style={{ fontSize: FONT, fontWeight: 400 }}>
+            （AI 分析过程时间线，实时滚动）
           </Typography.Text>
         </span>
       }
@@ -269,28 +286,37 @@ export default function AIInteractionLogPanel(
         <div onClick={(e) => e.stopPropagation()}>
           {statusTags}
           <Tooltip title={complete ? '刷新' : live ? 'WebSocket 推流在线（亚秒级到达即刷新）' : '随快照每 10 秒自动增量拉取'}>
-            <Button size="small" onClick={onRefresh} loading={refreshing} style={{ marginRight: 8 }}>
+            <Button size="small" onClick={onRefresh} loading={refreshing} style={{ marginRight: 8, fontSize: FONT }}>
               刷新
             </Button>
           </Tooltip>
-          <Button size="small" onClick={download} disabled={text.length === 0} style={{ marginRight: 8 }}>
+          <Button size="small" onClick={download} disabled={text.length === 0} style={{ marginRight: 8, fontSize: FONT }}>
             下载完整日志
           </Button>
-          <Button size="small" icon={<EyeOutlined />} disabled={text.length === 0} onClick={() => setModalOpen(true)}>
+          <Button size="small" icon={<EyeOutlined />} disabled={text.length === 0} onClick={() => setModalOpen(true)} style={{ fontSize: FONT }}>
             整页查看
           </Button>
         </div>
       }
-      styles={{ body: { padding: '8px 16px' } }}
+      styles={{ body: {
+        padding: '8px 16px',
+        // fill：卡片随父容器撑满（任务详情页左栏），时间线框 flex 占满余高——
+        // 与右栏总高一致（2026-09-12 用户指令）
+        ...(fill ? { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' } : {}),
+      } }}
     >
-      {timeline('ai-interaction-log-box', 'calc(100vh - 230px)', inlineBoxRef)}
+      {timeline('ai-interaction-log-box',
+        fill
+          ? { flex: 1, minHeight: 0 }
+          : { height: text.length === 0 ? '140px' : 'calc(100vh - 230px)' },
+        inlineBoxRef)}
 
       <Modal
         title={
-          <span>
+          <span style={{ fontSize: TITLE_FONT }}>
             AI 交互日志{' '}
-            <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-              （沙箱内 DSH ↔ 模型交互时间线{complete ? '；已归档' : '；实时接收中'}）
+            <Typography.Text type="secondary" style={{ fontSize: FONT, fontWeight: 400 }}>
+              （AI 分析过程时间线{complete ? '；已归档' : '；实时接收中'}）
             </Typography.Text>
           </span>
         }
@@ -300,7 +326,7 @@ export default function AIInteractionLogPanel(
         width="min(96vw, 1500px)"
         styles={{ body: { padding: 0 }, content: { top: 24 } }}
       >
-        {timeline('ai-interaction-log-box-modal', 'calc(100vh - 140px)', modalBoxRef)}
+        {timeline('ai-interaction-log-box-modal', { height: 'calc(100vh - 140px)' }, modalBoxRef)}
       </Modal>
     </Card>
   );

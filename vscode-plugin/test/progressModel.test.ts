@@ -11,6 +11,8 @@ import {
   parseTsMs,
   sandboxPackCheck,
   stageLabel,
+  STATUS_LABELS,
+  STAGE_LABELS,
   taskStatusLabel,
 } from '../src/progressModel';
 import type { TaskSnapshot } from '../src/types';
@@ -121,6 +123,21 @@ describe('progressModel：appendAiChunk 游标衔接（纯函数边界）', () =
   it('cursor=0 首帧直通', () => {
     assert.deepStrictEqual(appendAiChunk('', 0, 'hi', 2), { text: 'hi', cursor: 2 });
   });
+
+  it('代理对边界：skip 落在代理对（emoji）前后均按 code point 对齐，不劈开字符（回归锁 B2-8）', () => {
+    const emoji = '😀'; // UTF-8 4 字节 / UTF-16 2 个 code unit
+    const chunk = `ab${emoji}cd`; // 字节长 1+1+4+1+1 = 8
+    // cursor=6（ab+emoji 整字符之后）：剩余恰为 'cd'——旧实现把代理对当 3 字节（CESU-8），
+    // 会劈出孤立低代理项进渲染文本
+    assert.deepStrictEqual(appendAiChunk('ab', 6, chunk, 8), { text: 'abcd', cursor: 8 });
+    // cursor=2（ab 之后）：emoji 整字符保留
+    assert.deepStrictEqual(appendAiChunk('ab', 2, chunk, 8), { text: `ab${emoji}cd`, cursor: 8 });
+    // cursor 落在 emoji 中间（服务端不该出现的非对齐游标）：保守保留整字符
+    const r = appendAiChunk('ab', 3, chunk, 8);
+    assert.ok(r);
+    const stripped = r.text.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '');
+    assert.ok(!/[\uD800-\uDFFF]/.test(stripped), '文本中不得出现孤立代理项');
+  });
 });
 
 describe('progressModel：buildProgressItems 进度树', () => {
@@ -136,7 +153,7 @@ describe('progressModel：buildProgressItems 进度树', () => {
   it('任务头 + 阶段节点（图标/中文标签/时长）+ AI 入口', () => {
     const items = buildProgressItems(mkState());
     assert.strictEqual(items[0].kind, 'task');
-    assert.match(items[0].description!, /运行中 · 42% · 轮询/);
+    assert.match(items[0].description!, /执行中 · 42% · 轮询/);
     const stages = items.filter((n) => n.kind === 'stage');
     assert.deepStrictEqual(stages.map((n) => n.icon), ['check', 'sync', 'clock']);
     assert.strictEqual(stages[0].label, '代码分析');
@@ -183,6 +200,40 @@ describe('progressModel：格式化辅助', () => {
     assert.strictEqual(stageLabel('STAGE_TYPE_AI_INFERENCE', 'x'), 'AI 推理');
     assert.strictEqual(stageLabel('STAGE_TYPE_WHATEVER', 'st-9'), 'st-9');
     assert.strictEqual(taskStatusLabel('TASK_STATUS_CANCELLED'), '已取消');
+  });
+
+  it('STATUS_LABELS / STAGE_LABELS 键集 golden：与 proto TaskStatus 11 键 / StageType 7 键全等（伞仓 parity 闸门同口径，B2-4）', () => {
+    assert.deepStrictEqual(Object.keys(STATUS_LABELS), [
+      'TASK_STATUS_UNSPECIFIED',
+      'TASK_STATUS_CREATED',
+      'TASK_STATUS_PENDING',
+      'TASK_STATUS_QUEUED',
+      'TASK_STATUS_RUNNING',
+      'TASK_STATUS_COMPLETED',
+      'TASK_STATUS_FAILED',
+      'TASK_STATUS_CANCELLED',
+      'TASK_STATUS_TIMEOUT',
+      'TASK_STATUS_DEAD',
+      'TASK_STATUS_PAUSED',
+    ]);
+    // 文案对齐 web/src/dict/index.ts TASK_STATUS（web 为文案权威）
+    assert.strictEqual(STATUS_LABELS.TASK_STATUS_UNSPECIFIED, '未知');
+    assert.strictEqual(STATUS_LABELS.TASK_STATUS_CREATED, '已创建');
+    assert.strictEqual(STATUS_LABELS.TASK_STATUS_PENDING, '保留值');
+    assert.strictEqual(STATUS_LABELS.TASK_STATUS_QUEUED, '已排队');
+    assert.strictEqual(STATUS_LABELS.TASK_STATUS_RUNNING, '执行中');
+    assert.strictEqual(STATUS_LABELS.TASK_STATUS_TIMEOUT, '超时');
+    assert.strictEqual(STATUS_LABELS.TASK_STATUS_DEAD, '重试耗尽');
+    assert.deepStrictEqual(Object.keys(STAGE_LABELS), [
+      'STAGE_TYPE_UNSPECIFIED',
+      'STAGE_TYPE_CODE_ANALYSIS',
+      'STAGE_TYPE_SAST_SCAN',
+      'STAGE_TYPE_AI_INFERENCE',
+      'STAGE_TYPE_RESULT_FUSION',
+      'STAGE_TYPE_REPORT_GENERATION',
+      'STAGE_TYPE_AI_REVIEW',
+    ]);
+    assert.strictEqual(STAGE_LABELS.STAGE_TYPE_UNSPECIFIED, '未指定');
   });
 });
 

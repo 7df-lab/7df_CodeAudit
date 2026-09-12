@@ -38,7 +38,6 @@ export class TaskWatcher extends EventEmitter {
   private closed = false;
   private timers = new Set<unknown>();
   private socket: WebSocketLike | null = null;
-  private lastStatus = '';
   // 重连防抖：真实 WebSocket 连接失败按标准序列先 onerror 后 onclose——两者都会调
   // onDown()，不加防抖时每代失败调度 2 个重连定时器 → 下一代 2 条并行 socket、
   // 4 个定时器，指数增长（网关持续不可达时耗尽扩展宿主资源）。同一时刻至多一个挂起重连。
@@ -53,16 +52,6 @@ export class TaskWatcher extends EventEmitter {
     void this.pollOnce(); // 立即拉一次快照兜底（WS 建立前也有状态）
   }
 
-  status(): string {
-    return this.lastStatus;
-  }
-
-  snapshot(): TaskSnapshot | null {
-    return this.lastSnap;
-  }
-
-  private lastSnap: TaskSnapshot | null = null;
-
   private later(fn: () => void, ms: number): void {
     const defaultSet = (f: () => void, m: number) => setTimeout(f, m);
     const t = (this.opts.setTimeoutFn ?? defaultSet)(fn, ms);
@@ -70,8 +59,9 @@ export class TaskWatcher extends EventEmitter {
   }
 
   private settle(snap: TaskSnapshot): void {
-    this.lastSnap = snap;
-    this.lastStatus = snap.task.status;
+    // closed 复查：close() 后仍在途/已缓冲的 WS 消息帧不得再 emit——防 terminal 双发
+    // （上层收尾重跑=完成通知弹两次、findings 重复拉取）与迟到快照污染
+    if (this.closed) return;
     this.emit('snapshot', snap);
     if (isTerminalTaskStatus(snap.task.status)) {
       this.emit('terminal', snap.task.status, snap);
@@ -121,7 +111,9 @@ export class TaskWatcher extends EventEmitter {
       // 任务已被平台删除/归档：服务端握手后立即关闭（1011 "task … not found"），
       // 重连永远拿不到快照也等不到终态——终止而非 5s 死循环
       if (/not found/i.test(ev?.reason ?? '')) {
-        this.closed = true;
+        // closed 复查：轮询 404 可能已先行收束（双通道竞态）——后到的 1011 不得二次 onTaskGone
+        if (this.closed) return;
+        this.close();
         this.opts.setWsLive?.(false);
         this.opts.onTaskGone?.(ev?.reason ?? 'task not found');
         return;
@@ -144,13 +136,22 @@ export class TaskWatcher extends EventEmitter {
       return;
     }
     try {
-      this.settle(await this.opts.client.taskSnapshot(this.opts.taskId, this.opts.cursors?.()));
+      const snap = await this.opts.client.taskSnapshot(this.opts.taskId, this.opts.cursors?.());
+      // await 后复查（B5-1）：请求在途期间 watcher 可能已被 close（终态自关 / watchTask
+      // 换新任务替换 / bindTask 切绑收口）——关闭后到达的快照不得再进 settle
+      if (this.closed) return;
+      this.settle(snap);
       if (!this.closed) this.later(() => void this.pollOnce(), WS_BACKOFF_POLL_MS);
     } catch (e) {
       // 快照 404 "not found"：任务已被平台删除/归档，轮询无意义——终止（WS 路径 onclose 同口径）
       const msg = e instanceof Error ? e.message : String(e);
       if (/404/.test(msg) && /not found/i.test(msg)) {
-        this.closed = true;
+        // 在途 404 复查（B5-1）：await 期间 watcher 已被关闭（最常见=换任务替换）时，
+        // 这个 404 属于旧任务——不得触发 onTaskGone（上层会把新任务 progress 标 DEAD）
+        if (this.closed) return;
+        // 统一走 close() 收束（关 socket + 清定时器）：只置标志会留活连接与挂起重连
+        // 定时器，且随后的迟到 WS 1011 close 帧会二次触发 onTaskGone（双通道竞态）
+        this.close();
         this.opts.onTaskGone?.(msg);
         return;
       }

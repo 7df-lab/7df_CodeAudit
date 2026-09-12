@@ -12,7 +12,14 @@ export interface FileSystemLike {
   readFileSync(p: string, encoding: 'utf-8'): string;
   writeFileSync(p: string, data: string, encoding: 'utf-8'): void;
   readdirSync(p: string): string[];
+  unlinkSync(p: string): void;
+  rmdirSync(p: string): void;
 }
+
+/** 同一绝对路径在全部 checkpoint 中的条目上限（含 null 标记条目）：
+ *  每次保存后按文件增量清理——超出上限的最旧快照被移除（manifest 去键 + 删内容文件，
+ *  manifest 清空则整目录删除）。被清理的旧登记回滚走既有「checkpoint 缺失/损坏」诚实降级。 */
+export const CHECKPOINT_PER_FILE_KEEP = 100;
 
 let checkpointSeq = 0;
 
@@ -43,7 +50,50 @@ export class CheckpointStore {
       manifest[abs] = stored;
     });
     this.fsOps.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8');
+    for (const abs of keys) this.pruneFile(abs);
     return id;
+  }
+
+  /**
+   * 按文件增量清理（save 后调用）：该文件在全部 checkpoint 中的条目超过
+   * CHECKPOINT_PER_FILE_KEEP 时，从最旧 checkpoint 起移除其条目（删内容文件 +
+   * manifest 去键；manifest 清空 → 删 manifest + 整目录）。清理不感知修复登记表——
+   * 100 份上限足够深，被清理的登记按发现回滚时走既有「缺失/损坏（文件可能被清理）」降级。
+   */
+  private pruneFile(abs: string): void {
+    let seen = 0;
+    for (const id of this.list()) {
+      const dir = path.join(this.rootDir, id);
+      const manifestPath = path.join(dir, 'manifest.json');
+      let manifest: Record<string, string | null>;
+      try {
+        manifest = JSON.parse(this.fsOps.readFileSync(manifestPath, 'utf-8')) as Record<string, string | null>;
+      } catch {
+        continue; // 坏 manifest 的孤儿目录：restore 已容错，不在此处理
+      }
+      if (!(abs in manifest)) continue;
+      seen++;
+      if (seen <= CHECKPOINT_PER_FILE_KEEP) continue;
+      const stored = manifest[abs];
+      if (stored !== null) {
+        try {
+          this.fsOps.unlinkSync(path.join(dir, stored));
+        } catch {
+          /* 尽力而为：manifest 去键后 restore 不会再引用该文件 */
+        }
+      }
+      delete manifest[abs];
+      if (Object.keys(manifest).length === 0) {
+        try {
+          this.fsOps.unlinkSync(manifestPath);
+          this.fsOps.rmdirSync(dir);
+        } catch {
+          /* 尽力而为：残留空目录无引用，不影响 list/restore 语义 */
+        }
+      } else {
+        this.fsOps.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+      }
+    }
   }
 
   list(): string[] {

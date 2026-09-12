@@ -99,6 +99,25 @@ npm run preview         # 本地预览生产构建（/v1 代理配置与 dev 相
 
 **发现链路解析**（`findings/chainParser.ts`）：把 AI reasoning 自由文本中的 file:line / 行区间 / 中文行引用等六类引用形态还原为结构化 hops（不推测角色，仅关键词命中才标 source/sink），供发现详情点选定位。
 
+## 已知取舍
+
+有意识接受并留档的设计取舍（审计 B3-7 建档；"知道并接受"≠"不知道"）：
+
+- **WS token 走 URL 参数**（`/v1/tasks/{id}/ws?token=…`）：浏览器 WebSocket API 无法自定义
+  请求头，`Authorization` 头方案在握手期不可行。接受依据：内网部署边界 + access token 短时
+  （过期即 401 单飞刷新，旧 token 立即失效）；URL 形式的泄露面（访问日志/代理链）在该边界内可控。
+- **503 自动重试不区分 HTTP 方法**：拦截器对任意方法（含非幂等 POST）按 1s/2s/4s 退避重试
+  3 次，未收窄到幂等方法。接受依据：503 语义 = 服务端过载/维护期未处理该请求（区别于超时
+  场景的"可能已处理"），重试不构成重复副作用；关键写路径另有幂等兜底（`POST /v1/tasks`
+  由网关生成幂等键，GenerateReport 本身幂等）。
+- **报告 HTML 的 `<style>` 原样渲染、不做清理**：在线查看将报告正文经 sandboxed iframe
+  （`openReportWindow`：about:blank 宿主窗 + `<iframe sandbox src=blob:>`，sandbox 空token
+  无 allow-scripts/allow-same-origin）渲染，不解析/剥离其中的样式标签。接受依据：双保险——
+  iframe sandbox 使脚本与同源权限全灭；blob 内容前置 CSP meta（`REPORT_WINDOW_CSP_META`，
+  `default-src 'none'; style-src 'unsafe-inline'`）即便 sandbox 通道被降级仍灭脚本。
+  样式只能内联生效、无法发起网络请求，残留样式最坏影响布局不影响安全；
+  JSON 分支保持转义 `<pre>` 文本（fix-plan-0911 §14 升级）。
+
 ## 测试
 
 ```bash

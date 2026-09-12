@@ -19,6 +19,7 @@ const gateway = useFakeGateway({
     ],
   },
   'POST /v1/notifications/:notificationId/read': {},
+  'POST /v1/notifications/read-all': { marked: 1 },
 });
 
 vi.mock('../auth/session', () => ({
@@ -53,6 +54,17 @@ describe('NotificationsPage', () => {
     fireEvent.click(screen.getByText('标记已读'));
     await waitFor(() =>
       expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/notifications/n-1/read')).toBe(true),
+    );
+  });
+
+  it('一键全部已读（E-31a：POST /v1/notifications/read-all，未读=0 时禁用）', async () => {
+    withProviders(<NotificationsPage />);
+    await waitFor(() => expect(screen.getByText('任务完成')).toBeTruthy());
+    const btn = screen.getByRole('button', { name: '全部已读' }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(false); // fake 列表含 1 条未读
+    fireEvent.click(btn);
+    await waitFor(() =>
+      expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/notifications/read-all')).toBe(true),
     );
   });
 });

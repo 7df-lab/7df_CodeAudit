@@ -13,7 +13,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-REMOTE="${REMOTE:-pct exec 107 --}"
+# `-` 而非 `:-`：REMOTE=""（空串）是显式"本机执行"契约（与 openshell-gateway
+# 两脚本同语义；`:-` 会在空串时静默触发 pct 缺省、打错目标宿主——B1-11 审计
+# 修复，2026-09-11 对齐伞仓 REMOTE 契约家族）。
+REMOTE="${REMOTE-pct exec 107 --}"
 VMID="${VMID:-107}"
 DEPLOY_DIR="${DEPLOY_DIR:-/root/os-deploy/deploy/openshell-manager}"
 SRC="${SRC:-$(cd .. && pwd)}"   # 默认 = 本仓根（脚本已 cd 到自身目录）
@@ -58,15 +61,17 @@ sync_all() {
 # 确定性内容哈希：排序 + 归一 owner/mtime 的 tar 流，本地与远端同参可比。
 # 排除项必须与 sync_all 一致，否则本地含 pyc/log、远端没有 → 假漂移。
 # 注意 --mtime 用 @epoch（无空格），经 run_remote 分词安全。
+# 2>/dev/null 已去（B1-14 审计修复）：tar 出错（路径缺失等）曾被静默吞掉、
+# 只剩哈希失配的间接症状——错误必须可见。
 dtar() {  # dtar <base> <paths...>
     local base="$1"; shift
     tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1767225600 \
         --exclude='__pycache__' --exclude='.token' --exclude='manager.log' \
-        -C "$base" -cf - "$@" 2>/dev/null
+        -C "$base" -cf - "$@"
 }
 rdtar() {  # 同参数的远端版
     run_remote tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1767225600 \
-        -C "$DEPLOY_DIR" -cf - "$@" 2>/dev/null
+        -C "$DEPLOY_DIR" -cf - "$@"
 }
 hashof() { md5sum | awk '{print $1}'; }
 
@@ -77,13 +82,15 @@ case "$cmd" in
         compose up -d --build
         wait_health
         echo "== gateway 可达性（经 manager，Bearer token）=="
-        if curl -fsS --max-time 8 -H "Authorization: Bearer $(cut -d= -f2 env)" \
+        # -f2-（B1-14 审计修复）：token 常见 base64 padding '='，-f2 从值内
+        # 第一个 = 截断 → Authorization 头残缺
+        if curl -fsS --max-time 8 -H "Authorization: Bearer $(cut -d= -f2- env)" \
             "${HEALTH_URL%/healthz}/api/v1/gateway/health"; then
             echo
         else
                 echo "WARN: gateway/health 未通（网关未起？../../openshell-gateway/deploy.sh start）"
         fi
-        echo "hint: 宿主机引擎接入：export OPENSHELL_MANAGER_URL=http://gateway.internal:18800 OPENSHELL_MANAGER_TOKEN=\$(cut -d= -f2 deploy/env)"
+        echo "hint: 宿主机引擎接入：export OPENSHELL_MANAGER_URL=http://gateway.internal:18800 OPENSHELL_MANAGER_TOKEN=\$(cut -d= -f2- deploy/env)"
         ;;
     check)
         d=0

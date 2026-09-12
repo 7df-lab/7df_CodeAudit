@@ -26,8 +26,8 @@
 ### 1.1 `POST /v1/auth/login`
 
 - **输入**：`{ username: string, password: string }`（JSON；跳过鉴权）。
-- **预期输出**：`LoginResponse { access_token, refresh_token, expires_in_s }`；副作用：两个 token 写入 TokenStore（access 内存缓存 + refresh 持久化，见 data-flows.md §1）。
-- **锁定测试**：`apiClient.test.ts › login 成功后保存 access+refresh`。
+- **预期输出**：`LoginResponse { access_token, refresh_token, expires_in_s }`；`expires_in_s` 类型 `string | number`（protojson int64 可能为十进制字符串，B8 契约收口），消费点 `Number()` 归一；副作用：两个 token 写入 TokenStore（access 内存缓存 + refresh 持久化，见 data-flows.md §1）。
+- **锁定测试**：`apiClient.test.ts › login 成功后保存 access+refresh`；字符串形态归一：`extension.test.ts › 登录成功（expires_in_s 字符串形态，B8 protojson int64）…`。
 
 ### 1.2 `POST /v1/auth/refresh`
 
@@ -38,8 +38,8 @@
 ### 1.3 `POST /v1/auth/logout`
 
 - **输入**：`{ access_token: string }`（跳过鉴权）。
-- **预期输出**：无论请求成败（finally），本地会话清空；函数正常返回。
-- **锁定测试**：代码路径 `logout`；UI 侧命令注册守卫 `guards.test.ts › 命令注册守卫`。
+- **预期输出**：无论请求成败（finally），本地会话清空（`tokens.clear(true)` 静默——用户主动登出不触发 onCleared 的"会话失效"告警，logout 命令自己出"已退出"提示，B5-2）；函数正常返回。
+- **锁定测试**：代码路径 `logout`；静默口径：`extension.test.ts › 主动登出静默：清凭据但不弹"登录会话已失效"…（回归锁 B5-2）`；UI 侧命令注册守卫 `guards.test.ts › 命令注册守卫`。
 
 ### 1.4 `GET /v1/projects`
 
@@ -114,12 +114,13 @@ ws(s)://<gateway>/v1/tasks/{taskId}/ws?token=<encodeURIComponent(accessToken)>
 | 事件 | 预期行为 | 锁定测试 |
 |---|---|---|
 | onopen | `setWsLive(true)` + `onWsEvent('open')` | `taskWatcher.test.ts › onWsEvent 透出 open/close/error 原始细节` |
-| onclose（reason 含 "not found"） | **任务已被平台删除/归档**：置 closed、`onTaskGone(reason)`、绝不重连 | `taskWatcher.test.ts › WS 关闭原因为 "task not found"…` |
+| onclose（reason 含 "not found"） | **任务已被平台删除/归档**：经 `close()` 收束（关 socket+清定时器）后 `onTaskGone(reason)`、绝不重连；已 closed（如轮询 404 先行收束）则被复查拦截不重复回调 | `taskWatcher.test.ts › WS 关闭原因为 "task not found"…`、`› 轮询 404 与迟到 WS 1011 竞态…` |
 | onclose（其他） | `setWsLive(false)` → 5s 后重连（终态后 close 已阻止） | `taskWatcher.test.ts › WS 帧驱动状态；终态帧触发 terminal…` |
 | onerror | `onWsEvent('error', detail)` → 回退轮询 → 5s 重连 | 同上 |
 | 无 WebSocket 环境（makeSocket 抛异常） | 纯 10s 快照轮询兜底至终态 | `taskWatcher.test.ts › WS 无环境…纯轮询兜底至终态` |
 | 轮询遇 429 限流窗口 | 本轮跳过，10s 后重试 | `taskWatcher.test.ts › 429 限流窗口内跳过本轮轮询` |
-| 轮询遇 404 "not found" | `onTaskGone` + 终止轮询 | `taskWatcher.test.ts › 轮询快照 404 not found…` |
+| 轮询遇 404 "not found" | `close()` 收束（await 后先复查 closed——B5-1 归属守卫）+ `onTaskGone` + 终止轮询 | `taskWatcher.test.ts › 轮询快照 404 not found…`、`› 轮询在途 404 返回前 watcher 已被 close…（B5-1）` |
+| close() 后到达的 WS 消息帧（已缓冲/在途） | `settle` 入口复查 closed，不再 emit（防 terminal 双发、上层收尾重跑） | `taskWatcher.test.ts › WS 在途终态帧在 close 后到达…` |
 
 - **`onTaskGone` 的上层语义**（extension）：本地 progress 落终态 `TASK_STATUS_DEAD`、`taskRunning/taskPaused` 上下文清位、释放扫描互斥、警告通知「已在平台删除或归档——已停止进度同步」。
 - 常量：`WS_BACKOFF_POLL_MS = 10_000`、`WS_RECONNECT_MS = 5_000`。
@@ -151,9 +152,9 @@ ws(s)://<gateway>/v1/tasks/{taskId}/ws?token=<encodeURIComponent(accessToken)>
 
 | 命令 | 输入形态 | 预期反馈（输出） |
 |---|---|---|
-| `codeaudit.login` | 无参；三个 InputBox（地址/用户名/密码），取消即中止 | 成功：`loggedIn` 上下文 + 信息通知；失败：错误通知（含代理排查提示）；serverUrl 写全局配置 |
+| `codeaudit.login` | 无参；三个 InputBox（地址/用户名/密码），取消即中止 | 成功：`loggedIn` 下上文 + 信息通知；失败：错误通知（含代理排查提示）；serverUrl 写全局配置；**空地址（空串/纯空白）拒绝：警告且不写配置、零登录请求**（回归锁见 extension.test.ts › 登录空网关地址被拒） |
 | `codeaudit.logout` | 无参 | 清会话 + `loggedIn=false` + 信息通知 |
-| `codeaudit.selectProject` | 无参；QuickPick 单选项目 | `projectId` 写**工作区**配置 + `boundProject` 上下文 + 信息通知；未登录→警告；平台无项目→信息 |
+| `codeaudit.selectProject` | 无参；QuickPick 单选项目 | `projectId` 写**工作区**配置 + `boundProject` 上下文 + 信息通知；未登录→警告；平台无项目→信息；**绑定成功且空闲（无扫描发起中/无活跃非终态任务）→ 自动同步该项目最近完成任务的发现**（latestCompletedTask→bindTask 带轻通知；无完成任务/拉取失败静默仅日志） |
 | `codeaudit.scanWorkspace` | 无参 | 见 data-flows.md §4.1 扫描链路；扫描互斥：进行中→警告拒绝；listTools 连通性前置探测失败→「无法连接平台」错误且不打包 |
 | `codeaudit.runningMenu` | 无参（状态栏运行中点击） | QuickPick 汇聚暂停/取消/查看 AI 上下文 |
 | `codeaudit.cancelScan` | 无参；模态确认 | 确认→POST cancel + 信息；无任务→信息 |
@@ -161,14 +162,14 @@ ws(s)://<gateway>/v1/tasks/{taskId}/ws?token=<encodeURIComponent(accessToken)>
 | `codeaudit.refreshFindings` | 无参 | 有 lastTaskId：仅重拉 findings；无：兜底绑定平台该项目最近完成任务 |
 | `codeaudit.clearFindings` | 无参 | 清本地诊断+树，平台数据不动，信息通知 |
 | `codeaudit.showAiContext` | 无参 | 展示/解析底部面板视图 + 增量推送 |
-| `codeaudit.openFinding` | `UnifiedFinding` 或树节点包装（`{finding}`） | 跳转编辑器选中行 + 侧栏切漏洞详情；无位置→信息通知 |
-| `codeaudit.fixFinding` | `UnifiedFinding` / 树节点包装 / 无参（→QuickPick 选发现） | 修复链路见 data-flows.md §4.2；诚实降级：无建议→警告 |
+| `codeaudit.openFinding` | `UnifiedFinding` 或树节点包装（`{finding}`） | 跳转编辑器选中行（行号取 trackedLines 校准值 ?? 原始 start_line，与诊断同源）+ 侧栏切漏洞详情；无位置→信息通知 |
+| `codeaudit.fixFinding` | `UnifiedFinding` / 树节点包装 / 无参（→QuickPick 选发现） | 修复链路见 data-flows.md §4.2；诚实降级：无建议→警告；改盘段纳入 fixing 写盘互斥（含围栏 diff 兜底路径） |
 | `codeaudit.applyLowRiskFixes` | 无参；QuickPick **多选** | 候选筛选→逐条应用（同核心）→汇总通知；单条失败跳过记日志 |
-| `codeaudit.rollbackFixes` | 无参 | 优先登记表最近 applied 记录；无登记兜底最近 checkpoint |
-| `codeaudit.rollbackFix` | `UnifiedFinding`/树节点包装 / 无参（→QuickPick 列出可回滚项） | 见回滚链路 data-flows.md §4.3；无已应用修复→信息通知 |
+| `codeaudit.rollbackFixes` | 无参 | 优先登记表最近 applied 记录；无登记兜底最近 checkpoint；写盘段纳入 fixing 写盘互斥 |
+| `codeaudit.rollbackFix` | `UnifiedFinding`/树节点包装 / 无参（→QuickPick 列出可回滚项） | 见回滚链路 data-flows.md §4.3；无已应用修复→信息通知；写盘段纳入 fixing 写盘互斥 |
 | `codeaudit.copyFindingId` / `copyFilePath` | 树节点包装或 finding | 写剪贴板 + 状态栏提示 3s |
-| `codeaudit.openConsole` | 无参 | `openExternal(consoleUrl || serverUrl:4173 + /tasks/{lastTaskId})` |
-| `codeaudit.selectTask` | 无参；QuickPick 单选 | 列平台该项目任务（时间倒序）→ bindTask 拉历史结果 |
+| `codeaudit.openConsole` | 无参 | `openExternal(consoleUrl || serverUrl 剥离端口(→:80) + /tasks/{lastTaskId})` |
+| `codeaudit.selectTask` | 无参；QuickPick 单选 | 列平台该项目任务（时间倒序）→ 有任务进行中先弹确认（B2-5）→ bindTask 拉历史结果；findings 拉取失败回滚绑定态 |
 
 - 树菜单（view/item/context）传的是 `TreeNode` 包装，命令入口经 `asFinding` 解包——回归锁：`extension.test.ts › asFinding 解包`（经由 rollbackFix/fixFinding 命令驱动）。
 
@@ -197,7 +198,8 @@ ws(s)://<gateway>/v1/tasks/{taskId}/ws?token=<encodeURIComponent(accessToken)>
 ### 4.6 编辑器灯泡（CodeActionProvider，scheme=file）
 
 - **输入**：文档 + 光标 range 与诊断相交。
-- **预期输出**：`CodeAudit: AI 修复此漏洞` QuickFix，命令 `codeaudit.fixFinding`，参数 = 与该文件路径匹配的 `UnifiedFinding`（首个）。无相交诊断或无匹配发现 → 返回 `[]`。
+- **预期输出**：`CodeAudit: AI 修复此漏洞` QuickFix，命令 `codeaudit.fixFinding`，参数 = 与该文件路径匹配的 `UnifiedFinding`。无相交诊断或无匹配发现 → 返回 `[]`。
+- **行号口径**：诊断 range 的行 = trackedLines 校准后行号，反查（`pickFindingAtLine`）同源使用校准表——修复/回滚引起行漂移后灯泡不失效。锁定：`treeModel.test.ts › pickFindingAtLine`（校准用例）、`extension.test.ts › 行号校准贯通…`。
 
 ### 4.7 webview postMessage 协议（双向）
 

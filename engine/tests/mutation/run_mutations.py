@@ -33,13 +33,15 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # ---------------------------------------------------------------------------
 MUTANTS = [
     {
-        "id": "M1", "bug": "R1/ADR-209: repo clone 覆盖任务级/项目级 upload_file_id（守卫缺 r.Prepare==nil，两处同雷）",
+        # R47 重构（2026-09-11）后锚点同步：解析链 RPC 移锁外，任务级/项目级守卫收敛进
+        # needProjectLookup（r.Prepare==nil 语义保留），repo 兜底分支守卫是最后防线。
+        "id": "M1", "bug": "R1/ADR-209: repo clone 覆盖任务级/项目级 upload_file_id（兜底守卫缺 r.Prepare==nil）",
         "file": "services/task-service/internal/service/task_service.go",
         "edits": [(
-            'if r.ProjectPath == "" && r.Prepare == nil && task.GetProjectId() != "" {',
-            'if r.ProjectPath == "" && task.GetProjectId() != "" {',
+            'if needProjectLookup && r.Prepare == nil && repoURL != "" {',
+            'if needProjectLookup && repoURL != "" {',
         )],
-        "expect": 2,  # 任务级与项目级两处守卫同文案（ADR-209 双修）
+        "expect": 1,  # R47 后防御收敛单点（needProjectLookup 内含第二道）
         "module": "services/task-service",
         "run": "TestStartTask_(Task|Project)UploadWinsOverRepoURL",
     },
@@ -131,9 +133,9 @@ MUTANTS = [
             'userID, _ := r.Context().Value(middleware.UserIDKey).(string)',
             'userID := r.URL.Query().Get("user_id")',
         )],
-        "expect": 2,  # 列表分支与 read 归属核验分支同文案（原缺陷即两处同雷）
+        "expect": 3,  # 列表分支、read 归属核验分支、read-all 组合分支同文案（原缺陷即多处同雷；ADR-222 增第三处）
         "module": "services/gateway-service",
-        "run": "TestNotifications_UserIdFromJWTNotQuery",
+        "run": "TestNotifications_UserIdFromJWTNotQuery|TestNotifications_ReadAll_UserFromJWTNotQuery",
     },
     {
         "id": "M10", "bug": "R12/ADR-212⑪: 沙箱创建失败不注销注册表（泄漏+屏蔽对账）",
@@ -290,11 +292,12 @@ MUTANTS = [
     {
         # R-30：三条 SQL 路径漏 reasoning 列的等价再引入（文本面契约锁定，M25 锚点带
         # GetByID 独有 WHERE 尾巴保证唯一）。memory 仓整结构体拷贝，行为面测不出。
+        # ADR-225：SELECT/INSERT 列清单追加 inherited_from_task_id，锚点同步。
         "id": "M25", "bug": "R30: 行投影 SELECT 删 reasoning → AI 结论/裁决理由读回恒空（ADR-195 链路点选永不渲染）",
         "file": "services/result-service/internal/repository/finding_repository.go",
         "edits": [(
-            "SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id\n\t\tFROM findings WHERE id = $1",
-            "SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id\n\t\tFROM findings WHERE id = $1",
+            "SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, COALESCE(reasoning, '') AS reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, COALESCE(inherited_from_task_id, '') AS inherited_from_task_id\n\t\tFROM findings WHERE id = $1",
+            "SELECT id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, COALESCE(inherited_from_task_id, '') AS inherited_from_task_id\n\t\tFROM findings WHERE id = $1",
         )],
         "module": "services/result-service",
         "run": "TestFindingRepoReasoningWired",
@@ -303,8 +306,8 @@ MUTANTS = [
         "id": "M26", "bug": "R30: INSERT 删 reasoning → 创建期 AI 结论原文（[DSH-sandbox]/[LLM:]）不落库",
         "file": "services/result-service/internal/repository/finding_repository.go",
         "edits": [(
-            'INSERT INTO findings (id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id)',
-            'INSERT INTO findings (id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id)',
+            'INSERT INTO findings (id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, reasoning, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, inherited_from_task_id)',
+            'INSERT INTO findings (id, task_id, tool_name, rule_id, severity, message, file_path, line_number, source_raw, verdict, dedup_group, matched_findings, is_unique, ai_fix_suggestion, diff_patch, created_at, updated_at, request_id, inherited_from_task_id)',
         )],
         "module": "services/result-service",
         "run": "TestFindingRepoReasoningWired",
@@ -378,6 +381,154 @@ MUTANTS = [
         )],
         "module": "services/dsh-runtime-service",
         "run": "TestNormalizeDiffPatch_AnchorDoubleWriteUnindented",
+    },
+    {
+        "id": "M34", "bug": "R38: 融合合并按 file_path 精确字符串比对——SAST 绝对路径×AI 裸文件名永不命中，同文件同行漏洞双报（2026-09-09 用户报障）",
+        "file": "services/sast-adapter-service/internal/fusion/stage_merge.go",
+        "edits": [(
+            'return s == a || strings.HasSuffix(s, "/"+a)',
+            'return s == a',
+        )],
+        "expect": 1,  # 路径后缀对齐回退到精确匹配 = 变异再引入双报
+        "module": "services/sast-adapter-service",
+        "run": "TestMergeStage_PathSuffixAlignment_MergesSameVuln",
+    },
+    {
+        # ADR-225 增量核心三颗牙齿（验收文档 F4/F7/F6 红线面）：
+        # 继承排除过滤删除 = 已修复/已删除文件的旧 findings 复活（最高危：漏报被当有效历史）
+        "id": "M35", "bug": "ADR-225: InheritFindings 删排除过滤 → 变更/删除文件的旧 findings 被继承（过期漏洞复活为新任务有效项）",
+        "file": "services/result-service/internal/service/inherit_service.go",
+        "edits": [(
+            # 后缀对齐重构（94f46944）后锚点同步；恒假条件防 exclude 只写不读=编译失败
+            'if excludedBy(normalizeInheritPath(f.FilePath), exclude) {',
+            'if excludedBy(normalizeInheritPath(f.FilePath), exclude) && false {',
+        )],
+        "expect": 1,
+        "module": "services/result-service",
+        "run": "TestInheritFindings_MatrixAndCopy",
+    },
+    {
+        # 基线候选的 COMPLETED 守卫删除 = RUNNING/FAILED 任务的半成品 findings 被当基线继承
+        "id": "M36", "bug": "ADR-225: 基线选定删 COMPLETED 守卫 → 非终态任务混入基线候选（半成品 findings 被继承）",
+        "file": "services/task-service/internal/service/incremental.go",
+        "edits": [(
+            'b.GetStatus() != pb.TaskStatus_TASK_STATUS_COMPLETED {',
+            'false {',
+        )],
+        "expect": 1,  # 显式基线校验用 bt.GetStatus() 前缀不同，不与此锚点重叠
+        "module": "services/task-service",
+        "run": "TestSelectBaseline_Rules",
+    },
+    {
+        # files_argv 占位守卫删除 = 文件清单模式静默退化成无目标参数调用
+        # （编辑面取 `!hasFiles && false`：恒假禁用守卫但保持 hasFiles 被读取——
+        #   直接换 `if false` 会令 hasFiles 只写不读=编译失败，不是牙齿）
+        "id": "M37", "bug": "ADR-225: files_argv 缺 {files} 占位守卫删除 → 配置错误静默通过（增量扫描空跑）",
+        "file": "services/sast-adapter-service/internal/handler/sast_incremental.go",
+        "edits": [(
+            'if !hasFiles {',
+            'if !hasFiles && false {',
+        )],
+        "expect": 1,
+        "module": "services/sast-adapter-service",
+        "run": "TestBuildFilesArgv_MissingFilesPlaceholder",
+    },
+    {
+        # ADR-225 S5 误删零容忍牙齿（验收全局底线③；F13.2/F13.6 双红线面）
+        # 邻居保护删除 = R36 AI 交互日志/gateway 缓存被回收器清空
+        "id": "M38", "bug": "ADR-225: 回收器删邻居目录保护（隐藏目录前缀）→ gateway 重物化缓存被清空（gcProtectedNames 精确名仍护 ai-interaction，隐藏前缀守卫单独判杀）",
+        "file": "services/task-service/internal/service/repo_cache.go",
+        "edits": [(
+            'if strings.HasPrefix(name, ".") {\n\t\treturn true // .gateway-cache / .gc-* 中转态 / 其他隐藏目录\n\t}',
+            'if strings.HasPrefix(name, ".") {\n\t\treturn false // .gateway-cache / .gc-* 中转态 / 其他隐藏目录\n\t}',
+        )],
+        "expect": 1,
+        "module": "services/task-service",
+        "run": "TestRepoCacheGC_HardProtections",
+    },
+    {
+        # 终态判定吞并 FAILED = 自动重试在途任务卷树被并发删除（重试链正 re-prep 同一目录）
+        "id": "M39", "bug": "ADR-225: isTerminalStatus 吞并 FAILED → 自动重试在途任务的卷树被驱逐（与重试 re-prepare 竞态）",
+        "file": "services/task-service/internal/service/repo_cache.go",
+        "edits": [(
+            'pb.TaskStatus_TASK_STATUS_TIMEOUT, pb.TaskStatus_TASK_STATUS_DEAD:',
+            'pb.TaskStatus_TASK_STATUS_TIMEOUT, pb.TaskStatus_TASK_STATUS_DEAD, pb.TaskStatus_TASK_STATUS_FAILED:',
+        )],
+        "expect": 1,
+        "module": "services/task-service",
+        "run": "TestRepoCacheGC_HardProtections",
+    },
+    {
+        # 2026-09-11 审计修复批次（R43）：ListUsers 游标超界钳制禁用 = admin 面 cursor DoS panic
+        "id": "M40", "bug": "R43: ListUsers offset 钳制移除 → cursor 超界负容量 panic（admin 面 DoS）",
+        "file": "services/project-service/internal/handler/user.go",
+        "edits": [(
+            'if offset > len(recs) { // R43: 游标超界钳制（对齐 ListProjects）——否则负容量 panic',
+            'if false { // MUTANT: 钳制禁用',
+        )],
+        "expect": 1,
+        "module": "services/project-service",
+        "run": "TestListUsers_CursorBeyondEnd_EmptyPage",
+    },
+    {
+        # 2026-09-11 审计修复批次（R42）：snippet 转义移除 = 报告存储型 XSS
+        "id": "M41", "bug": "R42: 报告代码片段列去 htmlEsc → 被扫源码注入 <script> 存储型 XSS",
+        "file": "services/result-service/internal/service/report_service.go",
+        "edits": [(
+            'b.WriteString(fmt.Sprintf("<td><pre>%s</pre></td>", htmlEsc(snippet)))',
+            'b.WriteString(fmt.Sprintf("<td><pre>%s</pre></td>", snippet))',
+        )],
+        "expect": 1,
+        "module": "services/result-service",
+        "run": "TestRenderHTMLReport_SnippetEscaped",
+    },
+    {
+        # 2026-09-11 审计修复批次（R52/D5 复核点）：容量线记账改回删后量 = 超线全清
+        "id": "M42", "bug": "R52: 容量线记账改回驱逐后 dirSize（恒 0）→ total 永不下降→超线逐出全部候选而非驱至水位",
+        "file": "services/task-service/internal/service/repo_cache.go",
+        "edits": [(
+            'if freed, ok := g.evictIfTarInBucket(c.dir, c.taskID, c.tarID, storageAddr, "容量"); ok {\n\t\t\ttotal -= freed',
+            'if _, ok := g.evictIfTarInBucket(c.dir, c.taskID, c.tarID, storageAddr, "容量"); ok {\n\t\t\ttotal -= dirSize(c.dir)',
+        )],
+        "expect": 1,
+        "module": "services/task-service",
+        "run": "TestRepoCacheGC_CapacityStopsAtWatermark",
+    },
+    {
+        # 2026-09-11 审计批次二（R60）：FailedCount 检查移除 = 缺继承行任务假成功
+        "id": "M43", "bug": "R60: 继承部分失败检查移除 → 缺继承行的任务照常 COMPLETED（完整视图造假）",
+        "file": "services/task-service/internal/orchestrator/incremental.go",
+        "edits": [(
+            "if n := resp.GetFailedCount(); n > 0 {",
+            "if n := resp.GetFailedCount(); false {",
+        )],
+        "expect": 1,
+        "module": "services/task-service",
+        "run": "TestRunIncrementalInherit_PartialFailureFails",
+    },
+    {
+        # 2026-09-11 审计批次二（R61）：两段校验退化为裸后缀 = 嵌套同后缀误杀（漏报）
+        "id": "M44", "bug": "R61: 后缀命中的前缀段判定移除 → vendor/pkg/util/keys.py 被 pkg/util/keys.py 误杀（漏洞消失）",
+        "file": "services/result-service/internal/service/inherit_service.go",
+        "edits": [(
+            'prefix := strings.TrimSuffix(findingPath, p) // 形如 /data/repos/uploads-x/unpacked/ 或 /x/vendor/\n\t\tif prefix == "" || prefix == "/" {\n\t\t\treturn true // 相对形态（已归一）——精确后缀即命中\n\t\t}\n\t\tif strings.HasSuffix(prefix, "/unpacked/") {\n\t\t\treturn true // 上传树根形态——真绝对路径\n\t\t}',
+            'prefix := strings.TrimSuffix(findingPath, p)\n\t\t_ = prefix\n\t\tif true {\n\t\t\treturn true\n\t\t}',
+        )],
+        "expect": 1,
+        "module": "services/result-service",
+        "run": "TestExcludedBy_TwoSegmentCheck",
+    },
+    {
+        # 2026-09-12（R71/ADR-227）：畸形帧瞬态分类移除 = 一帧坏 JSON 判回合死刑拆沙箱
+        "id": "M45", "bug": "R71: malformed SSE payload 从瞬态关键字表移除 → 流中途数据级损坏不再续跑重试，整回合作废沙箱回收",
+        "file": "services/dsh-runtime-service/internal/sandbox/session.go",
+        "edits": [(
+            '\n\t\t"malformed SSE payload",',
+            '',
+        )],
+        "expect": 1,
+        "module": "services/dsh-runtime-service",
+        "run": "TestRun_MainTurnMalformedPayloadRetry",
     },
 ]
 

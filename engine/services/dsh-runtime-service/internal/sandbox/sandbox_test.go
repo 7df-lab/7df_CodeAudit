@@ -169,6 +169,10 @@ type fakeManager struct {
 	failLaunch   bool
 	uploadCount  int    // ADR-187：项目 tar.gz 上传（POST files）次数
 	uploadPath   string // 最近一次上传的 path 字段
+	// ADR-227：可选推理路由端点（llmRouteEnv 分派测试）。启动前设置、运行期只读。
+	// 不设置时 /api/v1/inference/* 全 404 → llmRouteEnv 诚实降级回 deepseek env。
+	routeJSON    string
+	providerJSON map[string]string
 }
 
 func (f *fakeManager) handler() http.Handler {
@@ -276,7 +280,39 @@ func (f *fakeManager) handler() http.Handler {
 			fmt.Fprintf(w, `{"ok":true}`)
 		}
 	})
+	f.serveInference(mux)
 	return mux
+}
+
+// serveInference — ADR-227 可选推理端点挂载（routeJSON/providerJSON 非空时注册）。
+func (f *fakeManager) serveInference(mux *http.ServeMux) {
+	if f.routeJSON != "" {
+		mux.HandleFunc("/api/v1/inference/route", func(w http.ResponseWriter, r *http.Request) {
+			if !f.auth(r) {
+				w.WriteHeader(401)
+				fmt.Fprintf(w, `{"error":"unauthorized"}`)
+				return
+			}
+			fmt.Fprintf(w, "%s", f.routeJSON)
+		})
+	}
+	if len(f.providerJSON) > 0 {
+		mux.HandleFunc("/api/v1/inference/providers/", func(w http.ResponseWriter, r *http.Request) {
+			if !f.auth(r) {
+				w.WriteHeader(401)
+				fmt.Fprintf(w, `{"error":"unauthorized"}`)
+				return
+			}
+			name := strings.TrimPrefix(r.URL.Path, "/api/v1/inference/providers/")
+			pj, ok := f.providerJSON[name]
+			if !ok {
+				w.WriteHeader(404)
+				fmt.Fprintf(w, `{"error":"not found"}`)
+				return
+			}
+			fmt.Fprintf(w, "%s", pj)
+		})
+	}
 }
 
 func (f *fakeManager) auth(r *http.Request) bool {
@@ -1118,6 +1154,61 @@ func TestRun_MainTurnTransientRetry(t *testing.T) {
 	n, last := fb.promptCount, fb.promptText
 	fb.mu.Unlock()
 	// ADR-211：续跑指令必须带自适应缩批要求——原批量重试=重蹈覆辙（同一断流热点再撞一次）
+	if n != 2 || !strings.Contains(last, "截断") || !strings.Contains(last, "每批 1 条") {
+		t.Fatalf("prompts: n=%d last=%.80s（应为初始+带缩批要求的继续指令）", n, last)
+	}
+	if !strings.Contains(events.String(), "ADR-192") {
+		t.Fatalf("retry event log missing:\n%s", events.String())
+	}
+}
+
+// ADR-227：流中途数据级损坏（malformed SSE payload）与连接级断流同族——会话历史
+// 完好，续跑指令可恢复；不得一帧坏 JSON 即判回合死刑拆沙箱。
+// 实证 gw-a00057d9691e0097f1b546da：流式推理 2m39s 后一帧 JSON.parse 失败，
+// 非瞬态判定→整回合作废→沙箱回收→RuleScan 降级。
+func TestRun_MainTurnMalformedPayloadRetry(t *testing.T) {
+	const submitArgs = `{"findings":[{"title":"stub","severity":"SEVERITY_HIGH","cwe_id":"CWE-89","file_path":"a.py","start_line":1,"confidence":0.9,"description":"d","reasoning":"r"}]}`
+	seg1 := []string{
+		"event: session.status\ndata: {\"sessionId\":\"main\",\"status\":\"running\"}\n\n",
+		"event: session.event\ndata: {\"sessionId\":\"main\",\"event\":{\"type\":\"turn/start\",\"seq\":10,\"data\":{\"turn\":1}}}\n\n",
+		"event: session.event\ndata: " + `{"sessionId":"main","event":{"type":"assistant/message","seq":20,"data":{"message":{"content":[{"type":"text","text":"All analysis is complete. Submitting the findings."}]}}}}` + "\n\n",
+		"event: session.event\ndata: " + `{"sessionId":"main","event":{"type":"turn/end","seq":30,"data":{"turn":1,"reason":{"kind":"error","error":{"message":"malformed SSE payload: {\"id\":\"202609121435093265b73e630146a2\",\"object\":\"chat.completion.chunk\"","code":"MALFORMED_RESPONSE"}}}}}` + "\n\n",
+		"event: session.status\ndata: {\"sessionId\":\"main\",\"status\":\"idle\"}\n\n",
+	}
+	seg2 := []string{
+		"event: session.status\ndata: {\"sessionId\":\"main\",\"status\":\"running\"}\n\n",
+		"event: session.event\ndata: {\"sessionId\":\"main\",\"event\":{\"type\":\"turn/start\",\"seq\":40,\"data\":{\"turn\":2}}}\n\n",
+		`event: session.event` + "\n" + `data: {"sessionId":"main","event":{"type":"tool/call","seq":50,"data":{"turn":2,"step":1,"callId":"c-1","name":"submit_findings","arguments":"` + jsEscape(submitArgs) + `"}}}` + "\n\n",
+		"event: session.event\ndata: {\"sessionId\":\"main\",\"event\":{\"type\":\"turn/end\",\"seq\":70,\"data\":{\"turn\":2,\"reason\":{\"kind\":\"completed\"}}}}\n\n",
+		"event: session.status\ndata: {\"sessionId\":\"main\",\"status\":\"idle\"}\n\n",
+	}
+	fb := &fakeBridge{scripts: [][]string{seg1, seg2}}
+	bridgeSrv := httptest.NewServer(fb.handler())
+	defer bridgeSrv.Close()
+	fm := &fakeManager{token: "tok-1", bridgeURL: bridgeSrv.URL + "/"}
+	srv := httptest.NewServer(fm.handler())
+	defer srv.Close()
+
+	var events logwriter
+	r := NewManagerRunner(Config{
+		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1",
+		Workspace: "codeaudit", Image: "dsh-pentest-sse:1.2.0",
+		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 131072,
+		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
+		EventFn:         func(level, msg string) { events.write(fmt.Sprintf("[%s] %s\n", level, msg)) },
+	})
+	res, err := r.Run(context.Background(), Task{
+		TaskID: "t-malformed", WorkspaceDir: newTestWorkspace(t), Assignment: "审计它", Timeout: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v（修复前畸形帧即回合失败、沙箱回收）", err)
+	}
+	if !res.OK || len(res.Findings) != 1 || res.Findings[0].Title != "stub" {
+		t.Fatalf("result: %+v", res)
+	}
+	fb.mu.Lock()
+	n, last := fb.promptCount, fb.promptText
+	fb.mu.Unlock()
 	if n != 2 || !strings.Contains(last, "截断") || !strings.Contains(last, "每批 1 条") {
 		t.Fatalf("prompts: n=%d last=%.80s（应为初始+带缩批要求的继续指令）", n, last)
 	}

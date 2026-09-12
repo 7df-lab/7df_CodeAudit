@@ -96,11 +96,12 @@ export function canonicalize(s: string): string {
     .replace(/\\"/g, '"');
 }
 
-// —— Cline 同款 Levenshtein 相似度 ————————————————————————————————————————————
+// —— Cline 同款 Levenshtein 相似度（B2-8 收敛为共享实现：applyPatch.ts 亦复用本导出，
+//    消除双副本漂移风险；守卫见 guards.test.ts 相似度单一来源用例） ——————————————
 
-const SIMILARITY_THRESHOLD = 0.66;
+export const SIMILARITY_THRESHOLD = 0.66;
 
-function levenshtein(a: string, b: string): number {
+export function levenshtein(a: string, b: string): number {
   const rows = b.length + 1;
   const cols = a.length + 1;
   const m = new Array<number>(rows * cols).fill(0);
@@ -117,7 +118,7 @@ function levenshtein(a: string, b: string): number {
   return at(b.length, a.length);
 }
 
-function similarity(a: string, b: string): number {
+export function similarity(a: string, b: string): number {
   const longer = a.length >= b.length ? a : b;
   const shorter = a.length >= b.length ? b : a;
   if (longer.length === 0) return 1;
@@ -237,14 +238,14 @@ export function applyPatchToLines(fileLines: string[], patch: FilePatch): PatchR
   let fuzz = 0;
   let cursor = 0; // 顺序游标：每个 hunk 从上一锚点末尾续扫（Cline 同款，天然消歧）
 
-  const anchorAt = (h: HunkEdit, i: number, start: number): ContextHit | ContextMiss =>
+  const anchorAt = (h: HunkEdit, start: number): ContextHit | ContextMiss =>
     findContext(fileLines, h.oldLines, start, h.oldStart);
 
   // 第一轮：顺序锚定（Cline 语义，重复块消歧靠游标天然推进）
   const pending: { hunkIndex: number }[] = [];
   for (let i = 0; i < patch.hunks.length; i++) {
     const h = patch.hunks[i];
-    const m = anchorAt(h, i, cursor);
+    const m = anchorAt(h, cursor);
     if ('bestSimilarity' in m) {
       pending.push({ hunkIndex: i });
       continue;
@@ -258,7 +259,7 @@ export function applyPatchToLines(fileLines: string[], patch: FilePatch): PatchR
   // 前面），顺序游标已越过目标区域导致必然失配；回溯是最后手段，内容命中标准不变。
   for (const p of pending) {
     const h = patch.hunks[p.hunkIndex];
-    const m = anchorAt(h, p.hunkIndex, 0);
+    const m = anchorAt(h, 0);
     if ('bestSimilarity' in m) {
       failures.push({
         hunkIndex: p.hunkIndex,

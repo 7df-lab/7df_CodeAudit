@@ -13,7 +13,6 @@ from __future__ import annotations
 import base64
 import sys
 import threading
-from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from . import config
@@ -47,7 +46,7 @@ class GatewayFacade:
     def _default_client_factory():
         _ensure_sdk_path()
         try:
-            from openshell import SandboxClient  # noqa: F401
+            from openshell import SandboxClient
         except ImportError as exc:  # pragma: no cover - environment error
             raise RuntimeError(
                 f"openshell SDK not importable from "
@@ -63,7 +62,7 @@ class GatewayFacade:
     @staticmethod
     def _pb():
         _ensure_sdk_path()
-        from openshell._proto import openshell_pb2, sandbox_pb2  # noqa: F401
+        from openshell._proto import openshell_pb2, sandbox_pb2
         from google.protobuf.json_format import MessageToDict, ParseDict
         return openshell_pb2, sandbox_pb2, MessageToDict, ParseDict
 

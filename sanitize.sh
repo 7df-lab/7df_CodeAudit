@@ -36,7 +36,8 @@ HEXMAP=(
 )
 
 # ---- 不允许入库的路径模式（连同 gitignore 双保险）----
-FORBIDDEN_PATHS='(^deploy/env\.sim$|^deploy/production\.env$|^\.agent/(sessions|evidence)/)'
+# .agent = AI 会话账本/证据/锁（人类指令 2026-09-13：整目录任何层级不入库）
+FORBIDDEN_PATHS='(^deploy/env\.sim$|^deploy/production\.env$|(^|/)\.agent(/|$))'
 
 load_map() {
   declare -gA MAP=()

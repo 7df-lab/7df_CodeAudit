@@ -97,6 +97,18 @@ describe('AIInteractionLogPanel（AI 交互日志，ADR-168/170/181/188）', () 
     expect(screen.getByText('实时接收中')).toBeTruthy();
   });
 
+  it('降级空态（2026-09-11 报障）：degraded prop → 空日志如实归因 RuleScan 兜底，非默认引导文案', () => {
+    render(<AIInteractionLogPanel text="" totalBytes={0} complete onRefresh={() => {}} refreshing={false} degraded />);
+    expect(screen.getByText(/AI 已降级（RuleScan 兜底），无 AI 交互日志/)).toBeTruthy();
+    expect(screen.queryByText(/暂无交互日志/)).toBeNull();
+    // 有日志时 degraded 不改变时间线渲染（空态文案专属）
+    const { unmount } = render(
+      <AIInteractionLogPanel text={TEXT} totalBytes={2048} complete onRefresh={() => {}} refreshing={false} degraded />,
+    );
+    expect(screen.getAllByTestId('ai-interaction-log-box')[1].textContent!).toContain('DSH 会话开始');
+    unmount();
+  });
+
   it('修复回归：Modal 开关后内联时间线仍持有滚底 ref（此前共享 boxRef 被 Modal 内容抢占，关 Modal 后内联自动滚底永久失效）', () => {
     const { rerender } = renderPanel({ text: TEXT, totalBytes: 2048, complete: false });
     const inlineBox = screen.getByTestId('ai-interaction-log-box');

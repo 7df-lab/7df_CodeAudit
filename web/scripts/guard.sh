@@ -57,8 +57,8 @@ check_anchor G-03b "401 单飞刷新（E-41）" "refreshInFlight \?\? requestRef
 check_anchor G-03c "503 重试上限计数（E-44）" "_retry503" src/api/client.ts
 check_anchor G-03d "403/501/503 全局错误事件派发（E-45）" "API_ERROR_EVENT, \{ detail: status \}" src/api/client.ts
 check_anchor G-03e "refresh_token 键名（E-00c 本地存储契约）" "codeaudit\.refresh_token" src/api/client.ts
-check_anchor G-03f "上传 multipart + 120s 超时（E-11）" "multipart/form-data" src/api/client.ts
-check_anchor G-03g "上传 120s 超时（E-11）" "120_000" src/api/client.ts
+check_anchor G-03f "上传 multipart + 300s 超时（E-11）" "multipart/form-data" src/api/client.ts
+check_anchor G-03g "上传 300s 超时（E-11，B4-3 由 120s 放宽——慢速上行大包）" "300_000" src/api/client.ts
 
 echo "== G-04 泄漏与 ref 抢占修复锚点（P-05/P-11：2026-09-06 六缺陷修复）=="
 check_anchor G-04a "WS 卸载必须 close" "ws\?\.close\(\)" src/pages/tasks/TaskDetailPage.tsx

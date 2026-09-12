@@ -1,14 +1,15 @@
 // 任务创建向导（14号 §3.3 ①；04 §3 五模式分流）
-// Step4 创建 → POST /v1/tasks（网关生成幂等键）；project_path 经 config map 传递
-// （proto L1098 config；Q4 裁决：V1 为网关宿主机路径，限制在 UI 如实标注）
+// Step4 创建 → POST /v1/tasks（网关生成幂等键）；config 不再承载任务级源码键——
+// 2026-09-09 人类指令：项目层级决定源代码仓库，向导不提供重新上传/指定仓库/手填路径
+// （项目 config.upload_file_id / repo_url 由 task-service 启动时解析，ADR-203 兜底链）
+// 2026-09-11 用户报障（建任务引导）：项目列表加载失败 Alert+重试 / 空列表引导去项目页 /
+// 项目 Select 可搜索 / ?project_id= 深链预选（项目详情页直达）
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Alert, Button, Card, Checkbox, Form, Input, Radio, Select, Steps, Typography, Upload, message } from 'antd';
-import type { UploadFile } from 'antd';
+import { Alert, Button, Card, Checkbox, Form, Radio, Select, Steps, Typography, message } from 'antd';
 import { autoRunTask } from '../../tasks/stateMachine';
-import { UploadOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { createTask, getProject, getProjects, getTools, MAX_ARCHIVE_UPLOAD_BYTES, uploadArchive } from '../../api/client';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { createTask, getProject, getProjectConfig, getProjects, getTools } from '../../api/client';
 import { SCAN_MODE, REVIEW_DEPTH, zh } from '../../dict';
 
 // ADR-186 五模式矩阵（人类决策 2026-09-03）：每模式需要的参数分支（向导分支覆盖的单一来源）
@@ -33,39 +34,57 @@ export const DEFAULT_SCAN_MODE = 'SCAN_MODE_PARALLEL';
 
 export default function TaskNewPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [step, setStep] = useState(0);
   const [projectId, setProjectId] = useState<string>('');
   const [mode, setMode] = useState<string>(DEFAULT_SCAN_MODE); // ADR-182: 默认推荐模式C
-  // 人类指令 2026-09-01：创建后默认自动执行（提交→批准→启动）；勾掉则走人工门
+  // 人类指令 2026-09-01（B3-5 文案纠偏）：审批流已废除——创建→启动直达，无"提交→批准"环节；
+  // 勾掉自动启动则停在已创建，需在任务页手动点启动
   const [autoStart, setAutoStart] = useState<boolean>(true);
-  // ADR-154: 第2步 Form 在 setStep(3) 时卸载、字段注销，确认页 validateFields() 只能取到空对象
-  // （GUI 实测 POST body 为 sast_tools:[]/config:{} → 任务必然失败）。参数在此暂存，确认页消费。
-  const [uploadFileId, setUploadFileId] = useState<string>('');
-  // ADR-202: 受控 fileList——第2步 Form 卸载重建（上一步/确认页往返）后上传件展示不丢，
-  // 且与 uploadFileId 单一状态源，杜绝"输入框置灰但列表无文件"的矛盾呈现
-  const [uploadList, setUploadList] = useState<UploadFile[]>([]);
+  // 2026-09-09: 任务级源码覆盖（uploadFileId/project_path）随"项目层级决定源码"指令退役，
+  // ADR-154 的参数暂存只剩工具与审核配置
   const [params, setParams] = useState<{
-    project_path?: string;
     sast_tools?: string[];
     review_depth?: string;
     review_opts?: string[];
   }>({});
   const [form] = Form.useForm();
 
-  // ADR-203: 响应形状经 client.ts 类型化端点锚定（不再页面内 as-cast）
-  const { data: projects } = useQuery({
+  // ADR-203: 响应形状经 client.ts 类型化端点锚定（不再页面内 as-cast）。
+  // 2026-09-11 用户报障（建任务引导）：isError 显性化 + 重试（此前失败静默空列表，
+  // 用户只看到无法选择的下拉）；深链 ?project_id= 供项目详情页直达预选。
+  const { data: projects, isError: projectsError, refetch: refetchProjects } = useQuery({
     queryKey: ['projects'],
     queryFn: () => getProjects(),
   });
-  // ADR-163: 仓库模式——项目配置 repo_url 且未上传/未手填路径时，启动时后端自动 clone
-  // ADR-203 补遗: 原 ADR-148"项目 config project_path 预填"随该遗留档退役移除——
-  // 项目源码来源只剩 upload_file_id/repo_url 两档，任务未上传时手填路径仍为任务级兜底
+  // 深链预选：仅当 project_id 命中列表项才预选，未命中保持未选（不猜 ID）
+  const wantedProjectId = searchParams.get('project_id') ?? '';
+  useEffect(() => {
+    if (!wantedProjectId || projectId) return;
+    if ((projects?.projects ?? []).some((p) => p.project_id === wantedProjectId)) {
+      setProjectId(wantedProjectId);
+    }
+  }, [wantedProjectId, projects, projectId]);
+  // ADR-163: 仓库模式——项目配置 repo_url 时启动时后端自动 clone（唯一仓库通道）
   const { data: projInfo } = useQuery({
     queryKey: ['project', projectId],
     queryFn: () => getProject(projectId),
     enabled: !!projectId,
   });
   const repoURL = projInfo?.repo_url ?? '';
+  // 项目级源码来源展示（2026-09-09 人类指令：源码由项目层级决定，向导只读呈现）
+  const { data: projConfig } = useQuery({
+    queryKey: ['project-config', projectId],
+    queryFn: () => getProjectConfig(projectId),
+    enabled: !!projectId,
+  });
+  const sourceText = repoURL
+    ? `仓库自动拉取（${repoURL}）`
+    : projConfig?.config?.upload_file_name
+      ? `项目压缩包：${projConfig.config.upload_file_name}`
+      : projConfig?.config?.upload_file_id
+        ? `项目压缩包（${projConfig.config.upload_file_id}）`
+        : '';
   const repoMode = !!repoURL;
   const { data: tools, isLoading: toolsLoading } = useQuery({
     queryKey: ['tools'],
@@ -74,14 +93,10 @@ export default function TaskNewPage() {
   });
 
   const create = useMutation({
-    mutationFn: async (values: { project_path?: string; sast_tools?: string[]; review_depth?: string; review_opts?: string[] }) => {
+    mutationFn: async (values: { sast_tools?: string[]; review_depth?: string; review_opts?: string[] }) => {
       const config: Record<string, string> = {};
-      // ADR-200: storage 上传件优先（手填路径仅作未上传时的兜底）
-      if (uploadFileId) {
-        config.upload_file_id = uploadFileId;
-      } else if (values.project_path) {
-        config.project_path = values.project_path;
-      }
+      // 2026-09-09 人类指令: 不再写任务级源码键（upload_file_id/project_path）——
+      // 源码来源由项目解析；config 只承载审核类键
       if (values.review_depth) config.review_depth = values.review_depth;
       if (values.review_opts?.length) {
         config.assess_severity = String(values.review_opts.includes('assess_severity'));
@@ -98,7 +113,7 @@ export default function TaskNewPage() {
     onSuccess: (resp) => {
       const tid = resp.task_id;
       if (autoStart) {
-        message.success('任务已创建，正在自动启动（提交→批准→启动）…');
+        message.success('任务已创建，正在自动启动…'); // 审批流废除（2026-09-01）：创建→启动直达
         autoRunTask(tid).then(() => {
           message.success('扫描任务已自动启动');
         }).catch((e) => {
@@ -119,13 +134,37 @@ export default function TaskNewPage() {
 
   const stepContent: Record<number, React.ReactNode> = {
     0: (
-      <Select
-        style={{ width: 420 }}
-        placeholder="选择项目"
-        value={projectId || undefined}
-        onChange={(v) => setProjectId(v)}
-        options={(projects?.projects ?? []).map((p) => ({ value: p.project_id, label: `${p.name} (${p.project_id})` }))}
-      />
+      <div>
+        {/* 建任务引导（2026-09-11 用户报障）：项目列表加载失败显性化 + 可重试（此前失败
+            静默，下拉永远为空无从归因） */}
+        {projectsError && (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="项目列表加载失败"
+            description="项目服务暂不可用，无法选择项目。"
+            action={<Button size="small" onClick={() => refetchProjects()}>重试</Button>}
+          />
+        )}
+        <Select
+          style={{ width: 420 }}
+          placeholder="选择项目"
+          showSearch
+          optionFilterProp="label"
+          value={projectId || undefined}
+          onChange={(v) => setProjectId(v)}
+          notFoundContent={projectsError
+            ? <Typography.Text type="secondary">加载失败，请点上方重试</Typography.Text>
+            : (
+              // 空列表引导（2026-09-11 用户报障）：此前空态无任何出路提示
+              <Typography.Text type="secondary">
+                暂无项目——<Link to="/projects">前往项目页创建</Link>
+              </Typography.Text>
+            )}
+          options={(projects?.projects ?? []).map((p) => ({ value: p.project_id, label: `${p.name} (${p.project_id})` }))}
+        />
+      </div>
     ),
     1: (
       <Radio.Group
@@ -161,49 +200,23 @@ export default function TaskNewPage() {
             )}
           </>
         )}
-        <Form.Item label="上传代码压缩包（推荐）">
-          <Upload
-            maxCount={1}
-            fileList={uploadList}
-            accept=".zip,.tgz,.tar.gz"
-            beforeUpload={async (file) => {
-              if (file.size > MAX_ARCHIVE_UPLOAD_BYTES) {
-                message.error('上传失败（仅支持 zip/tar.gz，≤100MB）');
-                return false; // 100MB 本地预检：超限不发起请求（nginx 413 兜底）
-              }
-              try {
-                const res = await uploadArchive(file);
-                setUploadFileId(res.file_id); // ADR-200: file_id → config.upload_file_id（task 从 storage 拉回解包）
-                setUploadList([{ uid: res.file_id, name: file.name, status: 'done' }]);
-                message.success(`已上传至存储（${(res.size_bytes / 1024).toFixed(1)} KB），启动时自动解包`);
-              } catch {
-                message.error('上传失败（仅支持 zip/tar.gz，≤100MB）');
-              }
-              return false; // 阻止 antd 默认上传
-            }}
-            // ADR-202: 移除已上传件必须同步清 file_id，否则任务仍按 storage 通道创建（路径模式失效）
-            onRemove={() => { setUploadFileId(''); setUploadList([]); }}
-          >
-            <Button icon={<UploadOutlined />}>选择 zip / tar.gz（≤100MB）</Button>
-          </Upload>
-        </Form.Item>
-        <Form.Item
-          name="project_path"
-          label={repoMode
-            ? "扫描路径（可选：留空则启动时自动拉取仓库）"
-            : uploadFileId
-              ? "扫描路径（已上传压缩包，无需填写）"
-              : "扫描路径（网关宿主机路径；或直接上传压缩包免填）"}
-          extra={repoMode
-            ? `仓库模式：未上传/未填路径时，启动时自动 clone ${repoURL}`
-            : uploadFileId
-              ? "启动时 task 从 storage 拉回压缩包自动解包，解包目录即扫描目标（ADR-200）"
-              : "上传解包目录或手填路径均可直接扫描；仓库项目留空路径则启动时自动 clone"}
-          rules={repoMode || !!uploadFileId ? [] : [{ required: true }]} // ADR-202: 上传件优先（ADR-200 手填路径降为兜底），传包后路径免填
-        >
-          {/* ADR-202: 上传件优先于手填路径——置灰明示，避免"填了却被静默忽略" */}
-          <Input placeholder="/path/to/project" disabled={!!uploadFileId} />
-        </Form.Item>
+        {/* 2026-09-09 人类指令: 项目层级决定源代码仓库——任务向导不提供重新上传/指定
+            仓库/手填路径；源码来源=项目 config/repo_url，只读呈现 */}
+        {sourceText ? (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={`源码来源（项目级）：${sourceText}`}
+          />
+        ) : (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="该项目未配置源码来源（无仓库地址也无上传压缩包）——任务启动将失败，请先在项目页补齐"
+          />
+        )}
         {spec?.needsReviewConfig && (
           <>
             <Form.Item name="review_depth" label="审核深度（ReviewConfig.depth）" initialValue="REVIEW_DEPTH_STANDARD">
@@ -228,7 +241,7 @@ export default function TaskNewPage() {
     3: (
       <Card style={{ maxWidth: 560 }}>
         <Typography.Paragraph>
-          项目 <b>{projectId}</b> ｜ 模式 <b>{zh(SCAN_MODE, mode)}</b>
+          项目 <b>{projInfo?.name ?? projectId}</b> ｜ 模式 <b>{zh(SCAN_MODE, mode)}</b>
         </Typography.Paragraph>
         {/* ADR-154: 回显第2步参数（此前确认页不可见工具/路径，参数静默丢失无任何提示） */}
         <Typography.Paragraph type="secondary" style={{ marginBottom: 4 }}>
@@ -238,7 +251,7 @@ export default function TaskNewPage() {
               <br />
             </>
           )}
-          扫描路径：<b>{uploadFileId ? '已上传存储（启动时从 storage 拉回解包）' : params.project_path || (repoMode ? `仓库自动拉取（${repoURL}）` : '—')}</b>
+          源码来源（项目级，不可在此更改）：<b>{sourceText || '未配置——启动将失败，请先在项目页补齐'}</b>
           {spec?.needsReviewConfig && (
             <>
               <br />

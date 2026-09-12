@@ -10,6 +10,7 @@
 import type { ProgressState } from './progressModel';
 import { fmtBytes, stageLabel, taskStatusLabel } from './progressModel';
 import { escapeHtml } from './htmlEscape';
+import { newWebviewScriptCsp, NO_SCRIPT_CSP } from './webviewCsp';
 
 const LOG_TAIL = 200; // 日志展示条数（全量在平台环形缓存，面板取尾即可）
 const AI_RENDER_CAP = 256 * 1024; // webview 单次渲染正文上限（超限保尾，防巨帧卡顿）
@@ -101,11 +102,12 @@ export interface AiContextViewData {
 export function renderAiContextHtml(data: AiContextViewData): string {
   const { state } = data;
   if (!state) {
+    // 空态页无 inline script——CSP 直接 script-src 'none'（比 nonce 更简单更硬）
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="${NO_SCRIPT_CSP}">
 <style>
   body {
     font-family: var(--vscode-editor-font-family, monospace);
@@ -121,11 +123,14 @@ export function renderAiContextHtml(data: AiContextViewData): string {
   }
   const title = data.title ?? `任务 ${state.taskId.slice(0, 8)}`;
   const percent = Math.max(0, Math.min(100, state.percent));
+  // CSP nonce 化（§14 纵深）：页内贴底/增量更新脚本携带同值 nonce 才执行——注入内容
+  // （日志/AI 正文，均已 escapeHtml）即便漏出活体 <script> 也因无 nonce 被拒
+  const { nonce, content: csp } = newWebviewScriptCsp();
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="${csp}">
 <style>
   :root { color-scheme: dark light; }
   html, body { height: 100%; }
@@ -185,7 +190,7 @@ export function renderAiContextHtml(data: AiContextViewData): string {
   <h2>AI 交互上下文</h2>
   <div id="aiBody">${aiBodyInnerHtml(state)}</div>
 </section>
-<script>
+<script nonce="${nonce}">
   (function () {
     var h1 = document.getElementById('h1');
     var barFill = document.getElementById('barFill');

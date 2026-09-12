@@ -179,6 +179,9 @@ func (h *UserHandler) ListUsers(ctx context.Context, req *v1.ListUsersRequest) (
 		}
 	}
 
+	if offset > len(recs) { // R43: 游标超界钳制（对齐 ListProjects）——否则负容量 panic
+		offset = len(recs)
+	}
 	end := offset + pageSize
 	if end > len(recs) {
 		end = len(recs)

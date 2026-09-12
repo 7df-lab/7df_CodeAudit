@@ -108,14 +108,15 @@ pct exec 107 -- bash -c 'mkdir -p /root/om-build && tar -xzf /tmp/om_ctx.tgz -C 
 | `tokenFile` / `OPENSHELL_MANAGER_TOKEN` | `.token` | Bearer token；优先级 env > tokenFile（相对服务根）> config `token`；空 = 免鉴权（仅环回） |
 | `gatewayEndpoint` / `OPENSHELL_GATEWAY_ENDPOINT` | `gateway.internal:8080` | 网关 gRPC 端点 |
 | `libPath` / `OPENSHELL_LIB_PATH` | `libs/OpenShell/python` | vendored SDK 位置；回退链 = 服务自带树 > 引擎旧检出遗留路径 |
-| `maxUploadBytes` / `OPENSHELL_MANAGER_MAX_UPLOAD_BYTES` | `0`（不限） | 上传策略上限，纯防误操作——上传为流式转发，内存恒定 <1 MiB，与文件大小无关 |
+| `maxUploadBytes` / `OPENSHELL_MANAGER_MAX_UPLOAD_BYTES` | `2147483648`（2 GiB；0=不限） | 上传策略上限，纯防误操作——上传为流式转发，内存恒定 <1 MiB，与文件大小无关 |
 | `url` / `OPENSHELL_MANAGER_URL` | `http://127.0.0.1:18800` | **引擎侧**读取的服务地址（本服务自身不用） |
 
 红线：`.token`、`deploy/env` 等密钥文件不入 git（gitignore）。
 
 ## API 面
 
-`/healthz` 豁免鉴权；`/api/*` 全部要求 `Authorization: Bearer <token>`。
+`/healthz` 免鉴权；`/api/*` 全部要求 `Authorization: Bearer <token>`（tokenFile
+已配置但读失败时 fail-closed 503，B3-2——绝不静默放行）。
 
 | 方法/路径 | 说明 |
 |---|---|
@@ -125,11 +126,11 @@ pct exec 107 -- bash -c 'mkdir -p /root/om-build && tar -xzf /tmp/om_ctx.tgz -C 
 | `GET /api/v1/sandboxes?limit=` | 全工作区清单（limit 默认 500） |
 | `GET /api/v1/sandboxes/{name}?workspace=` | 查询单个 |
 | `DELETE /api/v1/sandboxes/{name}?workspace=` | 删除 → `{deleted}` |
-| `POST /api/v1/sandboxes/{name}/wait-ready` | `{workspace, timeout_seconds?=300}` |
+| `POST /api/v1/sandboxes/{name}/wait-ready` | `{workspace, timeout_seconds?=300}`（服务端上限 600s，超限 400） |
 | `POST /api/v1/sandboxes/exec` | 执行命令 `{sandbox_id, command, env?, workdir?, stdin_b64?, timeout_seconds?}`。**sandbox_id 必须传创建响应的 UUID `id` 字段，传沙箱名会 NOT_FOUND**；`command` 必须是字符串列表（裸字符串/混合类型 400，不触达网关）；`stdin_b64` 非法 base64 → 400 |
-| `GET /api/v1/sandboxes/{name}/logs?workspace=&lines=&since_ms=` | 日志（lines 默认 2000） |
+| `GET /api/v1/sandboxes/{name}/logs?workspace=&lines=&since_ms=` | 日志（lines 默认 2000；`name` 接口层先解析成 UUID 再查——B1-15 审计修复，GetSandboxLogs 只认 UUID） |
 | `POST /api/v1/sandboxes/{name}/update-config` | 热更新策略 `{workspace, policy}` |
-| `POST /api/v1/sandboxes/{name}/files` | 流式上传，**仅 multipart/form-data**（否则 415）、**必带 Content-Length**（否则 411）：表单字段 `path`（绝对路径必填，父目录自动 `mkdir -p`，含空格/通配符路径安全）、`mode`（八进制可选如 `0755`）+ 文件部分 `file` → `{path,bytes,chunks}`；`?workspace=` 缺省 default。流式转发：边收边按 720 KiB 分块经 exec stdin 写沙箱（网关收包上限实测 1 MiB），内存恒定 <1 MiB，单请求大小不限（仅受 `maxUploadBytes` 约束；20 MiB 的 `MAX_BODY_BYTES` 只管 JSON 接口） |
+| `POST /api/v1/sandboxes/{name}/files` | 流式上传，**仅 multipart/form-data**（否则 415）、**必带 Content-Length**（否则 411）：表单字段 `path`（绝对路径必填，父目录自动 `mkdir -p`，含空格/通配符路径安全）、`mode`（八进制可选如 `0755`）+ 文件部分 `file` → `{path,bytes,chunks}`；`?workspace=` 缺省 default。流式转发：边收边按 720 KiB 分块经 exec stdin 写沙箱（网关收包上限实测 1 MiB），内存恒定 <1 MiB，单请求大小受 `maxUploadBytes` 约束（缺省 2 GiB；20 MiB 的 `MAX_BODY_BYTES` 只管 JSON 接口） |
 | `POST /api/v1/sandboxes/{name}/services` | ExposeService：沙箱端口暴露为网关服务 `{workspace, service, target_port, domain?=false}` → `{name,sandbox_id,sandbox_name,target_port,domain,url}`；重暴露同名即更新 |
 | `GET /api/v1/sandboxes/{name}/services` | 该沙箱暴露服务清单（`?all_workspaces=true` 免 workspace；`limit`/`offset` 分页） |
 | `DELETE /api/v1/sandboxes/{name}/services/{service}?workspace=` | 删除暴露；不存在也返回 `{deleted:false}` |
@@ -145,13 +146,15 @@ pct exec 107 -- bash -c 'mkdir -p /root/om-build && tar -xzf /tmp/om_ctx.tgz -C 
 - **寻址双轨**：REST 路径参数一律用沙箱名（接口层内部解析 UUID，ADR-173）；
   唯 `/exec` 的 `sandbox_id` 走 UUID。
 - **错误契约**统一 `{"error": msg}`：400（缺字段/坏 JSON/非对象 body/非法数值参数/
-  **字符串字段收非字符串**/env 非"字符串到字符串"映射/command 非字符串列表/
+  **字符串字段收非字符串**/布尔字段收布尔或 "true"/"false" 以外的值/env 非"字符串到字符串"映射/command 非字符串列表/
   stdin_b64 非法/spec·policy 未知字段）、
-  401、404（含 `no route for METHOD /path`）、405（也是 `{"error":…}` 形态）、
+  401、503（tokenFile 已配置但读失败——fail-closed，B3-2）、
+  404（含 `no route for METHOD /path`）、405（也是 `{"error":…}` 形态）、
   411（上传缺 Content-Length）、413（JSON > 20 MiB 或超 `maxUploadBytes`）、
   415（上传非 multipart）、
-  502（南向异常/未捕获兜底）。客户端格式错误一律 400，绝不泄漏成 502
-  （502 会被上游按"网关不可达"重试/降级）——该红线由
+  500（南向异常/未捕获兜底，通用文案 `internal error`，细节进服务端日志——B3-3）。
+  客户端格式错误一律 400，绝不泄漏成 5xx
+  （5xx 会被上游按服务端故障重试/降级）——该红线由
   `tests/test_guardrails.py` 结构守门 + `REGRESSIONS.md` R6/R11 档案锁定。
 - 上传先写 `.part` 全部落盘后原子改名，失败自动清理。
 
@@ -161,8 +164,8 @@ manager 进程本身是纯传输层；LXC 107 内网关容器的部署与生命�
 兄弟子模块 `../openshell-gateway/`（原 `CD/openshell-gateway/`，不暴露
 HTTP 接口）：`deploy.sh` 差量下发，`gateway_lifecycle.sh`
 ensure/verify/status/start/stop/restart；`ensure` 幂等强制服务路由域
-`server_sans = ["*.openshell.internal"]`（沙箱服务 URL 形如
-`http://{workspace}--{sandbox}--{service}.openshell.internal:8080/`，旧默认
+`server_sans = ["*.sandbox.codeaudit.internal"]`（沙箱服务 URL 形如
+`http://{workspace}--{sandbox}--{service}.sandbox.codeaudit.internal:8080/`，旧默认
 域 `openshell.localhost` 仍兜底）。拓扑与纪律见其 `README.md`。
 
 ## 引擎侧接入

@@ -39,6 +39,27 @@ Kafka task.completed ──> result-service(自动 GenerateReport, 幂等键 kaf
 | E COMPARE | 并行后 CompareResults（不合并） |
 | 旧 B/D（TRADITIONAL_FIRST/SAST_REVIEW） | 历史兼容路径 |
 
+### 1.2a 增量扫描流（ADR-225；`config.incremental="true"` 触发， Prepare 内解析）
+
+```
+新树就位（§1.1 解析链产出，包装层 incremental.go）
+  → 基线选定：显式 baseline_task_id 优先（创建时已三重校验）；自动=同项目 COMPLETED
+    且源码可达者取 created_at 最新（不可达顺延更早——差异面只大不小，语义安全）
+  → 基线树三级：卷树在位直用 → 无卷树则 upload_file_id 重解包 scratch（diff 后清理）
+  → 内容 diff：两侧剥壳对齐 → 逐文件 sha256 → changed/deleted（排除 .git 与
+    .codeaudit-incremental.diff）+ 行级 unified diff（AI 素材，256KB 上限）
+  → 快照回写 ScanTask（baseline/changed/deleted/diff_source=content 随 PG payload；重试不重算）
+  → Execute 前置 InheritFindings（result-service：未变更文件 findings 物化继承，幂等键
+    <task>-inherit，连带 verdict/AI 建议终态，inherited_from_task_id 标记）
+  → SAST changed_files 传导（files_argv 文件清单模式；零变更=零工具调用）
+  → AI 任务卡注入变更清单+diff（沙箱树仍全量；大 diff 落项目树 .codeaudit-incremental.diff 指路）
+降级（诚实无静默，config.incremental_degraded_reason 记因）：no_baseline /
+baseline_unavailable / diff_failed → 按全量继续，增量上下文不激活
+```
+
+`diff_hint`（客户端 git diff --name-status）仅交叉核对：与服务端结果不一致记任务日志
+WARN，changed/deleted 恒以服务端内容 diff 为准（D5：权威可自证）。
+
 ### 1.3 阶段上报与进度流
 
 - 启动按模式预注册 stages（Metadata 就地初始化——ADR-212① nil map panic 教训）。
@@ -172,9 +193,11 @@ FuseResults 五阶段: ①FP过滤(ai_verdict=FP 且 conf>0.8) ②位置合并(f
 
 ### MinIO（仅 storage-service）
 
-桶=默认桶 + reports/cpg/sast-raw/uploads（启动自动建）。键规范：数据 `files/<file_id>`（域桶
+桶=默认桶 + reports/cpg/sast-raw/uploads/trees（启动自动建）。键规范：数据 `files/<file_id>`（域桶
 按 FilePath 前缀分派）；元数据 `meta/files/<file_id>`（恒默认桶）；上传原件 `uploads/up-<hex><ext>`；
-报告 `reports/<report_id>.json`；导出 `exports/findings-<task_id>.json`。
+报告 `reports/<report_id>.json`；导出 `exports/findings-<task_id>.json`；源码树 tar
+`trees/<task_id>.tar.gz`（ADR-225 D6：剥壳根快照，file_id 回写 task.config.tree_tar_file_id，
+为 gateway ⑤流重物化与卷缓存 GC 删除前提的锚点）。
 
 ### 本地文件系统（隐性跨服务契约，无 proto 承载）
 
@@ -261,8 +284,18 @@ FuseResults 五阶段: ①FP过滤(ai_verdict=FP 且 conf>0.8) ②位置合并(f
 - **凭据单向流**：credentials 仅存在于写请求（POST/PUT providers）经 manager →
   网关加密存储；一切读路径（list/get/route）不回流凭据（manager 按省略脱敏）。
 - **生效路径不变**：provider/路由变更影响的是**下一个任务**的 AI 阶段——沙箱启动时
-  网关按当前路由注入 `DEEPSEEK_BASE_URL=https://inference.local/v1` + 引用凭据，
-  运行中任务不受影响。
+  引擎按当前路由类型注入 LLM env（ADR-227）：openai 兼容族 → `DEEPSEEK_BASE_URL=
+  https://inference.local/v1` + 引用凭据（网关对标准路由请求体改写 model 字段，
+  缺省模型名即可）；anthropic 型 → `DSH_PROVIDER=anthropic-relay DSH_MODEL=<路由
+  真实模型名> ANTHROPIC_API_KEY=openshell-injected`——bridge 在 $DSH_HOME/
+  settings.yaml 烘焙 llm-pi-ai 的 anthropic-messages 路由（baseURL=inference.local，
+  L7 对 anthropic 协议原生直通，2026-09-12 sim 实测 200 流式/非流式；直通路径网关
+  不改写 model，故模型名必须与路由一致）。运行中任务不受影响；路由读取失败按缺省
+  deepseek env 拉起 + warn（诚实降级）。
 - **连通性验证**：PUT /v1/inference/route（no_verify=false 缺省）→ 网关实测推理端点，
   回执 validation_performed/validated_endpoints 逐层透传至前端；验证失败按 manager
-  错误原样透出（切换不生效，诚实失败）。
+  错误原样透出（切换不生效，诚实失败）。anthropic 型验证走 BASE_URL 指定端点的
+  `/v1/messages`（anthropic_messages 协议；2026-09-12 智谱 anthropic 端点实测
+  validated_endpoints=[https://open.bigmodel.cn/api/anthropic/v1/messages]）。
+  已知边界：BASE_URL 为明文 http:// 时网关验证层回落官方 api.anthropic.com
+  （区域 403）——anthropic 型 BASE_URL 须 https。

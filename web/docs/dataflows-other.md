@@ -69,9 +69,9 @@ Shell 与 LoginPage 双处消费防闪烁。锚点：session.test.tsx。
 
 | 流 | 契约 | 锚点 |
 |----|------|------|
-| 任务向导上传 | `Upload.beforeUpload` → `uploadArchive(file)` → file_id 置 state + fileList done → `return false` 阻断 antd 默认上传；`onRemove` 必须同步清 file_id（否则任务仍走 storage 通道——ADR-202「输入框置灰但列表有文件」矛盾态） | TaskNewPage.test.tsx |
-| 项目弹窗上传 | `Upload.Dragger.beforeUpload` → 同上，但 `return Upload.LIST_IGNORE`（受控 fileList 禁 antd 追加）；弹窗重开/提交后清空（防 file_id 残留跨项目） | ProjectsPage.test.tsx |
-| 创建后自动链 | 建任务成功 → `autoRunTask`（start）失败仅 warning 不阻塞导航（任务页可手动续走）；建项目成功 → 自动 createTask(config 留空) → autoRun → navigate 任务页 | ProjectsPage.test.tsx |
+| ~~任务向导上传~~ | **已退役（2026-09-09 人类指令"项目层级决定源代码仓库"）**：任务向导不再提供上传/仓库/路径输入，源码来源由项目解析（任务 config 留空，启动时 task-service 走 ADR-203 兜底链）；原 onRemove 清 file_id 矛盾态（ADR-202/P-16）随控件移除消失 | TaskNewPage.test.tsx（无上传控件锁） |
+| 项目弹窗上传 | `Upload.Dragger.beforeUpload` → `uploadArchive(file)` → file_id+原始文件名一并落项目 config（upload_file_id/upload_file_name，2026-09-09）→ `return Upload.LIST_IGNORE`（受控 fileList 禁 antd 追加）；`onRemove` 同步清两态（防 file_id 残留跨项目）；弹窗重开/提交后清空 | ProjectsPage.test.tsx |
+| 创建后自动链 | 建任务成功 → `autoRunTask`（start）失败仅 warning 不阻塞导航（任务页可手动续走）；建项目成功 → 自动 createTask(config 留空) → autoRun → navigate 任务页；项目详情页快建任务同链（2026-09-09） | ProjectsPage.test.tsx；ProjectDetailPage.test.tsx |
 
 ## D-6 反代与代理链（部署面）
 

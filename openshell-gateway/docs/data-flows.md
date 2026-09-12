@@ -36,11 +36,11 @@ openshell CLI / manager(:18800, 纯HTTP→gRPC管道)
 ## D2. 服务路由域暴露流
 
 ```
-gateway.toml server_sans = ["*.openshell.internal"]
+gateway.toml server_sans = ["*.sandbox.codeaudit.internal"]
         │  （lifecycle ensure 幂等钉住；TOML 是唯一配置源）
         ▼
-服务 URL：http://{workspace}--{sandbox}--{service}.openshell.internal:8080/
-        │  客户端解析：gateway.internal 与 *.openshell.internal → gateway.internal
+服务 URL：http://{workspace}--{sandbox}--{service}.sandbox.codeaudit.internal:8080/
+        │  客户端解析：gateway.internal 与 *.sandbox.codeaudit.internal → gateway.internal
         │  （hosts/内网 DNS；公共 DNS 的 *.internal 停靠过期域页面，不可用）
         ▼
 8080 发布端口 → 容器内 loopback bind —— docker driver 自动在桥接接口加监听，

@@ -3,6 +3,7 @@
 // fetch 可注入以便单测（Node 22 全局 fetch / FormData / Blob 均可用）。
 import type {
   FindingsPage,
+  GitAnchor,
   LoginResponse,
   PaginationResponse,
   Project,
@@ -41,7 +42,8 @@ export interface TokenStore {
   getAccessToken(): string;
   setTokens(access: string, refresh?: string): void;
   getRefreshToken(): string;
-  clear(): void;
+  /** silent=true：主动登出——不触发上层"会话失效"告警（用户已知晓） */
+  clear(silent?: boolean): void;
 }
 
 // 429 限流退避（对齐 console client.ts noteRateLimit：5~60s 钳位）
@@ -49,6 +51,12 @@ export function backoffMs(retryAfterS: number | undefined, nowMs: number): numbe
   const s = Math.min(Math.max(retryAfterS ?? 15, 5), 60);
   return nowMs + s * 1000;
 }
+
+// REST 超时（B2-7）：模块级常量 + export（可测试、可被调用方引用）。
+// 经 AbortSignal.timeout 注入 fetch——网关挂死时请求不再无限悬挂（轮询/watcher
+// 会堆积在途请求）。Node ≥17.3 / 现代浏览器原生支持。
+export const REQUEST_TIMEOUT_MS = 60_000; // 普通 JSON 请求
+export const UPLOAD_TIMEOUT_MS = 600_000; // 工作区 zip 上传（可达数十 MB）走 10 分钟长档
 
 export class CodeAuditClient {
   private refreshInFlight: Promise<string> | null = null;
@@ -88,7 +96,7 @@ export class CodeAuditClient {
     try {
       await this.requestJson('POST', '/v1/auth/logout', { access_token: this.tokens.getAccessToken() }, { skipAuth: true });
     } finally {
-      this.tokens.clear();
+      this.tokens.clear(true); // 用户主动登出：静默清凭据，不触发"会话失效"告警（B5-2）
     }
   }
 
@@ -96,38 +104,38 @@ export class CodeAuditClient {
     return !!this.tokens.getAccessToken() || !!this.tokens.getRefreshToken();
   }
 
-  // 项目/任务列表：自动翻页累积（page_size=100，同 listFindings 口径）——
-  // 网关缺省 page_size=20/上限 100（proto L244），不带分页裸调只拿首页，条目多时静默截断
-  async listProjects(): Promise<Project[]> {
-    const all: Project[] = [];
+  // 列表自动翻页累积（listProjects/listTasks/listFindings 共用）：page_size=100，
+  // 上限 50 页防御——网关缺省 page_size=20/上限 100（proto L244），不带分页裸调
+  // 只拿首页，条目多时静默截断。
+  private async paginateAll<P extends { pagination?: PaginationResponse }, R>(
+    path: string,
+    extra: Record<string, unknown>,
+    pick: (page: P) => R[],
+  ): Promise<R[]> {
+    const all: R[] = [];
     let cursor = '';
     for (let i = 0; i < 50; i++) {
-      const page = await this.requestJson<{ projects?: Project[]; pagination?: PaginationResponse }>('GET', '/v1/projects', undefined, {
-        query: { pagination: { page_size: 100, cursor } },
+      const page = await this.requestJson<P>('GET', path, undefined, {
+        query: { ...extra, pagination: { page_size: 100, cursor } },
       });
-      all.push(...(page.projects ?? []));
+      all.push(...pick(page));
       if (!page.pagination?.has_next) break;
       cursor = page.pagination.next_cursor;
     }
     return all;
   }
 
+  async listProjects(): Promise<Project[]> {
+    return this.paginateAll<{ projects?: Project[]; pagination?: PaginationResponse }, Project>('/v1/projects', {}, (p) => p.projects ?? []);
+  }
+
   /** 任务列表（按创建时间倒序）；projectId 缺省时返回全部项目任务 */
   async listTasks(projectId?: string): Promise<TaskSummary[]> {
-    const all: TaskSummary[] = [];
-    let cursor = '';
-    for (let i = 0; i < 50; i++) {
-      const page = await this.requestJson<{ tasks?: TaskSummary[]; pagination?: PaginationResponse }>('GET', '/v1/tasks', undefined, {
-        query: {
-          ...(projectId ? { project_id: projectId } : {}),
-          pagination: { page_size: 100, cursor },
-        },
-      });
-      all.push(...(page.tasks ?? []));
-      if (!page.pagination?.has_next) break;
-      cursor = page.pagination.next_cursor;
-    }
-    return all;
+    return this.paginateAll<{ tasks?: TaskSummary[]; pagination?: PaginationResponse }, TaskSummary>(
+      '/v1/tasks',
+      projectId ? { project_id: projectId } : {},
+      (p) => p.tasks ?? [],
+    );
   }
 
   async listTools(): Promise<ToolInfo[]> {
@@ -141,13 +149,28 @@ export class CodeAuditClient {
     return this.requestJson<UploadResult>('POST', '/v1/uploads/archive', fd);
   }
 
-  async createTask(projectId: string, scanMode: string, sastTools: string[], config: Record<string, string>): Promise<ScanTask> {
-    return this.requestJson<ScanTask>('POST', '/v1/tasks', {
+  /** 增量扫描载荷（ADR-225 D5 类型化契约；全量任务不携带任何键，行为与旧客户端一致） */
+  async createTask(
+    projectId: string,
+    scanMode: string,
+    sastTools: string[],
+    config: Record<string, string>,
+    incremental?: { baseline_task_id?: string; git_anchor?: GitAnchor | null; diff_hint?: string },
+  ): Promise<ScanTask> {
+    const body: Record<string, unknown> = {
       project_id: projectId,
       scan_mode: scanMode,
       sast_tools: sastTools,
       config,
-    });
+    };
+    if (incremental) {
+      // incremental=true + 锚点/提示；显式基线仅在用户明确指定时携带（当前 UX 为自动选定）
+      body.incremental = true;
+      if (incremental.baseline_task_id) body.baseline_task_id = incremental.baseline_task_id;
+      if (incremental.git_anchor) body.git_anchor = incremental.git_anchor;
+      if (incremental.diff_hint) body.diff_hint = incremental.diff_hint;
+    }
+    return this.requestJson<ScanTask>('POST', '/v1/tasks', body);
   }
 
   async startTask(taskId: string): Promise<void> {
@@ -185,19 +208,9 @@ export class CodeAuditClient {
     });
   }
 
-  // 单任务 findings：自动翻页累积（page_size=100，与 console FindingsPage 口径一致）
+  // 单任务 findings：自动翻页累积（与 console FindingsPage 口径一致，走 paginateAll）
   async listFindings(taskId: string): Promise<UnifiedFinding[]> {
-    const all: UnifiedFinding[] = [];
-    let cursor = '';
-    for (let i = 0; i < 50; i++) {
-      const page = await this.requestJson<FindingsPage>('GET', '/v1/findings', undefined, {
-        query: { task_id: taskId, pagination: { page_size: 100, cursor } },
-      });
-      all.push(...(page.findings ?? []));
-      if (!page.pagination?.has_next) break;
-      cursor = page.pagination.next_cursor;
-    }
-    return all;
+    return this.paginateAll<FindingsPage, UnifiedFinding>('/v1/findings', { task_id: taskId }, (p) => p.findings ?? []);
   }
 
   // 刷新直接裸 fetch：不经 requestJson 的 401 拦截（避免刷新请求自身 401 触发递归刷新）
@@ -213,6 +226,7 @@ export class CodeAuditClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token: refresh }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (e) {
       this.markOffline(true); // 网络层失败 ≠ 会话失效：不清凭据，仅标离线
@@ -220,7 +234,10 @@ export class CodeAuditClient {
     }
     this.markOffline(false);
     if (!resp.ok) {
-      this.tokens.clear();
+      // 仅 401 = 服务端明确拒绝该 refresh token（会话失效）才清凭据（B2-3）：
+      // 502/429 等瞬态失败保留缓存 token——网关抖动/限流不该把用户登出，
+      // 离线态下凭据仍在（isLoggedIn 保持 true，恢复后可自动续期）
+      if (resp.status === 401) this.tokens.clear();
       throw new ApiError(resp.status, `refresh failed: ${resp.status}`);
     }
     const data = (await resp.json()) as LoginResponse;
@@ -245,6 +262,8 @@ export class CodeAuditClient {
           method,
           headers,
           body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body),
+          // 超时档位按请求形态区分（B2-7）：multipart 上传走 600s 长档，其余 60s
+          signal: AbortSignal.timeout(body instanceof FormData ? UPLOAD_TIMEOUT_MS : REQUEST_TIMEOUT_MS),
         });
       } catch (e) {
         // 网络层失败（ECONNREFUSED/DNS/代理拒绝）：网关不可达。不清凭据（离线 ≠ 会话失效），
@@ -254,9 +273,17 @@ export class CodeAuditClient {
       }
       this.markOffline(false); // 收到任何 HTTP 响应（含 4xx/5xx）= 网关可达
       if (resp.status === 429) {
-        const errBody = (await resp.json().catch(() => ({}))) as { retry_after?: number };
-        const retryAfter = Number(errBody.retry_after);
+        // body 只读一次（回归锁）：先 json() 再 text() 的双读会因 body 已消费把响应体
+        // 静默吞成空串——text 读取后就地解析 retry_after 并直接抛出（body 全文随错误透出）
+        const text = await resp.text().catch(() => '');
+        let retryAfter: number | undefined;
+        try {
+          retryAfter = Number((JSON.parse(text) as { retry_after?: number }).retry_after);
+        } catch {
+          /* body 非 JSON：按缺省退避 */
+        }
         this.rateLimitUntil = backoffMs(Number.isFinite(retryAfter) ? retryAfter : undefined, Date.now());
+        throw new ApiError(429, `${method} ${path} -> 429: ${text.slice(0, 300)}`, text);
       }
       if (resp.status === 401 && !retried && !opts.skipAuth) {
         const fresh = await this.singleFlightRefresh();

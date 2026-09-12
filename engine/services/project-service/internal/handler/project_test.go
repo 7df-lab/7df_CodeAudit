@@ -27,7 +27,9 @@ func setupProjectHandler() *handler.ProjectHandler {
 	return handler.NewProjectHandler(svc, idm)
 }
 
-func setupUserHandler() *handler.UserHandler {
+func setupUserHandler(t *testing.T) *handler.UserHandler {
+	t.Helper()
+	t.Setenv("CODEAUDIT_JWT_SECRET", "test-secret-r65") // R65: jwtSecret fail-fast 后测试须显式供密钥
 	store := repo.NewMemoryStore()
 	idm := idempotency.New()
 	svc := service.NewUserService(store)
@@ -355,7 +357,7 @@ func TestIdempotencyBodyHash(t *testing.T) {
 // ---- UserService Tests ----
 
 func TestLogin_ReturnsValidJWT(t *testing.T) {
-	h := setupUserHandler()
+	h := setupUserHandler(t)
 
 	resp, err := h.Login(context.Background(), &v1.LoginRequest{
 		Username: "admin",
@@ -383,7 +385,7 @@ func TestLogin_ReturnsValidJWT(t *testing.T) {
 }
 
 func TestLogin_InvalidCredentials(t *testing.T) {
-	h := setupUserHandler()
+	h := setupUserHandler(t)
 
 	_, err := h.Login(context.Background(), &v1.LoginRequest{
 		Username: "admin",
@@ -403,7 +405,7 @@ func TestLogin_InvalidCredentials(t *testing.T) {
 }
 
 func TestLogin_NonexistentUser(t *testing.T) {
-	h := setupUserHandler()
+	h := setupUserHandler(t)
 
 	_, err := h.Login(context.Background(), &v1.LoginRequest{
 		Username: "nobody",
@@ -415,7 +417,7 @@ func TestLogin_NonexistentUser(t *testing.T) {
 }
 
 func TestGetUser(t *testing.T) {
-	h := setupUserHandler()
+	h := setupUserHandler(t)
 
 	user, err := h.GetUser(context.Background(), &v1.GetUserRequest{
 		UserId: "user-001",
@@ -429,7 +431,7 @@ func TestGetUser(t *testing.T) {
 }
 
 func TestValidatePermission(t *testing.T) {
-	h := setupUserHandler()
+	h := setupUserHandler(t)
 
 	resp, err := h.ValidatePermission(context.Background(), &v1.ValidatePermissionRequest{
 		UserId:       "user-001",
@@ -448,7 +450,7 @@ func TestValidatePermission(t *testing.T) {
 }
 
 func TestGetUserPermissions(t *testing.T) {
-	h := setupUserHandler()
+	h := setupUserHandler(t)
 
 	resp, err := h.GetUserPermissions(context.Background(), &v1.GetUserPermissionsRequest{
 		UserId: "user-001",
@@ -530,3 +532,4 @@ func TestCreateProjectRejectsMissingProject(t *testing.T) {
 		}
 	}
 }
+

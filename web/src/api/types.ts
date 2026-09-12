@@ -7,7 +7,7 @@ export interface ScanTask {
   status: string;
   stages: TaskStage[];
   created_at: string | null;
-  updated_at: string | null;
+    updated_at: string | null;
   error_message: string;
   retry_count: number;
 }
@@ -98,6 +98,7 @@ export interface UnifiedFinding {
   ai_confidence: number;
   ai_reasoning: string;
   ai_fix_suggestion: string;
+  created_at?: string | null;
   updated_at?: string | null; // ADR-152: 复核时间（此前恒空，页面无从显示变动）
   // proto L67 source_raw（原始输出 JSON 序列化；protojson bytes→base64）——ADR-141 复核上下文
   source_raw?: string;
@@ -105,6 +106,9 @@ export interface UnifiedFinding {
   dedup_group: string;
   matched_findings: string[];
   is_unique: boolean;
+  // 增量扫描继承标记（ADR-225）：空=本任务实扫产出；非空=从该基线任务复制的继承项
+  //（连带 verdict/AI 建议终态；双视图"全部/新发现/继承"筛选的数据源）
+  inherited_from_task_id?: string;
 }
 
 export interface ComparisonMetrics {

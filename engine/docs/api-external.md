@@ -40,7 +40,7 @@ gateway 是**唯一外部入口**（纯 HTTP，无 gRPC 服务端；7 服务中�
   **TTL 现值**：access 1h / refresh 24h（`project-service/internal/service/user.go:19-21` 硬编码，
   `expires_in_s` 返回 3600）——与设计文档 03 §4（30min/7d）及 yaml 死键
   `gateway.jwt.access_ttl_min/refresh_ttl_day` **不一致**，见 §7 漂移表。
-- **限流**（`middleware/ratelimit.go`）：令牌桶 50 req/min（`gateway.rate_limit_per_min`）。
+- **限流**（`middleware/ratelimit.go`）：令牌桶 100 req/min（`gateway.rate_limit_per_min`，2026-09-10 人类指令 50→100）。
   键 = `user:<JWT sub>`（已认证）/ 客户端 IP（未认证）；XFF 仅 `trust_proxy=true` 时取**最右**
   值（ADR-212 防伪造）。超限 429 `{"error":"rate limit exceeded","retry_after":60}` + `Retry-After: 60`。
 - **响应 JSON 规则**（protojson `{EmitUnpopulated:true, UseProtoNames:true}`）：**snake_case 键、
@@ -134,6 +134,7 @@ gateway 是**唯一外部入口**（纯 HTTP，无 gRPC 服务端；7 服务中�
 | GET /v1/tools | JWT | 本地组装（ListAvailableTools + 逐工具 ValidateToolConfig） |
 | GET /v1/notifications | JWT（user_id 强制 JWT） | NotificationService/ListNotifications |
 | POST /v1/notifications/{id}/read | JWT（归属核验前置） | NotificationService/MarkNotificationRead |
+| POST /v1/notifications/read-all | JWT（List 未读+逐条标记组合，ADR-222） | NotificationService/ListNotifications + MarkNotificationRead |
 | GET /v1/inference/providers | JWT+admin | DSHRuntimeService/ListInferenceProviders |
 | POST /v1/inference/providers | JWT+admin | DSHRuntimeService/UpsertInferenceProvider |
 | GET /v1/inference/providers/{id} | JWT+admin | DSHRuntimeService/GetInferenceProvider |
@@ -205,9 +206,18 @@ gateway 是**唯一外部入口**（纯 HTTP，无 gRPC 服务端；7 服务中�
 - **POST**：body `{"project_id":str 必填, "scan_mode":enum, "sast_tools":[str], "priority":enum,
   "config":{str:str}}`（scan_mode 枚举名如 `SCAN_MODE_PARALLEL`/`SCAN_MODE_SAST_ONLY`/`SCAN_MODE_AI_ONLY`/
   `SCAN_MODE_AI_ENHANCED_SAST`/`SCAN_MODE_COMPARE`）。`created_by` 网关自 JWT 注入（ADR-199）。
+  **增量扫描（ADR-225，可选）**：`"incremental":bool`（增量意图）+ `"baseline_task_id":str`
+  （显式基线：存在/同项目/COMPLETED 三者齐备，否则创建即 400，不静默替换；缺省=服务端按
+  "同项目最近 COMPLETED 且源码可达"自动选定）+ `"git_anchor":{"commit","branch","dirty","remote"}`
+  （插件采集的版本锚点快照，非 git 工作区可省）+ `"diff_hint":str`（客户端 git diff
+  --name-status 原文，仅审计提示不作 diff 依据）。无可用基线/diff 失败时**自动降级全量**，
+  任务 `config.incremental_degraded_reason` 如实记因（诚实降级，无静默）。
   输出 ScanTask：`{"task_id","project_id","scan_mode","sast_tools","status","priority","stages":[...],
-  "created_at","updated_at","created_by","error_message","retry_count","config"}`。
-  **task_id = 网关幂等键**（同键重放返回原任务）。创建后网关写任务→上传目录链接文件
+  "created_at","updated_at","created_by","error_message","retry_count","config",
+  "baseline_task_id","changed_files":[str],"deleted_files":[str],"git_anchor":{...},"diff_source"}`
+  ——增量快照在 StartTask 的 Prepare 阶段回写（`diff_source="content"`；空 baseline=全量或已降级），
+  重试不重算；changed/deleted 为相对剥壳后项目根的规范化路径。
+  **task_id = 网关幂等键**（同键重放返回原任务；增量四字段入同键异体指纹）。创建后网关写任务→上传目录链接文件
   `.codeaudit-task-<task_id>`（失败仅日志）。
 - **GET 列表**：query `pagination`/`project_id`/`filter`（filter 仅支持 scan_mode/status 字段
   与 EQ/NEQ 算子，其余 400）。输出 `{"tasks":[ScanTask],"pagination":{...}}`；稳定序 created_at 升序。
@@ -244,7 +254,9 @@ gateway 是**唯一外部入口**（纯 HTTP，无 gRPC 服务端；7 服务中�
   `{"findings":[UnifiedFinding],"pagination":{...}}`。UnifiedFinding 核心字段：
   `finding_id/task_id/project_id/source_tool/source_rule_id/source_raw(base64)/location{...}/
   cwe_id/title/description/severity/confidence/evidence{...}/ai_verdict/ai_confidence/ai_reasoning/
-  ai_fix_suggestion/diff_patch/matched_findings/is_unique/dedup_group/status/created_at/updated_at`。
+  ai_fix_suggestion/diff_patch/matched_findings/is_unique/dedup_group/status/created_at/updated_at/
+  inherited_from_task_id`（ADR-225：空=本任务实扫产出；非空=从该基线任务复制的继承项——
+  连带 verdict/AI 建议终态，双视图筛选的来源标记）。
   分页默认 20、上限 100（`result.page_size_default/max`）；cursor 为 base64(JSON)，坏 → 400。
 - **GET {id}**：输出 `{"finding":UnifiedFinding}`；404。
 - **PUT {id}/verdict**：body `{"verdict":enum,"confidence":float,"reasoning":str}`；
@@ -274,13 +286,37 @@ gateway 是**唯一外部入口**（纯 HTTP，无 gRPC 服务端；7 服务中�
   "created_at","read"}],"pagination":{...}}`。
 - **POST {id}/read**：先 List 本人通知做归属核验（ADR-212⑩），非本人 → 404
   `notification not found`；核验调用失败 → 502。输出 Notification。
+- **POST read-all**：一键全部已读（ADR-222）。组合式实现（零 proto 改动，ADR-212 同款）：
+  List 本人未读（user_id 强制 JWT，归属天然安全）→ 逐条 MarkNotificationRead；
+  单条失败不整批失败，计数如实返回。输出 `{"marked":int}`。
 
 ### 3.11 /v1/inference/*（推理 provider/路由管理面，ADR-217）
 
 全部 **JWT+admin**（requireAdmin；非 admin → 403）。透传链：gateway →
 DSHRuntimeService → openshell-manager `/api/v1/inference/*` → OpenShell 网关
 （权威存储 gateway.db）。workspace 不对外暴露（dsh-runtime 从全局配置
-`dsh_runtime.sandbox.workspace` 注入）。**credentials 只进不出**：任何响应不回显凭据。
+`dsh_runtime.sandbox.workspace` 注入）。**credentials 只进不出**：任何响应不回显凭据
+（因此前端无法显示"已设置"，以保存成功回执为准；编辑时凭据留空提交 = 清空已存凭据，
+网关 PUT 缺省 `{}` 语义，前端已加确认拦截）。
+
+**键名约定（R55，2026-09-11）**：OpenShell 网关按约定**大写键**解析端点——
+openai/openai-compatible/deepseek/zhipu 型：config `OPENAI_BASE_URL` +
+credentials `OPENAI_API_KEY`；anthropic 型：`BASE_URL`/`API_KEY`。小写别名键
+（`base_url`/`baseurl`/`api_key`/`apikey`）会被网关**静默存储但不被识别**，切路由
+连通性验证时才失败——dsh-runtime-service 入口现已拒绝并指路约定键名（自定义无关键不受影响）。
+
+**类型×沙箱适配器能力（R56 附属事实 → ADR-227 修订，2026-09-12）**：
+**anthropic 型 provider 可用于 AI 审计**。链路：沙箱 DSH 经 llm-pi-ai 的
+anthropic-messages 适配器（随 sdk profile 发布，bridge 按 `DSH_PROVIDER=
+anthropic-relay` 在 $DSH_HOME/settings.yaml 激活）打网关 L7 inference.local 的
+`/v1/messages`——anthropic 协议**原生直通**（sim 实测 200 流式/非流式），凭据由
+网关按路由携带（沙箱 env 只见 openshell-injected 占位符）；上游 BASE_URL 由用户
+自填（任意 anthropic 兼容端点，如智谱 `https://open.bigmodel.cn/api/anthropic`，
+切路由验证实测 `validated_endpoints=[.../api/anthropic/v1/messages]`）。openai 兼容
+族仍走 deepseek 适配器 + L7 `/v1/chat/completions`（网关改写 model 字段）。已知
+边界两条：①L7 无兼容路由时 `/v1/messages` 报 400 "no compatible inference route
+available"（此前"anthropic 400 拒"的实为该形态）；②BASE_URL 明文 http:// 时网关
+验证层回落官方 api.anthropic.com（区域 403）——**anthropic 型 BASE_URL 须 https**。
 
 - **GET /providers**：输出 `{"providers":[{"name","type","config":{str:str}}]}`（无凭据）。
 - **POST /providers**：body `{"name":str 必填,"type":str 必填,"credentials":{str:str},
@@ -335,7 +371,7 @@ DSHRuntimeService → openshell-manager `/api/v1/inference/*` → OpenShell 网�
 | `addresses.sast_adapter` | `CODEAUDIT_SAST_ADAPTER_ADDR` | localhost:50051 | |
 | `addresses.dsh_runtime` | `CODEAUDIT_DSH_RUNTIME_ADDR` | localhost:50057 | |
 | `gateway.trust_proxy` | `CODEAUDIT_TRUST_PROXY` | false | 信任 XFF（仅可信代理后开启） |
-| `gateway.rate_limit_per_min` | — | 50 | 限流 |
+| `gateway.rate_limit_per_min` | — | 100 | 限流（07 §7，2026-09-10 调整） |
 | `gateway.grpc_call_timeout_s` | — | 30 | 南向调用上界 |
 | `gateway.shutdown_grace_s` | — | 15 | 优雅停机排空窗口 |
 | `gateway.uploads_dir` | — | data/uploads | source-file 遗留读路径 |
@@ -359,8 +395,8 @@ task-service 同卷——source-file 读的就是 task 解包/clone 的树）。
 
 | # | 漂移 | 事实（代码） | 影响 |
 |---|---|---|---|
-| D1 | `configs/codeaudit.yaml:48-50` `gateway.jwt.access_ttl_min(30)/refresh_ttl_day(7)` 无任何代码消费 | TTL 硬编码 access 1h / refresh 24h（user.go:19-21，注释引 03 §4 但值不符） | 死配置误导运维；03 §4（30min/7d）与实现冲突属设计粒度分歧，未裁决前以代码为准 |
-| D2 | `services/gateway-service/README.md` / `IMPLEMENTATION_SUMMARY.md` / `BUILD_INSTRUCTIONS.md` 路由表/端口/中间件序/TTL 多处过时（宣称 /v1/results、/v1/storage 域、task PUT/DELETE、50053/50054 端口、per-IP 限流） | 以本文 §2 为准 | 三份历史文档不再维护路由事实；新文档即 SSOT |
+| D1 | `configs/codeaudit.yaml:48-50` `gateway.jwt.access_ttl_min(30)/refresh_ttl_day(7)` 无任何代码消费 | TTL 曾硬编码 access 1h / refresh 24h（user.go:19-21，注释引 03 §4 但值不符）；**2026-09-11 D2 裁决：改代码对齐契约 30min/7d（B5-2），死配置登记保留待接线** | 已裁决消解：实现=契约=30min/7d（`TestTokenTTL_MatchesContract` 锁定） |
+| D2 | `services/gateway-service/README.md` 路由表/端口/中间件序/TTL 多处过时（宣称 /v1/results、/v1/storage 域、task PUT/DELETE、50053/50054 端口、per-IP 限流） | 以本文 §2 为准 | 历史文档不再维护路由事实；新文档即 SSOT |
 | D3 | `03_接口规范.md` §1.1 宣称 gateway "gRPC 直通"与 ValidatePermission 转发 | 网关无 gRPC 服务端、无 ValidatePermission 调用；实际暴露面远超该表 | 设计文档滞后，本文为准 |
 | D4 | transcode.go:550 注释宣称 snapshot 支持 `log_limit` | 代码固定 `Limit:500` 未读该参数 | 注释失真；参数未实现 |
 

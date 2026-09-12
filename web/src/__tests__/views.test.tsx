@@ -9,26 +9,28 @@ import ReviewView from '../pages/views/ReviewView';
 import { useFakeGateway } from '../testsupport/fakeGateway';
 
 // ADR-203 fakeGateway：真实 api/client 执行，仅 HTTP 层伪造；未建模路由响亮失败
-useFakeGateway({
-  'GET /v1/findings': () => ({ findings: [
-    { finding_id: 'f-s1', task_id: 't1', source_tool: 'semgrep', source_rule_id: 'R1', cwe_id: 'CWE-89',
-      title: 'sast primary', severity: 'SEVERITY_HIGH', confidence: 0.8, ai_verdict: 'AI_VERDICT_UNSPECIFIED',
-      ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', location: null,
-      dedup_group: 'group_1', matched_findings: ['f-a1'], is_unique: false },
-    { finding_id: 'f-a1', task_id: 't1', source_tool: 'ai_agent', source_rule_id: '', cwe_id: 'CWE-89',
-      title: 'ai dup', severity: 'SEVERITY_HIGH', confidence: 0.9, ai_verdict: 'AI_VERDICT_UNSPECIFIED',
-      ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', location: null,
-      dedup_group: 'group_1', matched_findings: ['f-s1'], is_unique: false },
-    { finding_id: 'f-u1', task_id: 't1', source_tool: 'ai_agent', source_rule_id: '', cwe_id: 'CWE-798',
-      title: 'ai unique', severity: 'SEVERITY_CRITICAL', confidence: 0.9, ai_verdict: 'AI_VERDICT_UNSPECIFIED',
-      ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', location: null,
-      dedup_group: '', matched_findings: [], is_unique: true },
-  ] }),
+const routesDefaultFindings = () => ({ findings: [
+  { finding_id: 'f-s1', task_id: 't1', source_tool: 'semgrep', source_rule_id: 'R1', cwe_id: 'CWE-89',
+    title: 'sast primary', severity: 'SEVERITY_HIGH', confidence: 0.8, ai_verdict: 'AI_VERDICT_UNSPECIFIED',
+    ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', location: null,
+    dedup_group: 'group_1', matched_findings: ['f-a1'], is_unique: false },
+  { finding_id: 'f-a1', task_id: 't1', source_tool: 'ai_agent', source_rule_id: '', cwe_id: 'CWE-89',
+    title: 'ai dup', severity: 'SEVERITY_HIGH', confidence: 0.9, ai_verdict: 'AI_VERDICT_UNSPECIFIED',
+    ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', location: null,
+    dedup_group: 'group_1', matched_findings: ['f-s1'], is_unique: false },
+  { finding_id: 'f-u1', task_id: 't1', source_tool: 'ai_agent', source_rule_id: '', cwe_id: 'CWE-798',
+    title: 'ai unique', severity: 'SEVERITY_CRITICAL', confidence: 0.9, ai_verdict: 'AI_VERDICT_UNSPECIFIED',
+    ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', location: null,
+    dedup_group: '', matched_findings: [], is_unique: true },
+] });
+const routes: Record<string, unknown> = {
+  'GET /v1/findings': routesDefaultFindings,
   'GET /v1/tasks/:taskId/comparison-report': () => ({ report_id: 'cmp-t1', venn_data_url: '', summary: {
     sast_total: 5, ai_total: 3, both_found: 2, sast_only: 3, ai_only: 1, disagreement: 1,
     metrics: { total_unique: 6, sast_precision: 0.4, sast_recall: 2 / 3, sast_f1: 0.5,
       ai_precision: 2 / 3, ai_recall: 0.4, ai_f1: 0.5 } } }),
-});
+};
+useFakeGateway(routes);
 
 function withProviders(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -39,13 +41,13 @@ function withProviders(ui: React.ReactElement) {
   );
 }
 
-describe('FusionView（模式B，proto L84-86 字段消费）', () => {
-  it('dedup_group 组视图：primary=SAST、组成员 chips、is_unique 单列', async () => {
+describe('FusionView（模式B，融合分组消费）', () => {
+  it('组视图：主条目=SAST、组成员 chips、独立发现单列（2026-09-09 生产化文案）', async () => {
     withProviders(<FusionView taskId="t1" />);
-    await waitFor(() => expect(screen.getByText(/合并组 group_1/)).toBeTruthy());
-    expect(screen.getByText(/primary:/)).toBeTruthy();
+    await waitFor(() => expect(screen.getByText(/合并组 1/)).toBeTruthy());
+    expect(screen.getByText(/主条目：/)).toBeTruthy();
     expect(screen.getByText(/ai dup/)).toBeTruthy();
-    expect(screen.getAllByText(/未合并发现/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/独立发现/).length).toBeGreaterThan(0);
     expect(screen.getByText(/ai unique/)).toBeTruthy();
   });
 });
@@ -66,5 +68,33 @@ describe('ReviewView（旧模式D，诚实降级）', () => {
     withProviders(<ReviewView taskId="t1" />);
     await waitFor(() => expect(screen.getByText(/审核报告（整体评估\+逐条 opinion）当前未持久化/)).toBeTruthy());
     expect(screen.getByText(/sast primary/)).toBeTruthy();
+  });
+});
+
+// B3-4（审计修复）：视图单页只拉 100 条——has_next=true 时必须渲染截断提示，不静默丢剩余
+describe('视图截断提示（B3-4）', () => {
+  const truncatedFindings = (title: string) => {
+    routes['GET /v1/findings'] = () => ({ findings: [
+      { finding_id: 'f-t1', task_id: 't1', source_tool: 'semgrep', source_rule_id: 'R1', cwe_id: 'CWE-89',
+        title, severity: 'SEVERITY_HIGH', confidence: 0.8, ai_verdict: 'AI_VERDICT_UNSPECIFIED',
+        ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', location: null,
+        dedup_group: '', matched_findings: [], is_unique: true },
+    ], pagination: { next_cursor: 'c2', has_next: true, total: 153 } });
+  };
+
+  it('融合视图：has_next=true → 「仅显示前 100 条，请用发现页完整审阅」', async () => {
+    truncatedFindings('融合-截断样本');
+    withProviders(<FusionView taskId="t1" />);
+    await waitFor(() => expect(screen.getByText('融合-截断样本')).toBeTruthy());
+    expect(screen.getByText('仅显示前 100 条，请用发现页完整审阅')).toBeTruthy();
+    routes['GET /v1/findings'] = routesDefaultFindings; // 还原默认路由
+  });
+
+  it('审核视图：has_next=true → 同样提示', async () => {
+    truncatedFindings('审核-截断样本');
+    withProviders(<ReviewView taskId="t1" />);
+    await waitFor(() => expect(screen.getByText('审核-截断样本')).toBeTruthy());
+    expect(screen.getByText('仅显示前 100 条，请用发现页完整审阅')).toBeTruthy();
+    routes['GET /v1/findings'] = routesDefaultFindings; // 还原默认路由
   });
 });

@@ -52,8 +52,11 @@ export const SEVERITY: Record<string, string> = {
   SEVERITY_INFO: '提示',
 };
 
+// 通用回退（B3-5：删除曾内嵌的 map.AI_VERDICT_UNSPECIFIED 特判——通用函数不携带具体
+// 枚举知识）。空值/未知键行为：空值→'未知'；未知非空键→原样回显（不隐藏数据，P4）。
+// 需要"未判定"语义的 AI_VERDICT 调用点显式归一 `v || 'AI_VERDICT_UNSPECIFIED'`（查表路径）。
 export function zh(map: Record<string, string>, key: string | undefined | null): string {
-  if (!key) return map.AI_VERDICT_UNSPECIFIED ?? '未知';
+  if (!key) return '未知';
   return map[key] ?? key;
 }
 

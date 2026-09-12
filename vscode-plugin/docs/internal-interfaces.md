@@ -3,7 +3,8 @@
 > 事实源文档：`extension.ts` 是薄胶水层，业务逻辑全部在可单测的纯模块中。本文逐模块
 > 描述导出符号的输入/输出/错误语义/不变量，并标注锁定测试。契约变更纪律见
 > [regressions.md](regressions.md)。模块依赖方向：`extension.ts → 各纯模块 → types.ts`；
-> 纯模块之间仅 `applyPatch.ts → diffParse.ts`（canonicalize）与
+> 纯模块之间仅 `applyPatch.ts → diffParse.ts`（canonicalize/similarity/SIMILARITY_THRESHOLD，
+> 相似度实现单点收敛，守卫见 guards.test.ts）与
 > `treeModel/aiContextView → diagnosticsMapper/progressModel`（标签与格式化）两处横向引用。
 
 ---
@@ -24,7 +25,12 @@
 | `ApiError` | status/message/body | Error 子类，`name` 未改、`status`/`body` 可读 | — | 各处 rejects(ApiError) |
 | `CodeAuditClient` 全部方法 | 见 external-interfaces.md §1 | 见 §1 | 非 2xx → ApiError；401 → 单飞刷新重放一次 | 同 §1 |
 
-不变量：`refreshInFlight` 并发共享一次刷新，finally 置空；`rateLimitUntil` 只写不清（由时间流逝自然过期）。
+不变量：`refreshInFlight` 并发共享一次刷新，finally 置空；`rateLimitUntil` 只写不清（由时间流逝自然过期）；
+请求经 `AbortSignal.timeout` 注入超时（`REQUEST_TIMEOUT_MS`=60s，multipart 上传 `UPLOAD_TIMEOUT_MS`=600s，
+导出常量锁定，见 `› REST 超时注入` 3 例）；`doRefresh` 仅 401 清凭据，502/429 等瞬态失败
+保留缓存 token（`› refresh 失败仅 401 清凭据` 3 例）；**429 响应 body 只读一次**——text 读取后
+就地解析 retry_after 并直接抛 ApiError（body 全文随错误透出；先 json() 再 text() 的双读会因
+body 已消费而静默丢失响应体，回归锁见 `› 429 响应体单次读取…`）。
 
 ## 3. `taskWatcher.ts` — 双通道任务跟踪
 
@@ -35,9 +41,10 @@
 - **不变量**：
   1. `start()` = 连 WS + 立即兜底轮询一次（WS 建立前也有状态）；
   2. 终态 → `terminal` → `close()`：清全部定时器 + 关 socket，重连/续轮均被 `closed` 拦截；
-  3. WS reason 或轮询错误消息同时匹配 `/404/`+`/not found/i` → `onTaskGone` 终止（防死循环）；
-  4. `client.rateLimitUntil > now()` 时轮询轮跳过。
-- 锁定测试：`taskWatcher.test.ts` 全部 6 例。
+  3. WS reason 或轮询错误消息同时匹配 `/404/`+`/not found/i` → `onTaskGone` 终止（防死循环）；**轮询 await 返回后复查 `closed`（B5-1）——已关闭（终态自关/被 watchTask 替换/bindTask 收口）的 watcher，其在途快照不进 settle、在途 404 不触发 onTaskGone**（旧任务的 404 不得污染新任务）；**任务已删除的收束统一走 `close()`（关 socket + 清定时器）后再回调 onTaskGone**——轮询 404 与迟到 WS 1011 双通道竞态时，先到者收束、后到者被 `closed` 复查拦截，同任务 `onTaskGone`/`terminal` 恰好一次（回归锁：`› WS 在途终态帧在 close 后到达…`、`› 轮询 404 与迟到 WS 1011 竞态…`）；
+  4. `client.rateLimitUntil > now()` 时轮询轮跳过；
+  5. `settle()` 入口复查 `closed`——close() 后仍在途/已缓冲的 WS 消息帧不得再 emit（防 terminal 双发、上层收尾重跑）。
+- 锁定测试：`taskWatcher.test.ts` 全部用例。
 
 ## 4. `progressModel.ts` — 四路帧归并（纯逻辑核心）
 
@@ -46,13 +53,13 @@
 | `asNumber(v)` | string/number/undefined/null → number | `Number(v??0)` 非有限回 0 | `parseTsMs/fmt` 用例覆盖 |
 | `parseTsMs(ts)` | ISO 串（可 9 位小数秒）→ epoch ms | 空/非法 → `null`；>23 字符截前 23 位加 `Z` | `› parseTsMs 容忍 9 位小数秒` |
 | `createProgressState(taskId)` | 任务 ID | 全零值初始态（version=0, wsLive=false） | 各用例基底 |
-| `appendAiChunk(text, cursor, chunkText, nextCursor)` | 当前文本/字节游标/新块/新游标 | `{text, cursor}` 或 `null`=丢弃。规则：① `next<=cur && cur!==0` → null；② chunkStart>cur 或 cur=0 → **整体重置**为 chunk；③ 衔接 → 按 utf-8 字符边界跳过已见前缀只拼新增尾 | `› ai chunk 增量追加`、`› 全量重发…重置`、`› 多字节字符不撕裂`、`› 跳段整体重置`、`› cursor=0 首帧直通` |
+| `appendAiChunk(text, cursor, chunkText, nextCursor)` | 当前文本/字节游标/新块/新游标 | `{text, cursor}` 或 `null`=丢弃。规则：① `next<=cur && cur!==0` → null；② chunkStart>cur 或 cur=0 → **整体重置**为 chunk；③ 衔接 → 按 utf-8 字符边界跳过已见前缀只拼新增尾（步进按完整 code point 计字节长，代理对/emoji 不被劈开） | `› ai chunk 增量追加`、`› 全量重发…重置`、`› 多字节字符不撕裂`、`› 跳段整体重置`、`› cursor=0 首帧直通`、`› 代理对边界…（B2-8）` |
 | `estimatePercent(stages)` | TaskStage[] | COMPLETED/SKIPPED=1、RUNNING=0.5 → 四舍五入 min 100；空 → 0 | `› 无 progress 帧按阶段完成度估算` |
 | `sandboxPackCheck(logs, expectedUploadBytes)` | 日志数组 + 上传字节数 | `null`=尚无「打包完成」行；否则 `{received, tooSmall}`，floor=max(64, ⌊expected/100⌋)，取**最近一条**命中行；无字节数 → received=0 判废 | `› 沙箱收包校验` 4 例 |
 | `logIdAfter(a, b)` | log_id 串 | 双方纯数字 → 数值比较（`"10">"9"` 回归锁）；否则字典序 | `› logs 按 log_id 数值序增量去重` |
 | `applyFrame(state, frame)` | 可变态 + TaskSnapshot 帧 | 就地更新并返回 state。语义：status 缺省保旧；stages 取 progress（非空）否则 task；percent 取 overall_percent（>0 时钳 0~100 四舍五入）否则估算；logs 增量去重（容量 500 截尾）；ai 走 appendAiChunk + total_bytes/complete 吸收；**前后签名（status\|percent\|阶段\|lastLogId\|aiCursor\|aiComplete）变化才 version++ 并刷新 updatedAt** | `› applyFrame` 系列、`› version 只在内容演进时递增` |
 | `buildProgressItems(state)` | ProgressState | 节点序 = 任务头 → 各阶段 → AI 入口 → （DEAD/TIMEOUT 时）失败摘要。任务头 desc=`{中文状态} · {pct}% · {WS 实时\|轮询}`；阶段 desc=`{中文状态} · {耗时}`（运行中按 now 计算）、失败阶段 contextValue=stageFailed；AI 入口 desc=字节量+流式/收束/暂停态；失败摘要含最近日志前 60 字符 | `› buildProgressItems` 3 例 |
-| `stageLabel / taskStatusLabel / fmtDuration / fmtBytes` | 见代码映射表 | 未知枚举回原值；fmtDuration 负数 → `—` | `› fmtDuration / fmtBytes / 标签映射` |
+| `stageLabel / taskStatusLabel / fmtDuration / fmtBytes` | 见代码映射表 | 未知枚举回原值；fmtDuration 负数 → `—`。`STATUS_LABELS`（proto TaskStatus 11 键）/`STAGE_LABELS`（StageType 7 键）已导出并有键集 golden 锁（文案对齐 web dict，键集=proto，parity 闸门 check-wiring A8 同口径） | `› fmtDuration / fmtBytes / 标签映射`、`› STATUS_LABELS / STAGE_LABELS 键集 golden` |
 
 ## 5. 补丁引擎（`applyPatch.ts` 主路径 + `diffParse.ts` 兜底）
 
@@ -97,7 +104,7 @@
 | `htmlEscape.escapeHtml` | 串 | `& < > " '` 五元全转义（aiContextView/findingDetailView 渲染共用件） | `aiContextView.test.ts › 五个 HTML 元字符全转义` |
 | `buildViewUpdate(state)` | ProgressState → `AiViewUpdate` | `{type:'update', h1Html, percent(钳 0~100), chipsHtml, logsHtml, aiHtml}`；日志取尾 200；AI 正文超 256KB 保尾；空态给说明文案不空白 | `› buildViewUpdate…`、`› 超长 AI 正文…` |
 | `renderAiContextHtml({state,title?})` | state=null → 空态页；否则整页 HTML | CSP `default-src 'none'`；日志窗在上 AI 主区在下；页内脚本：贴底跟随（nearBottom<48px）、增量 message 按 type 消费 | `› 无任务空态…`、`› 分区布局…` |
-| `renderFindingDetailHtml(data)` | `{finding\|null, fixed}` | null → 引导空态；头部严重级徽章/标题/✔徽章 + 元信息表 + 操作按钮（fixed→回滚，否则修复）+ 描述/AI 分析/修复建议/补丁分区（空内容区块不渲染）；全部字段转义 | `findingDetailView.test.ts` 4 例 |
+| `renderFindingDetailHtml(data)` | `{finding\|null, fixed}` | null → 引导空态；头部严重级徽章/标题/✔徽章 + 元信息表 + 操作按钮（fixed→回滚，否则修复）+ 描述/AI 分析/修复建议/补丁分区（空内容区块不渲染）；全部字段转义；`VERDICT_LABEL`（导出）键集=proto AIVerdict 七枚举、文案=web dict AI_VERDICT（golden 锁 `› VERDICT_LABEL 键集 golden`） | `findingDetailView.test.ts` 5 例 |
 | `AiContextViewProvider.resolveWebviewView(view)` | WebviewLike（html/options/postMessage/…） | **先置 `enableScripts:true` 再赋 html**（回归锁）；onRendered 回调；可见性恢复→postUpdate；dispose→view=null | `aiContextViewProvider.test.ts` 2 例 |
 | `AiContextViewProvider.postUpdate()` | — | 有 state 且 view 存在才 postMessage；否则静默 | 同上 |
 
@@ -108,6 +115,7 @@
 | `treeModel.buildTree(findings)` | UnifiedFinding[] → TreeNode[]（扁平：file 后跟其 findings） | 按 file_path（反斜杠归一）分组；路径 localeCompare 升序；组内 severityRank 降序；无位置 → 末尾「(无位置)」组 | `treeModel.test.ts` 3 例 |
 | `treeModel.findingLabel / findingDescription` | finding | label=`{严重级}{ [CWE]} {title\|file:line 兜底}`；desc=`{工具}{ · AI:结论}` | `› findingLabel/Description…` |
 | `diagnosticsMapper.mapFinding(f)` | finding → MappedDiagnostic\|null | 无 file_path 或 start_line → null（不进 Problems）；1-based → 0-based；end=max(start, ⌊end_line??start⌋-1)；code 优先 cwe_id | `diagnosticsMapper.test.ts` 4 例 |
+| `treeModel.pickFindingAtLine(findings, relPath, line0, trackedLines?)` | 发现集 + 文件相对路径 + 0-based 行号 + **行号校准表（trackedLines，与诊断同源）** → finding\|undefined | 匹配口径与诊断生成镜像：起点优先取 `trackedLines[finding_id]` ?? `start_line`，区间跨度保持原始相对跨度平移；先精确后区间；同文件多条绝不取「第一条」 | `treeModel.test.ts › pickFindingAtLine`（含校准行号用例，回归锁：行漂移后 QuickFix 反查不失效） |
 | `severityRank(sev)` | 枚举名 | CRITICAL/HIGH=3、MEDIUM=2、LOW=1（未知回退）、INFO=0、UNSPECIFIED=1 | `› severity 枚举名映射…` |
 | `lowRiskApply.selectLowRiskFixCandidates(findings, excludeIds)` | findings + 登记表已知 ID 集 | 同时满足：severity∈{LOW,INFO} ∧ ai_confidence≥0.9 ∧ 有 diff_patch ∧ 未登记过；阈值含边界（≥0.9 精确命中） | `lowRiskApply.test.ts` 3 例 |
 
@@ -115,11 +123,11 @@
 
 | 符号 | 预期输入 → 预期输出 | 关键语义 | 锁定测试 |
 |---|---|---|---|
-| `CheckpointStore.save(files)` | `{绝对路径: 内容\|null}` | 空集 → `null`；id=`cp-<ts>-<seq++>`（同毫秒不碰撞）；null=修复前不存在的文件；内容文件名=路径非字母数字全替换 `_`；manifest.json 落盘 | `checkpoint.test.ts › save…` 8 例 |
+| `CheckpointStore.save(files)` | `{绝对路径: 内容\|null}` | 空集 → `null`；id=`cp-<ts>-<seq++>`（同毫秒不碰撞）；null=修复前不存在的文件；内容文件名=目录内序号 0000/0001…（防仅标点不同碰撞）；manifest.json 落盘；**保存后按文件增量清理：同一绝对路径在全部 checkpoint 中的条目（含 null）上限 `CHECKPOINT_PER_FILE_KEEP=100`，超限从最旧 cp 移除该条目（删内容文件+manifest 去键，manifest 清空则整目录删除）——被清理的旧登记回滚走既有「checkpoint 缺失/损坏（文件可能被清理）」诚实降级** | `checkpoint.test.ts › save…` 系列、`› 每文件快照上限 100…` 2 例（回归锁：无界增长） |
 | `CheckpointStore.list/latest/restoreLatest/restore(id)` | id | list=按 (时间戳,序号) **数值序**倒序（seq 跨位数 9→10 时字典序会取错 latest，回归锁见 regressions.md #19）；restore：id 空/manifest 缺失/损坏 → `null` 不抛；**读文件必须显式 'utf-8'（Buffer 回归锁）** | `› restoreLatest 的快照必须是 utf-8 字符串…`、`› 多个 checkpoint 时 latest 取最新` |
 | `FixRecord` | `{findingId, label, checkpointId, files[], appliedAt, state: applied\|rolledback}` | files = 本次触及的绝对路径全集（Update/Delete/Move 源 + Add/Move 目标） | — |
 | `FixRegistry` 构造 | 文件路径 + fs | 文件缺失/损坏 → 视为无记录（不抛，checkpoint 内容仍在可重新应用） | `fixRegistry.test.ts › 损坏的登记文件…` |
-| `recordApplied(rec)` | FixRecord | 覆盖同 findingId 旧记录（重新应用以最近为准）+ 持久化 | `› 持久化往返…` |
+| `recordApplied(rec)` | FixRecord | 覆盖同 findingId 旧记录（重新应用以最近为准）+ 持久化；**persist 走 tmp+rename 原子替换**（写一半崩溃时旧登记完整，坏 JSON 被构造静默清空的防线） | `› 持久化往返…`、`› persist 原子写…` |
 | `markRolledback(findingId)` | 发现 ID | 无记录或非 applied → `null`；否则翻状态 + 持久化 + 返回记录 | `› markRolledback 翻状态…` |
 | `appliedFindingIds / appliedRecords / knownFindingIds / byFinding` | — | applied 集合（徽章）/ applied 记录（同文件更晚覆盖告警、最近批量回滚）/ 全部登记过（低风险候选排除，回滚不翻案） | `› knownFindingIds…`、`› appliedRecords…` |
 | `workspaceZip.zipFiles(files, readFile)` | `{relPath, absPath}[]` + 读取器 → Blob | 单文件读取失败跳过不阻塞整包；relPath 保持 zip 内结构 | `workspaceZip.test.ts` |
@@ -129,13 +137,15 @@
 | 内部函数 | 预期输入 → 预期输出 | 关键语义 | 锁定测试 |
 |---|---|---|---|
 | `resolveWsPath(rel)` | 补丁相对路径 → `{abs, uri}\|null` | null 条件：无工作区 / 空串 / posix 绝对路径 / 含 `..` 段；反斜杠归一 | `extension.test.ts › 路径禁闭` 系列 |
-| `applyMachinePatch(f, label)` | finding（diff_patch 非空） | 成功 `{ok:true, fileCount, fuzz, saveFailures, saveTotal, diffs[]}`；失败 `{ok:false, reason}`。序：预载 Update/Delete 文档 → computePatchChanges（DiffError→拒绝）→ 变更非空 → 逐条禁闭/覆盖校验 → **checkpoint（Add/Move 目标记 null）** → 应用（Update=WorkspaceEdit+save；Add/Move 写 fs；Delete=rm）→ 登记 → 产出 diff 审阅数据。任何一步失败整体放弃、不改盘 | `extension.test.ts › applyMachinePatch` 系列 |
+| `applyMachinePatch(f, label)` | finding（diff_patch 非空） | **fixing 写盘互斥外壳**（B2-6；互斥覆盖修复/回滚/兜底三路写盘路径——并发第二发整体拒绝，finally 复位）→ 内核：预载 Update/Delete 文档 → computePatchChanges（DiffError→拒绝）→ 变更非空 → 逐条禁闭/覆盖校验 → **checkpoint（Add/Move 目标记 null；save 异常→错误通知后继续，回滚点缺失用户可见）** → 应用（Update=WorkspaceEdit+save；Add/Move 写 fs；Delete=rm）→ 登记（写盘异常→错误通知，不炸主流程）→ 产出 diff 审阅数据。fs 阶段失败：按 checkpoint 还原已执行部分，**Update 文档经 WorkspaceEdit.replace 回写旧内容（缓冲区+磁盘同还原）**；任何失败整体放弃 | `extension.test.ts › applyMachinePatch` 系列、`› 修复互斥…（B2-6）`、`› fs 落盘失败还原…（B2-6）`、`› 写盘互斥扩展…` |
 | `writeRestored(restored)` | `{绝对路径: 内容\|null}` → `null\|摘要` | null→删除文件；**文件已缺失（Delete/Move 源被补丁移除）→ fs 直写重建**；applyEdit=false 或缓冲区与预期不一致→重试一次再失败显式报错+null（**checkpoint 未消耗**）；保存后**磁盘终验**（workspace.fs.readFile 逐字节比对，save 报 true 不代表落盘）；保存部分失败→摘要中注明 | `extension.test.ts › 回滚` 系列 |
-| `rollbackRecord(rec)` | FixRecord | 同文件更晚 applied 修复会被波及 → 警告确认（「仍要回滚」）；checkpoint 缺失/损坏→错误+登记不变；成功→markRolledback+徽章解除+详情刷新 | `extension.test.ts › 按发现回滚…` |
-| `watchTask(taskId, expectedUploadBytes, resumeState)` | 任务 ID/上传字节/是否恢复 | 关旧 watcher；resumeState=true 保留已重建历史仅续订（bindTask 非终态任务用）；快照回调：applyFrame + taskPaused 上下文 + **一次性沙箱收包校验**（tooSmall→cancelTask+错误通知，progress.uploadSizeChecked 置位）+ refreshProgressUi；terminal 回调：互斥释放、取消/失败/完成三分支 | `extension.test.ts › watchTask…` 系列 |
-| `bindTask(taskId, {silent})` | 历史/任意任务 ID | snapshot→新 progress→applyFrame→UI 重建→findings 拉取；**非终态任务自动 watchTask(resumeState=true) 续订**；404 not found→清 lastTaskId（防下次启动再恢复死任务）；其余失败→通知（silent 时仅日志） | `extension.test.ts › 恢复链路` 系列 |
-| `doScan()` | — | 互斥（scanning）→ requireReady（登录+绑定）→ findFiles→minPackFiles→zip→upload→**config.upload_file_id‖dir 二选一**→createTask→startTask→watchTask；失败→互斥释放+错误通知 | `extension.test.ts › doScan` 系列 |
+| `rollbackRecord(rec)` | FixRecord | **fixing 写盘互斥外壳**（与修复路径共用同一互斥，B2-6 扩展：互斥中并发回滚被拒不改盘）；同文件更晚 applied 修复会被波及 → 警告确认（「仍要回滚」）；checkpoint 缺失/损坏→错误+登记不变；成功→markRolledback+徽章解除+详情刷新 | `extension.test.ts › 按发现回滚…`、`› 写盘互斥扩展…` |
+| `doFixFinding 兜底路径`（ai_fix_suggestion 围栏 unified diff） | finding（diff_patch 空） | 解析/锚定（diffParse）后**改盘段（checkpoint→applyEdit→save→登记）纳入 fixing 写盘互斥**——与 applyMachinePatch 并发交叠会互相踩 checkpoint/登记（B2-6 扩展）；失败语义与主路径一致：任一 hunk 锚定失败整体拒绝 | `extension.test.ts › 兜底路径…`、`› 写盘互斥扩展…` |
+| `watchTask(taskId, expectedUploadBytes, resumeState)` | 任务 ID/上传字节/是否恢复 | 关旧 watcher；**入口复位 incrementalRequested（B5-2 防跨任务串口径，doScan 启动 watcher 后按本次选定口径回填）**；resumeState=true 保留已重建历史仅续订（bindTask 非终态任务用）；快照回调：applyFrame + taskPaused 上下文 + **一次性沙箱收包校验**（tooSmall→cancelTask+错误通知，progress.uploadSizeChecked 置位）+ refreshProgressUi；**onTaskGone 回调头部归属守卫（B5-1）：`taskId≠lastTaskId \|\| progress.taskId≠taskId` 直接放弃——旧 watcher 被 close 后的在途 404/迟到 WS 1011 不得把新任务标 DEAD/误释互斥**；terminal 回调：归属守卫（taskId≠lastTaskId 直接放弃，**不误释新任务互斥**）→ 互斥释放、取消/失败/完成三分支；**每次 await（listFindings/taskSnapshot）之后复查 `taskId===lastTaskId && progress?.taskId===taskId` 再收尾**（B2-2 TOCTOU） | `extension.test.ts › watchTask…` 系列、`› 旧任务终态收尾 TOCTOU…（B2-2）`、`› 旧 watcher 在途 404/迟到的 WS 1011…（回归锁 B5-1）` |
+| `bindTask(taskId, {silent})` | 历史/任意任务 ID | **切换守卫（B2-5）**：isSwitch 且（scanning 或 watcher 活跃的非终态任务）→ showWarningMessage 确认，取消不动；snapshot→新 progress→applyFrame→UI 重建→findings 拉取；**非终态任务自动 watchTask(resumeState=true) 续订**；**绑定即复位 incrementalRequested（B5-2，回滚快照含该标志）**；**404 not found 分两径（防死锁）：taskId===prev.lastTaskId（恢复的就是持久化任务，无旧任务在跟）→ 清 lastTaskId+持久化指针（防重载再恢复死任务）；否则（切换/兜底绑定的目标已删）→ 旧绑定态原样保留（内存与持久化指针都不动——旧任务可能仍在跟踪，清空 lastTaskId 会吞掉其 terminal 收尾 → scanning 互斥死锁）+ 警告通知**；**其余失败→回滚绑定态（进度/lastTaskId/来源/phase/incrementalRequested 复原+UI 重建+原非终态任务续订）**再通知（silent 时仅日志） | `extension.test.ts › 恢复链路` 系列、`› 切换任务守卫…（B2-5）`、`› 绑定任务 findings 拉取失败…（B2-5）`、`› 切换绑定到已删除任务…（回归锁）`；增量口径复位：`doScan-branches.test.ts › B5-2 增量口径不跨任务串用…` |
+| `doScan()` | — | **互斥立即置位（B2-1）**→ requireReady（登录+绑定）→ listTools 连通性预检 → findFiles（**命中 PACK_FILE_CAP=20000 上限→警告建议收紧 excludeGlobs，「继续打包」确认或取消零上传，B5-2**）→minPackFiles→zip→upload→**config.upload_file_id‖dir 二选一**→createTask→startTask→watchTask（started=true，互斥交由 watcher 终态释放；增量口径在 watchTask 复位后回填）；预检失败/用户取消/中途异常→finally 统一复位互斥+phase（`› 扫描互斥竞态…（B2-1）`、`› 扫描早退复位…（B2-1）`） | `extension.test.ts › doScan` 系列、`› 打包清单命中 20000 上限…（回归锁 B5-2）` 2 例 |
 | `restoreLastTask` | 启动时（boot 后） | lastTaskId 优先；否则登录+绑定项目→最近完成任务；silent，失败仅日志 | `extension.test.ts › 恢复链路` |
 | `doRefresh` | — | 有 lastTaskId 仅重拉 findings；否则兜底绑定最近完成任务 | `extension.test.ts › 刷新兜底` |
-| `doOpenConsole` | — | `consoleUrl‖serverUrl:端口→:4173` + `/tasks/{lastTaskId}` → openExternal | external-interfaces.md §4.1 |
+| `doOpenConsole` | — | `consoleUrl‖serverUrl 剥离端口(→默认 :80)` + `/tasks/{lastTaskId}` → openExternal | external-interfaces.md §4.1 |
+| `doOpenFinding(f)` | finding（树条目/详情按钮/命令） | 跳转行号取 **trackedLines 校准值 ?? 原始 start_line**（与诊断同源——修复/回滚后行漂移不跳错行）；无位置→信息通知 | `extension.test.ts › 行号校准贯通…`（回归锁） |
 | `FindingDetailProvider.set(data)` | FindingDetailData | view 已解析→重渲染 html；未解析→focus 命令触发解析 | `extension.test.ts › 漏洞详情按钮动作回传` |

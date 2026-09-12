@@ -2141,6 +2141,11 @@ class ResultServiceStub:
                 request_serializer=codeaudit__common__pb2.SubmitFindingFeedbackRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.SubmitFindingFeedbackResponse.FromString,
                 _registered_method=True)
+        self.InheritFindings = channel.unary_unary(
+                '/codeaudit.common.v1.ResultService/InheritFindings',
+                request_serializer=codeaudit__common__pb2.InheritFindingsRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.InheritFindingsResponse.FromString,
+                _registered_method=True)
 
 
 class ResultServiceServicer:
@@ -2230,6 +2235,15 @@ class ResultServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def InheritFindings(self, request, context):
+        """增量扫描继承（ADR-225）：复制基线任务中"未变更文件"的 findings 到新任务
+        （写路径物化，连带 verdict/AI 建议终态；变更∪删除文件的旧 findings 不继承）
+        幂等
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ResultServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -2297,6 +2311,11 @@ def add_ResultServiceServicer_to_server(servicer, server):
                     servicer.SubmitFindingFeedback,
                     request_deserializer=codeaudit__common__pb2.SubmitFindingFeedbackRequest.FromString,
                     response_serializer=codeaudit__common__pb2.SubmitFindingFeedbackResponse.SerializeToString,
+            ),
+            'InheritFindings': grpc.unary_unary_rpc_method_handler(
+                    servicer.InheritFindings,
+                    request_deserializer=codeaudit__common__pb2.InheritFindingsRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.InheritFindingsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -2653,6 +2672,33 @@ class ResultService:
             '/codeaudit.common.v1.ResultService/SubmitFindingFeedback',
             codeaudit__common__pb2.SubmitFindingFeedbackRequest.SerializeToString,
             codeaudit__common__pb2.SubmitFindingFeedbackResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def InheritFindings(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.ResultService/InheritFindings',
+            codeaudit__common__pb2.InheritFindingsRequest.SerializeToString,
+            codeaudit__common__pb2.InheritFindingsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -4865,6 +4911,11 @@ class StorageServiceStub:
                 request_serializer=codeaudit__common__pb2.ListFilesRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.ListFilesResponse.FromString,
                 _registered_method=True)
+        self.GetStorageMode = channel.unary_unary(
+                '/codeaudit.common.v1.StorageService/GetStorageMode',
+                request_serializer=codeaudit__common__pb2.GetStorageModeRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.GetStorageModeResponse.FromString,
+                _registered_method=True)
 
 
 class StorageServiceServicer:
@@ -4912,6 +4963,14 @@ class StorageServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetStorageMode(self, request, context):
+        """存储档位探测（ADR-225）：mode="s3"（MinIO 持久档）|"memory"（07 §10 降级档，重启即丢）。
+        消费方=task-service 卷缓存 GC——memory 档绝不删除卷树（删=数据不可恢复）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_StorageServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -4944,6 +5003,11 @@ def add_StorageServiceServicer_to_server(servicer, server):
                     servicer.ListFiles,
                     request_deserializer=codeaudit__common__pb2.ListFilesRequest.FromString,
                     response_serializer=codeaudit__common__pb2.ListFilesResponse.SerializeToString,
+            ),
+            'GetStorageMode': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetStorageMode,
+                    request_deserializer=codeaudit__common__pb2.GetStorageModeRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.GetStorageModeResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -5113,6 +5177,33 @@ class StorageService:
             '/codeaudit.common.v1.StorageService/ListFiles',
             codeaudit__common__pb2.ListFilesRequest.SerializeToString,
             codeaudit__common__pb2.ListFilesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetStorageMode(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.StorageService/GetStorageMode',
+            codeaudit__common__pb2.GetStorageModeRequest.SerializeToString,
+            codeaudit__common__pb2.GetStorageModeResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -21,6 +21,17 @@ server {
     gzip_types text/css application/javascript application/json image/svg+xml;
     gzip_min_length 1024;
 
+    # B4-3（审计修复）最小安全响应头集——refresh_token 存 localStorage（Q3 裁决）的
+    # 纵深缓解：此前 session.tsx 注释所称"严格 CSP"并无任何响应头落地。
+    # 保守子集（nosniff / frame-ancestors / object-src），刻意不含 default-src/script-src/
+    # style-src——SPA 依赖 Vite 注入的内联脚本与内联样式，加了会白屏；本机无栈无法
+    # build 后真机冒烟，先上无行为影响的子集，收紧待有栈环境验证（见 fix-plan-0911 B4-3）。
+    # 注意 nginx add_header 继承语义：location 内一旦有自己的 add_header，server 级即被
+    # 整组覆盖——故下方两个带 Cache-Control 的 location 须重复声明本组。
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'" always;
+
     location / {
         # SPA 路由回退（react-router history 模式）：非静态文件一律回 index.html
         try_files $uri $uri/ /index.html;
@@ -30,9 +41,17 @@ server {
     location /assets/ {
         expires 30d;
         add_header Cache-Control "public, immutable";
+        # 安全响应头重复声明（add_header 覆盖语义，见 server 块注释）
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'" always;
     }
     location = /index.html {
         add_header Cache-Control "no-cache";
+        # 安全响应头重复声明——SPA 回退/直连均命中此 location，文档本体必须带头
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'" always;
     }
 
     # 网关反代：REST + WebSocket（ADR-172 /v1/tasks/{id}/ws 升级透传）

@@ -93,3 +93,35 @@ describe('FixRegistry：patches/linesBefore 可选字段（外科回滚数据，
     assert.strictEqual(got.linesBefore, undefined);
   });
 });
+
+describe('FixRegistry：persist 原子写（tmp+rename，回归锁：写一半崩溃丢全部登记）', () => {
+  it('tmp 写入失败 → 旧登记文件保持完整（不经 tmp 直写目标）；成功后无 .tmp 残留', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fixreg-atomic-'));
+    const file = path.join(dir, 'fix-registry.json');
+    try {
+      // 先落一份完整登记
+      const a = new FixRegistry(file);
+      a.recordApplied(rec('f1', 100));
+      const before = fs.readFileSync(file, 'utf-8');
+      // 第二次持久化：tmp 写入失败（模拟写一半崩溃/磁盘满）→ 旧文件必须原样
+      const failingWrite = {
+        existsSync: (p: string) => fs.existsSync(p),
+        readFileSync: (p: string, e: 'utf-8') => fs.readFileSync(p, e),
+        writeFileSync: (p: string, _d: string, _e: 'utf-8') => { if (String(p).endsWith('.tmp')) throw new Error('EIO: no space'); },
+        mkdirSync: (p: string, o: { recursive: boolean }) => fs.mkdirSync(p, o),
+        renameSync: (from: string, to: string) => fs.renameSync(from, to),
+      };
+      const b = new FixRegistry(file, failingWrite);
+      assert.throws(() => b.recordApplied(rec('f2', 200)), /EIO/);
+      assert.strictEqual(fs.readFileSync(file, 'utf-8'), before, '旧登记完整——持久化不得绕开 tmp 直写目标文件');
+      // 正常路径：成功后目标文件更新、无 .tmp 残留
+      const c = new FixRegistry(file);
+      c.recordApplied(rec('f3', 300));
+      const arr = JSON.parse(fs.readFileSync(file, 'utf-8')) as FixRecord[];
+      assert.deepStrictEqual(arr.map((r) => r.findingId).sort(), ['f1', 'f3']);
+      assert.strictEqual(fs.readdirSync(dir).filter((x) => x.endsWith('.tmp')).length, 0, '成功路径无 tmp 残留');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

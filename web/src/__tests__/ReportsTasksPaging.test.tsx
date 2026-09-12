@@ -23,6 +23,11 @@ const routes: Record<string, unknown> = {
   },
   'GET /v1/projects': { projects: [{ project_id: 'p1', name: 'Demo', repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null }], pagination: { next_cursor: '', has_next: false, total: 1 } },
   'GET /v1/tasks': (ctx: HandlerCtx) => {
+    // ReportsPage 项目列索引（2026-09-09 用户指令）：task_id→project_id 一次性拉取；
+    // 不记录 lastReportsQuery——它与 reports 查询并发，落日志会互踩断言
+    if (ctx.query.get('pagination')?.includes('"page_size":200')) {
+      return { tasks: [{ task_id: 't-1', project_id: 'p1', scan_mode: 'SCAN_MODE_AI_ONLY', sast_tools: [], status: 'TASK_STATUS_COMPLETED', stages: [], created_at: null, updated_at: null, error_message: '', retry_count: 0 }], pagination: { next_cursor: '', has_next: false, total: 1 } };
+    }
     lastReportsQuery = `TASKS ${ctx.query.toString()}`;
     return { tasks: [{ task_id: 't-9', project_id: 'p1', scan_mode: 'SCAN_MODE_AI_ONLY', sast_tools: [], status: 'TASK_STATUS_COMPLETED', stages: [], created_at: null, updated_at: null, error_message: '', retry_count: 0 }], pagination: { next_cursor: '', has_next: false, total: 45 } };
   },
@@ -59,13 +64,26 @@ describe('E-28 ReportsPage lastID 游标（顺序前进，无 total 跳页）', 
     expect(lastReportsQuery).toContain('task_id=t-1');
     expect(screen.getByText('任务：t-1')).toBeTruthy();
   });
+
+  it('项目列：报告→任务→项目名两级解析（2026-09-09 用户指令；未命中显 —）', async () => {
+    withProviders(<ReportsPage />);
+    await waitFor(() => expect(screen.getByText('r-1')).toBeTruthy());
+    // t-1 → p1 → Demo（链接项目详情，悬浮见 project_id）
+    const projLink = await screen.findByText('Demo');
+    expect(projLink.closest('a')?.getAttribute('href')).toBe('/projects/p1');
+    expect(projLink.getAttribute('title')).toBe('p1');
+  });
 });
 
 describe('E-18 TasksPage offset 游标 + 服务端筛选形状（ADR-160/164）', () => {
   it('首屏 pagination={"page_size":20,"cursor":"0"}；选项目+模式 → project_id 与 filter.conditions 形状', async () => {
     withProviders(<TasksPage />, ['/tasks']);
-    await waitFor(() => expect(screen.getByText('t-9')).toBeTruthy());
-    const first = gateway.requests.find((r) => r.url === '/v1/tasks')!;
+    await waitFor(() => expect(screen.getByText('#t-9')).toBeTruthy()); // 任务列短码
+    // 统计卡带查询（page_size 200）与列表查询并发同 URL——按 page_size 20 精确取列表请求
+    const first = gateway.requests.find(
+      (r) => r.url === '/v1/tasks' && r.query.includes(encodeURIComponent('"page_size":20')),
+    )!;
+    expect(first).toBeTruthy();
     expect(first.query).toContain(encodeURIComponent('"page_size":20'));
     expect(first.query).toContain(encodeURIComponent('"cursor":"0"'));
 

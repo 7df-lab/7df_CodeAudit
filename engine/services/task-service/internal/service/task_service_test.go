@@ -4,6 +4,7 @@ package service
 // 状态机单一权威 / 进度统计。依据: 03 §2、04 §1、proto L174/L177/L880-L881。
 
 import (
+	"encoding/json"
 	"context"
 	"fmt"
 	"strings"
@@ -209,12 +210,13 @@ func TestOrchestrationFailure_AutoRetryExhaustedToDead(t *testing.T) {
 	_ = task
 	mustStart(t, s, "req-retry")
 	// 下游全部不可达：3 次执行（首次+2 重试）后应到 DEAD（proto L174/L177）
+	// R48: CreateScanTask 现返回克隆——断言须读最新快照（活引用反模式已除）
+	_ = task
 	res := waitForStatus(t, s, "req-retry", pb.TaskStatus_TASK_STATUS_DEAD, 30*time.Second)
-	_ = res
-	if int(task.GetRetryCount()) != maxAutoRetries {
-		t.Fatalf("retry_count = %d, want %d", task.GetRetryCount(), maxAutoRetries)
+	if int(res.GetRetryCount()) != maxAutoRetries {
+		t.Fatalf("retry_count = %d, want %d", res.GetRetryCount(), maxAutoRetries)
 	}
-	if task.GetErrorMessage() == "" {
+	if res.GetErrorMessage() == "" {
 		t.Fatalf("error_message should be persisted")
 	}
 }
@@ -664,5 +666,193 @@ func TestReportStageComplete_OutputRefsOnRegisteredStage(t *testing.T) {
 	s.mu.RUnlock()
 	if meta["cpg"] != "/tmp/cpg.json" {
 		t.Fatalf("output_refs not persisted on registered stage: %v", meta)
+	}
+}
+
+// R50（2026-09-11 审计修复批次）: 幂等键在而原条目已被环形丢弃——回空壳回执（原 log_id），
+// 不再回落追加新条目（同 request_id 二次入账破坏幂等语义）。
+func TestAppendTaskLog_ReplayAfterRingEviction_NoRefill(t *testing.T) {
+	s := newSvc(t)
+	createTask(t, s, "log-ev", pb.ScanMode_SCAN_MODE_AI_ONLY)
+	req := &pb.AppendTaskLogRequest{
+		Metadata: &pb.RequestMetadata{RequestId: "log-ev-r1"},
+		TaskId:   "log-ev", Level: pb.TaskLogLevel_TASK_LOG_LEVEL_INFO,
+		Source: "sandbox", Message: "will be ring-evicted",
+	}
+	r1, err := s.AppendTaskLog(context.Background(), req)
+	if err != nil {
+		t.Fatalf("AppendTaskLog: %v", err)
+	}
+	s.logs["log-ev"] = nil // 模拟环形丢弃（cap 500 之后该条目出局）
+	r2, err := s.AppendTaskLog(context.Background(), req)
+	if err != nil {
+		t.Fatalf("replay after eviction: %v", err)
+	}
+	if r2.Entry.GetLogId() != r1.Entry.GetLogId() {
+		t.Fatalf("replay must return original log_id %s, got %s (R50)", r1.Entry.GetLogId(), r2.Entry.GetLogId())
+	}
+	if len(s.logs["log-ev"]) != 0 {
+		t.Fatalf("replay must not append a new entry (R50): %d entries", len(s.logs["log-ev"]))
+	}
+}
+
+// R57（2026-09-11 报障修复）: 阶段事件 msg 必须落 TaskStage.metadata——此前 msg 参数
+// 被整体丢弃，降级信息（"[降级]" 前缀）与进度行只进日志不进看板，前端无从渲染。
+func TestStageRecorder_MsgAndDegradedLandInMetadata(t *testing.T) {
+	s := newSvc(t)
+	createTask(t, s, "req-r57", pb.ScanMode_SCAN_MODE_AI_ONLY)
+	rec := s.stageRecorder("req-r57")
+
+	rec("ai", "submitting RunAIAnalysis")
+	s.mu.RLock()
+	var st *pb.TaskStage
+	for _, g := range s.tasks["req-r57"].GetStages() {
+		if g.GetStageId() == "ai" {
+			st = g
+		}
+	}
+	s.mu.RUnlock()
+	if st == nil {
+		t.Fatal("ai stage not registered")
+	}
+	if st.GetMetadata()["message"] != "submitting RunAIAnalysis" {
+		t.Fatalf("progress msg must land in metadata, got %q", st.GetMetadata()["message"])
+	}
+
+	rec("ai", "[降级] RuleScan 兜底（沙箱路径不可达）——全部发现需人工复核")
+	s.mu.RLock()
+	st = nil
+	for _, g := range s.tasks["req-r57"].GetStages() {
+		if g.GetStageId() == "ai" {
+			st = g
+		}
+	}
+	s.mu.RUnlock()
+	if st.GetMetadata()["degraded"] != "true" {
+		t.Fatalf("degraded marker must land in metadata, got %v", st.GetMetadata())
+	}
+
+	rec("done:ai", "4a+4b settled: verified=0 missed=3")
+	s.mu.RLock()
+	st = nil
+	for _, g := range s.tasks["req-r57"].GetStages() {
+		if g.GetStageId() == "ai" {
+			st = g
+		}
+	}
+	s.mu.RUnlock()
+	if st.GetStatus() != pb.StageStatus_STAGE_STATUS_COMPLETED {
+		t.Fatalf("done event must complete stage, got %s", st.GetStatus())
+	}
+	if st.GetMetadata()["message"] != "4a+4b settled: verified=0 missed=3" {
+		t.Fatalf("done msg must land in metadata, got %q", st.GetMetadata()["message"])
+	}
+	if st.GetMetadata()["degraded"] != "true" {
+		t.Fatal("degraded marker must survive done message overwrite")
+	}
+}
+
+// R64/D5（2026-09-11 跨仓审计）：finding.created 事件构造纯函数锁定——载荷字段对齐
+// storage eventPayload 消费映射（task_id/finding_id/severity/created_by），高危过滤口径
+// 与消费端 HIGH/CRITICAL 阈值一致。
+func TestBuildFindingCreatedEvent_Shape(t *testing.T) {
+	msg := buildFindingCreatedEvent("t-1", "user-9", pb.Severity_SEVERITY_HIGH, "f-1")
+	if msg.Topic != "finding.created" {
+		t.Fatalf("topic: %s", msg.Topic)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(msg.Value, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"task_id", "finding_id", "severity", "created_by"} {
+		if _, ok := payload[k]; !ok {
+			t.Fatalf("payload missing %s: %v", k, payload)
+		}
+	}
+	if payload["severity"] != "SEVERITY_HIGH" || payload["created_by"] != "user-9" {
+		t.Fatalf("payload values: %v", payload)
+	}
+	found := false
+	for _, h := range msg.Headers {
+		if h.Key == "event_type" && string(h.Value) == "finding.created" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("event_type header missing (ADR-212⑦)")
+	}
+}
+
+// R67（2026-09-12 待办收尾·取消传播）：CancelScanTask 必须取消在途编排——
+// 原实现只改状态不通知编排协程：不可达下游的重试循环继续跑（阻塞 RPC 逐次超时），
+// 且被取消任务可能被下一次自动重试拉回 RUNNING（状态覆盖守卫之外的窗口）。
+func TestCancelTask_PropagatesToOrchestration(t *testing.T) {
+	s := newSvc(t)
+	ctx := context.Background()
+	if _, err := s.CreateScanTask(ctx, &pb.CreateScanTaskRequest{
+		Metadata:  &pb.RequestMetadata{RequestId: "req-cancel-r67"},
+		ProjectId: "p-cancel",
+		ScanMode:  pb.ScanMode_SCAN_MODE_AI_ONLY,
+		Config:    map[string]string{"project_path": "/tmp/rt"}, // 有路径：编排真实启动（下游不可达→重试循环）
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mustStart(t, s, "req-cancel-r67")
+	// 等首次尝试进入（下游不可达 → FAILED→QUEUED 循环）
+	_ = waitForStatus(t, s, "req-cancel-r67", pb.TaskStatus_TASK_STATUS_RUNNING, 10*time.Second)
+	if _, err := s.CancelScanTask(ctx, &pb.CancelScanTaskRequest{TaskId: "req-cancel-r67"}); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	// 取消后状态必须稳定为 CANCELLED：编排不再发起重试拉回 RUNNING/QUEUED
+	for i := 0; i < 6; i++ {
+		time.Sleep(300 * time.Millisecond)
+		got, _ := s.GetScanTask(ctx, &pb.GetScanTaskRequest{TaskId: "req-cancel-r67"})
+		if got.GetStatus() != pb.TaskStatus_TASK_STATUS_CANCELLED {
+			t.Fatalf("post-cancel status drifted to %s (orchestration still retrying, R67)", got.GetStatus())
+		}
+	}
+	// 取消器已注销（无泄漏）
+	s.mu.RLock()
+	_, leaked := s.cancels["req-cancel-r67"]
+	s.mu.RUnlock()
+	if leaked {
+		t.Fatal("cancel registry entry must be cleaned after orchestration exit")
+	}
+}
+
+// R68（2026-09-12 待办收尾）：idem 表重启遗忘后同键重放不得重置既有任务——
+// task_id=request_id + 指纹随任务落库（_idem_fp），重放返回原任务；异体返回 AlreadyExists。
+func TestCreateScanTask_PostRestartReplayNoReset(t *testing.T) {
+	s := newSvc(t)
+	ctx := context.Background()
+	mkReq := func(mode pb.ScanMode) *pb.CreateScanTaskRequest {
+		return &pb.CreateScanTaskRequest{
+			Metadata: &pb.RequestMetadata{RequestId: "req-r68"}, ProjectId: "p-r68",
+			ScanMode: mode, Config: map[string]string{"project_path": "/tmp/rt"},
+		}
+	}
+	if _, err := s.CreateScanTask(ctx, mkReq(pb.ScanMode_SCAN_MODE_AI_ONLY)); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟重启遗忘：清 idem 表，保留任务实体（PG 侧在测试为内存，语义同）
+	s.mu.Lock()
+	delete(s.idem, "req-r68")
+	s.mu.Unlock()
+	if _, err := s.StartTask(ctx, &pb.StartTaskRequest{TaskId: "req-r68"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	replayed, err := s.CreateScanTask(ctx, mkReq(pb.ScanMode_SCAN_MODE_AI_ONLY))
+	_ = replayed
+	if err != nil {
+		t.Fatalf("post-restart same-body replay must return existing task, got %v", err)
+	}
+	got, _ := s.GetScanTask(ctx, &pb.GetScanTaskRequest{TaskId: "req-r68"})
+	if got.GetStatus() == pb.TaskStatus_TASK_STATUS_CREATED {
+		t.Fatal("replay must not reset a started task to CREATED (R68)")
+	}
+	// 异体重放：AlreadyExists
+	_, err = s.CreateScanTask(ctx, mkReq(pb.ScanMode_SCAN_MODE_SAST_ONLY)) // 异体
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("post-restart different-body replay want AlreadyExists, got %v", err)
 	}
 }

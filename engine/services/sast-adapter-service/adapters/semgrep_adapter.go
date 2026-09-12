@@ -172,5 +172,5 @@ func extractCWEID(s string) string {
 	if end == idx+4 {
 		return ""
 	}
-	return s[:end]
+	return s[idx:end] // R63: CWE 引用不在串首时只取 CWE-段（原 s[:end] 带前缀垃圾串）
 }

@@ -6,6 +6,7 @@
 // 操作按钮经 postMessage({type:'action',...}) 回传插件侧执行对应命令。
 import { SEVERITY_LABEL } from './diagnosticsMapper';
 import { escapeHtml } from './htmlEscape';
+import { newWebviewScriptCsp } from './webviewCsp';
 import type { UnifiedFinding } from './types';
 
 export interface FindingDetailData {
@@ -15,12 +16,17 @@ export interface FindingDetailData {
   fixed: boolean;
 }
 
-const VERDICT_LABEL: Record<string, string> = {
-  AI_VERDICT_LIKELY_TRUE: 'AI 判定：大概率真实',
-  AI_VERDICT_TRUE: 'AI 判定：真实',
-  AI_VERDICT_LIKELY_FALSE: 'AI 判定：大概率误报',
-  AI_VERDICT_FALSE: 'AI 判定：误报',
-  AI_VERDICT_UNSPECIFIED: '',
+// AI 结论标签：键集 = proto AIVerdict 七枚举（伞仓 parity 闸门 check-wiring A8 全等），
+// 文案照抄 web/src/dict/index.ts 的 AI_VERDICT 表（web 为文案权威）。
+// golden 键集锁见 test/findingDetailView.test.ts（防未来漂移静默）。
+export const VERDICT_LABEL: Record<string, string> = {
+  AI_VERDICT_UNSPECIFIED: '未判定',
+  AI_VERDICT_TRUE_POSITIVE: '确认为真',
+  AI_VERDICT_FALSE_POSITIVE: '误报',
+  AI_VERDICT_LIKELY_TRUE: '可能为真',
+  AI_VERDICT_LIKELY_FALSE: '可能误报',
+  AI_VERDICT_UNCERTAIN: '不确定',
+  AI_VERDICT_NEEDS_MANUAL: '需人工复核',
 };
 
 function metaRow(label: string, value: string): string {
@@ -40,6 +46,9 @@ export interface FindingDetailAction {
 }
 
 export function renderFindingDetailHtml(data: FindingDetailData): string {
+  // CSP nonce 化（§14 纵深）：script-src 'nonce-…'——页内按钮接线脚本携带同值 nonce 才
+  // 执行，注入内容即便漏出活体 <script> 也因无 nonce 被拒（弃 'unsafe-inline'）
+  const { nonce, content: csp } = newWebviewScriptCsp();
   const f = data.finding;
   const head = !f
     ? `<div class="empty">在「扫描结果」中点击任意漏洞，此处显示该漏洞的完整详情。</div>`
@@ -73,7 +82,7 @@ export function renderFindingDetailHtml(data: FindingDetailData): string {
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="${csp}">
 <style>
   :root { color-scheme: dark light; }
   body {
@@ -113,7 +122,7 @@ export function renderFindingDetailHtml(data: FindingDetailData): string {
 </style>
 </head>
 <body>${head}</body>
-<script>
+<script nonce="${nonce}">
   (function () {
     var vscode = acquireVsCodeApi();
     function post(action) { vscode.postMessage({ type: 'action', action: action }); }

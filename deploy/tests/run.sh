@@ -101,6 +101,16 @@ PY
 
   out=$(http GET "/v1/reports?task_id=$tid" "" "$ACCESS")
   check "任务报告已生成（reports 按 task 过滤含该任务）" contains "$(echo "$out" | tail -n +2)" "$tid"
+
+  # verdict:batch 批量裁决路由（2026-09-11 审计：暴露面无消费方无断言=腐化面）——
+  # 契约形态 proto:1276={finding_ids[],verdict,confidence}（无 updates[]/reasoning——
+  # 错误形态会被 protojson DiscardUnknown 静默丢弃成空请求 200 no-op，首版断言即踩此坑）
+  local fid; fid=$(jsonq "$(http GET "/v1/findings?task_id=$tid" "" "$ACCESS" | tail -n +2)" "d['findings'][0]['finding_id']")
+  check "取首条 finding_id（verdict:batch 用例锚）" nonempty "$fid"
+  out=$(http POST "/v1/findings/verdict:batch" "{\"finding_ids\":[\"$fid\"],\"verdict\":\"AI_VERDICT_FALSE_POSITIVE\"}" "$ACCESS")
+  check "verdict:batch 提交 200且回执 updated_count≥1" test "$(jsonq "$(echo "$out" | tail -n +2)" "int(d.get('updated_count',0))")" -ge 1
+  out=$(http GET "/v1/findings/$fid" "" "$ACCESS")
+  check "verdict:batch 读回生效（FALSE_POSITIVE）" contains "$(echo "$out" | tail -n +2)" "AI_VERDICT_FALSE_POSITIVE"
   echo "$tid" > /tmp/sim-e2e-task-id   # 供 06 通知用例复用
   rm -rf "$work"
 }
@@ -127,6 +137,16 @@ c06_notifications() {
   local out; out=$(http GET "/v1/notifications?user_id=$uid" "" "$ACCESS")
   local ncount; ncount=$(jsonq "$(echo "$out" | tail -n +2)" "len(d.get('notifications',[]))")
   check "通知列表可达（非空，实际=$ncount）" test "${ncount:-0}" -ge 1
+  # ADR-222 一键全部已读：未读数 N → read-all 计数=N → 未读归零
+  local uout; uout=$(http GET "/v1/notifications?unread_only=true" "" "$ACCESS")
+  local ucount; ucount=$(jsonq "$(echo "$uout" | tail -n +2)" "len(d.get('notifications',[]))")
+  local rall; rall=$(http POST "/v1/notifications/read-all" "" "$ACCESS")
+  check "read-all 可达（200）" eq "$(echo "$rall" | head -1)" "200"
+  local marked; marked=$(jsonq "$(echo "$rall" | tail -n +2)" "d.get('marked',-1)")
+  check "read-all 计数=未读数（未读=${ucount:-0}，标记=${marked:--1}）" eq "$marked" "${ucount:-0}"
+  uout=$(http GET "/v1/notifications?unread_only=true" "" "$ACCESS")
+  ucount=$(jsonq "$(echo "$uout" | tail -n +2)" "len(d.get('notifications',[]))")
+  check "read-all 后未读归零（实际=${ucount:-?}）" eq "${ucount:--1}" "0"
 }
 
 # ---------- 07 AI 链路（上传型项目；环境相关三形态）----------
@@ -175,6 +195,9 @@ PY
         check "AI 任务 COMPLETED 且交互日志非空=${ai_bytes}B（manager/沙箱/LLM 全链真实走通）" test "${ai_bytes:-0}" -gt 0
       else
         check "AI 任务 COMPLETED 走 RuleScan 降级（交互日志空 → 发现须标 NEEDS_MANUAL）" contains "$(http GET "/v1/findings?task_id=$tid" "" "$ACCESS" | tail -n +2)" "NEEDS_MANUAL"
+        # R56/R57 降级可感知：阶段看板须带降级标志（此前 success 返回无标志→阶段照样绿勾）
+        local snap; snap=$(http GET "/v1/tasks/$tid/snapshot" "" "$ACCESS" | tail -n +2)
+        check "降级可感知：快照阶段 metadata 带 degraded=true（R56）" contains "$snap" '"degraded":"true"'
       fi ;;
     TASK_STATUS_FAILED|TASK_STATUS_DEAD)
       # 崩坏时的**诚实失败**也是被测行为：终态 + 完整错误信息（不允许静默挂死/空原因）
@@ -261,7 +284,7 @@ c10_inference_admin() {
 
   # 增（upsert create 路径）
   out=$(http POST /v1/inference/providers \
-    "{\"name\":\"$name\",\"type\":\"openai\",\"credentials\":{\"api_key\":\"sk-e2e-fixture\"},\"config\":{\"base_url\":\"http://127.0.0.1:9/v1\"}}" "$ACCESS")
+    "{\"name\":\"$name\",\"type\":\"openai\",\"credentials\":{\"OPENAI_API_KEY\":\"sk-e2e-fixture\"},\"config\":{\"OPENAI_BASE_URL\":\"http://127.0.0.1:9/v1\"}}" "$ACCESS")
   check "创建 fixture provider（200）" eq "$(echo "$out" | head -1)" "200"
   check "回执 created=true（走网关 CreateProvider）" contains "$(echo "$out" | tail -n +2)" '"created":true'
 
@@ -274,8 +297,14 @@ c10_inference_admin() {
 
   # 改（upsert update 路径：created=false）
   out=$(http POST /v1/inference/providers \
-    "{\"name\":\"$name\",\"type\":\"openai\",\"credentials\":{\"api_key\":\"sk-e2e-fixture-2\"},\"config\":{\"base_url\":\"http://127.0.0.1:9/v2\"}}" "$ACCESS")
+    "{\"name\":\"$name\",\"type\":\"openai\",\"credentials\":{\"OPENAI_API_KEY\":\"sk-e2e-fixture-2\"},\"config\":{\"OPENAI_BASE_URL\":\"http://127.0.0.1:9/v2\"}}" "$ACCESS")
   check "更新走 UpdateProvider（created=false）" contains "$(echo "$out" | tail -n +2)" '"created":false'
+
+  # R55 键名守卫（2026-09-11 报障"网关只认大写"）：小写别名键必须 400 并指路约定键名——
+  # 此前透传链零校验，小写键静默存储不被识别，切路由验证时才失败（用户无从归因）
+  out=$(http POST /v1/inference/providers \
+    "{\"name\":\"$name-alias\",\"type\":\"openai\",\"credentials\":{\"api_key\":\"sk\"},\"config\":{\"base_url\":\"http://127.0.0.1:9/v1\"}}" "$ACCESS")
+  check "小写别名键 → 400 且指路约定键名（R55）" test "$(echo "$out" | head -1)$(echo "$out" | tail -n +2)" != "" -a "$(echo "$out" | head -1)" = "400" -a -n "$(echo "$out" | tail -n +2 | grep '约定大写键')"
 
   # 路由：存现场 → 切 fixture（no_verify 避开 LLM egress）→ 读回生效
   local orig_prov="" orig_model=""
@@ -288,6 +317,39 @@ c10_inference_admin() {
   check "回执 validation_performed=false（no_verify 语义）" contains "$(echo "$out" | tail -n +2)" '"validation_performed":false'
   out=$(http GET /v1/inference/route "" "$ACCESS")
   check "路由生效指向 fixture" contains "$(echo "$out" | tail -n +2)" "$name"
+
+  # 真实验证路径（2026-09-12 待办收尾，补"验证连通性"覆盖为零的盲区）：本地 stub 起
+  # openai 兼容端点（网关经 sim 网桥网关 10.10.210.1 回宿主，同 git_fixture 口径），
+  # no_verify=false 切路由 → 网关实测端点。stub 不可用（端口占用/python 缺失）则如实 SKIP。
+  local stub_pid="" stub_port=19419
+  python3 - <<'PYSTUB' >/dev/null 2>&1 &
+import http.server, json, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0)); self.rfile.read(n)
+        body = json.dumps({"id": "stub", "object": "chat.completion",
+                           "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                           "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}).encode()
+        self.send_response(200); self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.HTTPServer(('0.0.0.0', 19419), H).serve_forever()
+PYSTUB
+  stub_pid=$!
+  sleep 1
+  if curl -sS -m 3 -o /dev/null -X POST "http://127.0.0.1:$stub_port/v1/chat/completions" 2>/dev/null; then
+    out=$(http POST /v1/inference/providers \
+      "{\"name\":\"$name-stub\",\"type\":\"openai\",\"credentials\":{\"OPENAI_API_KEY\":\"sk-stub\"},\"config\":{\"OPENAI_BASE_URL\":\"http://10.10.210.1:$stub_port\"}}" "$ACCESS")
+    check "创建 stub provider（真实端点，大写约定键）" eq "$(echo "$out" | head -1)" "200"
+    out=$(http PUT /v1/inference/route "{\"provider\":\"$name-stub\",\"model\":\"stub-model\",\"no_verify\":false}" "$ACCESS")
+    check "真实验证路径：no_verify=false 切路由 200" eq "$(echo "$out" | head -1)" "200"
+    check "回执 validation_performed=true（网关实测端点）" contains "$(echo "$out" | tail -n +2)" '"validation_performed":true'
+    check "validated_endpoints 非空（端点可达被记录）" test -n "$(echo "$out" | tail -n +2 | grep -o '"validated_endpoints":\[[^]]\+\]')"
+    http DELETE "/v1/inference/providers/$name-stub" "" "$ACCESS" >/dev/null
+  else
+    check "真实验证路径（stub 端点）" test 0 = 1 "SKIP：本地 stub 未就绪（端口 $stub_port）"
+  fi
+  [ -n "$stub_pid" ] && kill "$stub_pid" 2>/dev/null
 
   # 上游语义（2026-09-07 实测钉死）：网关允许删除"在用" provider（deleted:true），
   # 且路由悬空存活——破坏不在删除时暴露，而在下一次 AI 阶段路由解析时；
@@ -311,6 +373,142 @@ c10_inference_admin() {
   check "幂等重删 deleted=false" contains "$(echo "$out" | tail -n +2)" '"deleted":false'
 }
 
+# ---------- 11 增量扫描两连扫（ADR-225；设计=伞仓 docs/designs/incremental-scan.md） ----------
+# 链路：首扫全量（基线）→ 改 1 增 1 删 1 后二扫增量 → 断言 changed/deleted 快照、
+# findings 继承（未变更文件终态复制+继承标记）、变更文件旧 findings 不继承、
+# 删除文件 findings 不复活 → 三扫零变更全继承 → 新项目无基线诚实降级全量。
+# 注：AI 任务卡的增量段断言由 dsh-runtime 单测承担（sandbox_incremental_test.go）——
+# 本用例锁定 SAST_ONLY 确定性路径，不引 LLM 依赖。
+c11_incremental_two_scan() {
+  echo "[11] 增量扫描两连扫（服务端内容对比+继承物化）"
+  check "登录 admin" login
+  local work; work=$(mktemp -d)
+  local pid tid1 out body
+
+  # 基线树：mod.py(将改) + keep.py(不动) + del.py(将删)
+  cat > "$work/mod.py" <<'PY'
+import sqlite3
+def q(uid):
+    cur = sqlite3.connect("a.db").cursor()
+    cur.execute("SELECT * FROM t WHERE id = '%s'" % uid)  # B608
+    return cur.fetchone()
+PY
+  cat > "$work/keep.py" <<'PY'
+TOKEN = "hunter2-keep-secret"  # B105（继承锚点：二扫后此 finding 必须带继承标记）
+PY
+  cat > "$work/del.py" <<'PY'
+PWD = "hunter2-del-secret"  # B105（删除锚点：二扫后不得复活）
+PY
+  make_zip_multi "$work/v1.zip" "$work" mod.py keep.py del.py
+
+  out=$(http POST /v1/projects '{"project":{"name":"sim-e2e-增量两连扫","default_branch":"main","default_scan_mode":"SCAN_MODE_SAST_ONLY"}}' "$ACCESS")
+  pid=$(jsonq "$(echo "$out" | tail -n +2)" "(d.get('project') or d)['project_id']")
+  check "创建项目（上传型）" nonempty "$pid"
+
+  tid1=$(scan_once "$work/v1.zip" "$pid" "")
+  T0=$SECONDS
+  check "首扫（全量基线）COMPLETED" eq "$(poll_task "$tid1" | cut -d'|' -f1)" "TASK_STATUS_COMPLETED"
+  FULL_T=$((SECONDS - T0))
+  out=$(http GET "/v1/findings?task_id=$tid1" "" "$ACCESS"); body=$(echo "$out" | tail -n +2)
+  local base_n; base_n=$(jsonq "$body" "len(d.get('findings',[]))")
+  check "基线发现 ≥3（mod/keep/del 各至少 1，实际=$base_n）" test "${base_n:-0}" -ge 3
+  local keep_id; keep_id=$(jsonq "$body" "[f for f in d['findings'] if f['location']['file_path'].endswith('keep.py')][0]['finding_id']")
+  check "取 keep.py 基线 finding_id（继承对照锚）" nonempty "$keep_id"
+
+  # 二扫树：mod.py 改内容 + new.py 新增 + del.py 删除（keep.py 原样）
+  cat > "$work/mod.py" <<'PY'
+import sqlite3
+def q(uid, name):
+    cur = sqlite3.connect("a.db").cursor()
+    cur.execute("SELECT * FROM t WHERE id = '%s' AND n = '%s'" % (uid, name))  # B608（内容已变）
+    return cur.fetchone()
+PY
+  cat > "$work/new.py" <<'PY'
+API_SECRET = "hunter2-new-secret"  # B105（新发现锚点；注意 B105 默认词表=password/passwd/pwd/secret/token/secrete——不含 key，API_KEY 不会触发）
+PY
+  rm -f "$work/del.py" "$work/v1.zip"
+  make_zip_multi "$work/v2.zip" "$work" mod.py keep.py new.py
+
+  local tid2; tid2=$(scan_once "$work/v2.zip" "$pid" "true")
+  local T1; T1=$SECONDS
+  local res2; res2=$(poll_task "$tid2")
+  echo "  - 时长观测（A23.4，只观测不设阈值）：全量基线 ${FULL_T}s vs 增量二扫 $((SECONDS - T1))s"
+  check "二扫（增量）COMPLETED（实际=$res2）" eq "$(echo "$res2" | cut -d'|' -f1)" "TASK_STATUS_COMPLETED"
+
+  out=$(http GET "/v1/tasks/$tid2" "" "$ACCESS"); body=$(echo "$out" | tail -n +2)
+  check "快照：baseline=首扫任务" eq "$(jsonq "$body" "d.get('baseline_task_id','')")" "$tid1"
+  check "快照：diff_source=content" eq "$(jsonq "$body" "d.get('diff_source','')")" "content"
+  check "快照：changed=2（mod.py+new.py）" eq "$(jsonq "$body" "len(d.get('changed_files',[]))")" "2"
+  check "快照：deleted=1（del.py）" eq "$(jsonq "$body" "len(d.get('deleted_files',[]))")" "1"
+  check "快照：changed 含 mod.py" contains "$(jsonq "$body" "','.join(d.get('changed_files',[]))")" "mod.py"
+  check "快照：deleted 为 del.py" contains "$(jsonq "$body" "','.join(d.get('deleted_files',[]))")" "del.py"
+
+  out=$(http GET "/v1/findings?task_id=$tid2" "" "$ACCESS"); body=$(echo "$out" | tail -n +2)
+  local inh_n fresh_n del_n keep_inh
+  inh_n=$(jsonq "$body" "len([f for f in d['findings'] if f.get('inherited_from_task_id')])")
+  fresh_n=$(jsonq "$body" "len([f for f in d['findings'] if not f.get('inherited_from_task_id')])")
+  del_n=$(jsonq "$body" "len([f for f in d['findings'] if f['location']['file_path'].endswith('del.py')])")
+  keep_inh=$(jsonq "$body" "len([f for f in d['findings'] if f['location']['file_path'].endswith('keep.py') and f.get('inherited_from_task_id')])")
+  check "继承 ≥1（keep.py 终态复制，实际=$inh_n）" test "${inh_n:-0}" -ge 1
+  check "keep.py 继承项带 inherited 标记（实际=$keep_inh）" test "${keep_inh:-0}" -ge 1
+  check "新发现 ≥2（mod.py 重扫+new.py，实际=$fresh_n）" test "${fresh_n:-0}" -ge 2
+  check "del.py findings 不复活（实际=$del_n）" eq "${del_n:-0}" "0"
+  check "继承标记指向基线任务" contains "$(jsonq "$body" "set(f.get('inherited_from_task_id','') for f in d['findings'])")" "$tid1"
+
+  # A23.1 补盲（2026-09-11 review）：verdict 复制比对（"终态复制"的实证断言）+ 报告生成
+  local base_verdict; base_verdict=$(jsonq "$(http GET "/v1/findings/$keep_id" "" "$ACCESS" | tail -n +2)" "(d.get('finding') or d).get('ai_verdict','')")
+  local inh_verdict; inh_verdict=$(jsonq "$body" "[f for f in d['findings'] if f['location']['file_path'].endswith('keep.py') and f.get('inherited_from_task_id')][0].get('ai_verdict','')")
+  check "keep.py 基线 verdict 非空" nonempty "$base_verdict"
+  check "keep.py 继承项 verdict 与基线一致（终态复制实证）" eq "$inh_verdict" "$base_verdict"
+  local rep_n; rep_n=$(jsonq "$(http GET "/v1/reports?task_id=$tid2" "" "$ACCESS" | tail -n +2)" "len(d.get('reports',[]))")
+  check "二扫报告已生成（完整视图产物，实际=$rep_n）" test "${rep_n:-0}" -ge 1
+
+  # 三扫：零变更（同一 zip 重传）→ 全继承
+  local tid3; tid3=$(scan_once "$work/v2.zip" "$pid" "true")
+  check "三扫（零变更）COMPLETED" eq "$(poll_task "$tid3" | cut -d'|' -f1)" "TASK_STATUS_COMPLETED"
+  out=$(http GET "/v1/tasks/$tid3" "" "$ACCESS"); body=$(echo "$out" | tail -n +2)
+  check "三扫快照：changed=0（零变更语义）" eq "$(jsonq "$body" "len(d.get('changed_files',[]))")" "0"
+  out=$(http GET "/v1/findings?task_id=$tid3" "" "$ACCESS"); body=$(echo "$out" | tail -n +2)
+  local all_inh; all_inh=$(jsonq "$body" "len([f for f in d['findings'] if not f.get('inherited_from_task_id')])")
+  check "三扫全继承（新发现=0，实际=$all_inh）" eq "${all_inh:-0}" "0"
+
+  # 降级链：全新项目无基线 → 增量请求自动降级全量 + 原因可见（诚实降级）
+  out=$(http POST /v1/projects '{"project":{"name":"sim-e2e-增量降级","default_branch":"main","default_scan_mode":"SCAN_MODE_SAST_ONLY"}}' "$ACCESS")
+  local pid2; pid2=$(jsonq "$(echo "$out" | tail -n +2)" "(d.get('project') or d)['project_id']")
+  make_zip_multi "$work/d.zip" "$work" keep.py
+  local tid4; tid4=$(scan_once "$work/d.zip" "$pid2" "true")
+  check "无基线项目增量请求 → 降级后仍 COMPLETED" eq "$(poll_task "$tid4" | cut -d'|' -f1)" "TASK_STATUS_COMPLETED"
+  out=$(http GET "/v1/tasks/$tid4" "" "$ACCESS"); body=$(echo "$out" | tail -n +2)
+  check "降级原因可见（no_baseline，不静默）" contains "$(jsonq "$body" "d.get('config',{}).get('incremental_degraded_reason','')")" "no_baseline"
+  check "降级任务无增量快照（baseline 空）" eq "$(jsonq "$body" "d.get('baseline_task_id','')")" ""
+
+  echo "$tid2" > /tmp/sim-e2e-task-id
+  rm -rf "$work"
+}
+
+# scan_once — 上传 zip + 建任务（incremental 空串=全量）+ start，输出 task_id
+scan_once() { # scan_once <zip> <project_id> <incremental>
+  local zip="$1" pid="$2" inc="$3" out tid fid
+  local up; up=$(curl -sS -m 60 -X POST "$BASE_URL/v1/uploads/archive" \
+    -H "Authorization: Bearer $ACCESS" -F "file=@$zip;type=application/zip")
+  fid=$(jsonq "$up" "d['file_id']")
+  out=$(http POST /v1/tasks "{\"project_id\":\"$pid\",\"scan_mode\":\"SCAN_MODE_SAST_ONLY\",\"sast_tools\":[\"bandit\"],\"config\":{\"upload_file_id\":\"$fid\"},\"incremental\":${inc:-false},\"git_anchor\":{\"commit\":\"e2e0000000000000000000000000000000000000\",\"branch\":\"main\",\"dirty\":false,\"remote\":\"git://e2e\"}}" "$ACCESS")
+  tid=$(jsonq "$(echo "$out" | tail -n +2)" "d['task_id']")
+  http POST "/v1/tasks/$tid/start" "" "$ACCESS" >/dev/null
+  echo "$tid"
+}
+
+# make_zip_multi — 多文件 zip（lib.sh make_zip 仅单文件）
+make_zip_multi() { # make_zip_multi <输出.zip> <目录> <文件...>
+  python3 - "$@" <<'PY'
+import sys, zipfile
+out, src, names = sys.argv[1], sys.argv[2], sys.argv[3:]
+with zipfile.ZipFile(out, 'w') as z:
+    for n in names:
+        z.write(f"{src}/{n}", n)
+PY
+}
+
 # ---------- 主流程 ----------
 run_case() {
   echo ""; echo "======== 用例 $1 ========"
@@ -318,7 +516,7 @@ run_case() {
     01) c01_health ;; 02) c02_auth ;; 03) c03_projects ;;
     04) c04_sast_fullchain ;; 05) c05_console ;; 06) c06_notifications ;;
     07) c07_ai ;; 08) c08_project_upload_autotask ;; 09) c09_observability ;;
-    10) c10_inference_admin ;;
+    10) c10_inference_admin ;; 11) c11_incremental_two_scan ;;
     *) echo "未知用例 $1"; exit 2 ;;
   esac
 }
@@ -328,7 +526,7 @@ login || { echo "登录失败——模拟栈未就绪或凭据不符（BASE_URL=
 if [ $# -gt 0 ]; then
   for c in "$@"; do run_case "$c"; done
 else
-  for c in 01 02 03 04 05 06 07 08 09 10; do run_case "$c"; done
+  for c in 01 02 03 04 05 06 07 08 09 10 11; do run_case "$c"; done
 fi
 
 echo ""

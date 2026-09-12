@@ -1,7 +1,9 @@
 // 推理 Provider 管理页（ADR-217）：AI 推理 provider 增删改查 + 工作区推理路由查看/切换。
 // 链路：/v1/inference/*（admin 面）→ engine → openshell-manager → OpenShell 网关
-// （provider 权威存储 gateway.db，凭据加密）。凭据只进不出：编辑时留空提交，
-// 已存凭据不可见（服务端读路径本就不回流凭据）。
+// （provider 权威存储 gateway.db，凭据加密）。凭据只进不出：GET 永不回流 credentials，
+// PUT 空 credentials={} 会清空已存凭据——编辑留空提交必须经 Modal 显式确认（防误清）。
+// 键名约定：网关按大写约定键解析端点（openai 系 OPENAI_BASE_URL/OPENAI_API_KEY；
+// anthropic BASE_URL/API_KEY），小写键静默存储但不被识别（2026-09-11 用户报障）。
 // 生效语义：provider/路由变更影响下一个任务的 AI 阶段，运行中任务不受影响。
 // 非 admin 由 App 路由守卫与本页双重拦截（后端网关 requireAdmin 是最终防线）。
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -23,18 +25,38 @@ interface KVRow {
   value: string;
 }
 
+// 键名约定（2026-09-11 用户报障取证）：OpenShell 网关按 provider config/credentials 的
+// 大写约定键解析端点——openai/openai-compatible/deepseek/zhipu 型 → OPENAI_BASE_URL/OPENAI_API_KEY；
+// anthropic 型 → BASE_URL/API_KEY。小写键（base_url/api_key）会被静默存储但不被识别，
+// 切路由验证时失败。此前预置小写键即根因。
+const KEY_CONVENTION_HINT =
+  '网关按约定大写键解析端点（openai 型：OPENAI_BASE_URL/OPENAI_API_KEY；anthropic 型：BASE_URL/API_KEY）；其他自定义键将被忽略';
+const OPENAI_PRESET = { cred: 'OPENAI_API_KEY', conf: 'OPENAI_BASE_URL' };
+const ANTHROPIC_PRESET = { cred: 'API_KEY', conf: 'BASE_URL' };
+// anthropic 型用独立约定键，其余已支持型共用 openai 系约定键（未选/未知型回退 openai 系缺省）
+function presetKeysForType(type: string): { cred: string; conf: string } {
+  return type === 'anthropic' ? ANTHROPIC_PRESET : OPENAI_PRESET;
+}
+
 function rowsToMap(rows: KVRow[] | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   for (const r of rows ?? []) {
     const k = r.key?.trim();
     const v = r.value ?? '';
     // 只提交填完整的行：值留空的行整体丢弃——编辑凭据全留空 → {} = 清空已存凭据
+    //（防误清：该语义仅允许经 Modal 显式确认后到达，见 onFinish）
     if (k && v !== '') out[k] = v;
   }
   return out;
 }
 
-function KVEditor({ name, valueLabel, password }: { name: string; valueLabel: string; password?: boolean }) {
+// 凭据行是否有任一非空值（防误清判定：全空 = 意图清除）
+function rowsHaveValue(rows: KVRow[] | undefined): boolean {
+  return (rows ?? []).some((r) => (r.value ?? '') !== '');
+}
+
+function KVEditor({ name, keyPlaceholder, valueLabel, password }:
+{ name: string; keyPlaceholder: string; valueLabel: string; password?: boolean }) {
   return (
     <Form.List name={name}>
       {(fields, { add, remove }) => (
@@ -42,7 +64,7 @@ function KVEditor({ name, valueLabel, password }: { name: string; valueLabel: st
           {fields.map((f) => (
             <Space key={f.key} style={{ display: 'flex', marginBottom: 4 }} align="baseline">
               <Form.Item name={[f.name, 'key']} rules={[{ required: true, message: '键必填' }]} style={{ marginBottom: 0 }}>
-                <Input placeholder="键（如 api_key）" style={{ width: 180 }} />
+                <Input placeholder={keyPlaceholder} style={{ width: 180 }} />
               </Form.Item>
               <Form.Item name={[f.name, 'value']} style={{ marginBottom: 0 }}>
                 {password ? <Input.Password placeholder={valueLabel} autoComplete="new-password" /> : <Input placeholder={valueLabel} />}
@@ -84,6 +106,11 @@ export default function ProvidersPage() {
   const [editing, setEditing] = useState<InferenceProvider | null>(null); // null=新建
   const [formOpen, setFormOpen] = useState(false);
   const [form] = Form.useForm();
+  // 防误清确认（受控 Modal，随页面 React 树渲染）
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [pendingValues, setPendingValues] = useState<{
+    name: string; type: string; credentials: KVRow[]; config: KVRow[];
+  } | null>(null);
   const save = useMutation({
     mutationFn: async (v: {
       name: string; type: string; credentials: KVRow[]; config: KVRow[];
@@ -97,8 +124,15 @@ export default function ProvidersPage() {
         ? updateInferenceProvider(editing.name, payload)
         : createInferenceProvider(v.name, payload);
     },
-    onSuccess: (r) => {
-      message.success(r.created ? `Provider「${r.name}」已创建` : `Provider「${r.name}」已更新`);
+    // 凭据语义动态文案（2026-09-11 用户报障）：服务端永不回显 credentials（GET 响应无该键），
+    // 用户必须被告知凭据发生了什么——创建=写入；编辑非空=覆盖生效；编辑全空（经确认）=清除
+    onSuccess: (r, v) => {
+      const toast = r.created
+        ? `Provider「${r.name}」已创建；凭据已写入（服务端不再回显）`
+        : rowsHaveValue(v.credentials)
+          ? `Provider「${r.name}」已更新；新凭据已生效`
+          : `Provider「${r.name}」已更新；已存凭据已清除`;
+      message.success(toast);
       setFormOpen(false);
       form.resetFields();
       qc.invalidateQueries({ queryKey: ['inference-providers'] });
@@ -106,11 +140,45 @@ export default function ProvidersPage() {
     onError: (e) => message.error(`保存失败：${(e as Error).message}`),
   });
 
+  // 提交闸门（防误清，2026-09-11 用户报障）：PUT 空 credentials={} 会清空已存凭据，
+  // 而 rowsToMap 丢空值行 → 编辑不填凭据提交 = 静默清空。现：
+  //   新建：凭据至少一行非空才允许提交（无凭据 provider 无法通过任何验证）；
+  //   编辑：凭据行全空 → 受控确认 Modal 显式确认后才按原逻辑提交（credentials:{}），取消返回表单。
+  const onFormFinish = (v: { name: string; type: string; credentials: KVRow[]; config: KVRow[] }) => {
+    if (!editing && !rowsHaveValue(v.credentials)) {
+      message.error('凭据不能为空——新建无凭据的 provider 无法通过任何验证');
+      return;
+    }
+    if (editing && !rowsHaveValue(v.credentials)) {
+      setPendingValues(v);
+      setClearConfirmOpen(true);
+      return;
+    }
+    save.mutate(v);
+  };
+
+  // type 变化联动（2026-09-11 用户报障）：行仍为"未填值"（值为空且键=约定预置键）时，
+  // 按 type 重置预置键——anthropic → API_KEY/BASE_URL，其余 → OPENAI_API_KEY/OPENAI_BASE_URL。
+  // 已填值或用户自定义键不碰。
+  const onTypeChange = (type: string) => {
+    const preset = presetKeysForType(type);
+    const resetIfPreset = (listName: 'credentials' | 'config', fromKeys: string[], toKey: string) => {
+      const rows = (form.getFieldValue(listName) ?? []) as KVRow[];
+      if (rows.length === 1 && rows[0] && rows[0].value === '' && fromKeys.includes(rows[0].key)) {
+        form.setFieldValue([listName, 0, 'key'], toKey);
+      }
+    };
+    resetIfPreset('credentials', [OPENAI_PRESET.cred, ANTHROPIC_PRESET.cred], preset.cred);
+    resetIfPreset('config', [OPENAI_PRESET.conf, ANTHROPIC_PRESET.conf], preset.conf);
+  };
+
   const openCreate = () => {
     setEditing(null);
     form.resetFields();
+    // type 未选：预置 openai 系缺省键（选 anthropic 且行未填值时由 onTypeChange 联动重置）
     form.setFieldsValue({
-      name: '', type: '', credentials: [{ key: 'api_key', value: '' }], config: [{ key: 'base_url', value: '' }],
+      name: '', type: '',
+      credentials: [{ key: OPENAI_PRESET.cred, value: '' }], config: [{ key: OPENAI_PRESET.conf, value: '' }],
     });
     setFormOpen(true);
   };
@@ -120,8 +188,8 @@ export default function ProvidersPage() {
     form.setFieldsValue({
       name: p.name,
       type: p.type,
-      // 凭据不可见（服务端不回流）：预置空行待填
-      credentials: [{ key: 'api_key', value: '' }],
+      // 凭据不可见（服务端不回流）：预置空行待填（键按该 provider 类型的约定键预置）
+      credentials: [{ key: presetKeysForType(p.type).cred, value: '' }],
       config: Object.entries(p.config).map(([key, value]) => ({ key, value })),
     });
     setFormOpen(true);
@@ -253,7 +321,7 @@ export default function ProvidersPage() {
         confirmLoading={save.isPending}
         destroyOnClose
       >
-        <Form form={form} layout="vertical" onFinish={(v) => save.mutate(v)}>
+        <Form form={form} layout="vertical" onFinish={onFormFinish}>
           <Form.Item
             name="name"
             label="名称"
@@ -269,7 +337,16 @@ export default function ProvidersPage() {
             extra="Provider 类型串（以 OpenShell 网关支持的类型为准）"
           >
             <AutoComplete
-              options={['anthropic', 'openai', 'openai-compatible', 'deepseek', 'zhipu'].map((t) => ({ value: t }))}
+              options={[
+                { value: 'openai' },
+                { value: 'openai-compatible' },
+                { value: 'deepseek' },
+                { value: 'zhipu' },
+                // anthropic 型端点键与 openai 系不同（BASE_URL/API_KEY）——下拉即警示，防错键；
+                // BASE_URL 须 https（ADR-228：明文 http 会被网关验证层回落官方端点，区域 403）
+                { value: 'anthropic', label: 'anthropic（注意：端点键为 BASE_URL / API_KEY，与 openai 系不同；BASE_URL 须 https）' },
+              ]}
+              onChange={onTypeChange}
               placeholder="如 anthropic"
             />
           </Form.Item>
@@ -277,15 +354,33 @@ export default function ProvidersPage() {
             label="凭据（credentials）"
             required
             extra={editing
-              ? '已存凭据不可见；本次填写将整体覆盖，留空即清空已存凭据'
-              : '仅写入网关加密存储，保存后任何页面不再显示'}
+              ? `服务端不回显已存凭据；留空提交将清除已存凭据。${KEY_CONVENTION_HINT}`
+              : `仅写入网关加密存储，保存后任何页面不再显示。${KEY_CONVENTION_HINT}`}
           >
-            <KVEditor name="credentials" valueLabel="凭据值（如 sk-…）" password />
+            <KVEditor name="credentials" keyPlaceholder="键（如 OPENAI_API_KEY）" valueLabel="凭据值（如 sk-…）" password />
           </Form.Item>
-          <Form.Item label="配置（config）" extra="如 base_url 等，取决于 Provider 类型">
-            <KVEditor name="config" valueLabel="配置值" />
+          <Form.Item label="配置（config）" extra={KEY_CONVENTION_HINT}>
+            <KVEditor name="config" keyPlaceholder="键（如 OPENAI_BASE_URL）" valueLabel="配置值" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* 防误清确认（2026-09-11 用户报障）：编辑凭据全空提交时显式确认清除语义。
+          受控 Modal（页内渲染）而非 Modal.confirm 命令式门户——取消/重开状态确定。 */}
+      <Modal
+        title="确认清除已存凭据？"
+        open={clearConfirmOpen}
+        onCancel={() => { setClearConfirmOpen(false); setPendingValues(null); }}
+        onOk={() => {
+          if (pendingValues) save.mutate(pendingValues);
+          setClearConfirmOpen(false);
+        }}
+        okText="确认清除"
+        okButtonProps={{ danger: true }}
+        cancelText="返回表单"
+        confirmLoading={save.isPending}
+      >
+        凭据行留空将清除已存凭据（网关不回显凭据，无法恢复）。确认清除？
       </Modal>
 
       <Modal

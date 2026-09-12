@@ -42,6 +42,49 @@ func NewTaskEventProducer(brokers []string) *TaskEventProducer {
 	}
 }
 
+// buildFindingCreatedEvent — finding.created 消息构造纯函数（可测，R64/D5）。
+// 载荷对齐 storage-service eventPayload 消费映射（notification.go）：task_id/
+// finding_id/severity/created_by（收件人链首个非空）。此前该 topic 只有消费端零
+// 生产者——高危发现站内通知永远不触发（2026-09-11 跨仓审计死契约）。
+func buildFindingCreatedEvent(taskID, createdBy string, severity pb.Severity, findingID string) kafka.Message {
+	payload, _ := json.Marshal(map[string]any{
+		"task_id":     taskID,
+		"finding_id":  findingID,
+		"severity":    severity.String(),
+		"created_by":  createdBy,
+	})
+	return kafka.Message{
+		Topic:   "finding.created",
+		Key:     []byte(findingID),
+		Value:   payload,
+		Headers: []kafka.Header{{Key: "event_type", Value: []byte("finding.created")}},
+	}
+}
+
+// PublishFindingsCreatedAsync — 任务成功收尾时批量发布高危 finding.created（非致命）。
+func (p *TaskEventProducer) PublishFindingsCreatedAsync(taskID, createdBy string, findings []*pb.UnifiedFinding) {
+	if p == nil || !p.enabled {
+		return
+	}
+	// 只发高危（消费端 HIGH/CRITICAL 阈值同口径——低危事件纯噪音且消费端必跳过）
+	msgs := make([]kafka.Message, 0, len(findings))
+	for _, f := range findings {
+		if f.GetSeverity() == pb.Severity_SEVERITY_HIGH || f.GetSeverity() == pb.Severity_SEVERITY_CRITICAL {
+			msgs = append(msgs, buildFindingCreatedEvent(taskID, createdBy, f.GetSeverity(), f.GetFindingId()))
+		}
+	}
+	if len(msgs) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := p.writer.WriteMessages(ctx, msgs...); err != nil {
+			log.Printf("[task-events] finding.created publish failed for %s (non-fatal): %v", taskID, err)
+		}
+	}()
+}
+
 // buildTaskEvent — 消息构造纯函数（可测）。
 // ADR-212: 消费端按 event_type 头分发（result event_consumer.processMessage），
 // 此前不带头→task.created/completed 全部落入 "Unknown event type" 被静默丢弃，

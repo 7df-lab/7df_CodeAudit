@@ -56,7 +56,7 @@ export function actionLabel(a: TaskAction): string {
   return labels[a];
 }
 
-export async function dispatchAction(task: ScanTask, a: TaskAction, reason?: string): Promise<string> {
+export async function dispatchAction(task: ScanTask, a: TaskAction): Promise<string> {
   const id = task.task_id;
   switch (a) {
     case 'start':

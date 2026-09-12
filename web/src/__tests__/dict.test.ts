@@ -26,6 +26,13 @@ describe('枚举字典', () => {
     expect(zh(TASK_STATUS, 'TASK_STATUS_FUTURE')).toBe('TASK_STATUS_FUTURE');
     expect(zh(SEVERITY, 'SEVERITY_HIGH')).toBe('高危');
   });
+  it('zh 空值走通用回退，无枚举特判（B3-5）；"未判定"由调用点显式归一后走查表路径', () => {
+    expect(zh(AI_VERDICT, undefined)).toBe('未知');
+    expect(zh(AI_VERDICT, '')).toBe('未知');
+    expect(zh(AI_VERDICT, 'AI_VERDICT_UNSPECIFIED')).toBe('未判定'); // 正常键查表，非回退特判
+    expect(zh(TASK_STATUS, undefined)).toBe('未知');
+    expect(zh(TASK_STATUS, 'TASK_STATUS_FUTURE')).toBe('TASK_STATUS_FUTURE');
+  });
   it('ReportFormat 四值映射 + reportFileExt（下载扩展名，未知/0 兜底 json——编排器缺省产 JSON）', () => {
     for (const k of [1, 2, 3, 4]) expect(REPORT_FORMAT[k]).toBeTruthy();
     expect(reportFileExt(3)).toBe('json');

@@ -5,14 +5,14 @@
 // 职责边界：项目=源码归属（上传包/仓库地址二选一），任务=扫描执行（config 留空，
 // 源码来源由项目解析；任务级 config.upload_file_id 保留为单次覆盖档，见 ADR-200/202）。
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Upload, type UploadFile } from 'antd';
-import { Button, Form, Input, Modal, Select, Space, Table, Typography, message } from 'antd';
+import { Button, Form, Input, Modal, Select, Space, Table, Typography, Upload, message, type UploadFile } from 'antd';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { InboxOutlined } from '@ant-design/icons';
 import {
   createProject,
   createTask,
+  getProjectConfig,
   getProjects,
   MAX_ARCHIVE_UPLOAD_BYTES,
   updateProjectConfig,
@@ -31,6 +31,23 @@ const NEEDS_TOOLS = new Set([
   'SCAN_MODE_SAST_REVIEW',
 ]);
 
+// 仓库列的上传件名单元格（2026-09-09 用户指令"项目页应显示上传压缩包的名称"）：
+// 原始文件名不进 storage 对象键（uploads/<id><ext>，网关只拿它判扩展名），落项目
+// config.upload_file_name（本批起创建时写入）；存量项目无此键 → 如实回落"上传压缩包"。
+function UploadNameCell({ projectId }: { projectId: string }) {
+  const { data } = useQuery({
+    queryKey: ['project-config', projectId],
+    queryFn: () => getProjectConfig(projectId),
+    staleTime: 60_000,
+  });
+  const name = data?.config?.upload_file_name;
+  return (
+    <Typography.Text title={data?.config?.upload_file_id}>
+      {name || '上传压缩包'}
+    </Typography.Text>
+  );
+}
+
 export default function ProjectsPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -40,6 +57,8 @@ export default function ProjectsPage() {
   // 与 uploadFileId 单一状态源；onRemove 同步清零，杜绝 ADR-202 在任务页修过的 file_id 残留。
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [uploadFileId, setUploadFileId] = useState<string | null>(null);
+  // 2026-09-09 用户指令: 原始文件名随 file_id 一并落项目 config（列表/详情展示用）
+  const [uploadFileName, setUploadFileName] = useState<string>('');
   const [uploading, setUploading] = useState(false);
   // ADR-164: 服务端游标翻页（offset 游标+total, 契约 L1188-1189；DESC 排序保证新项目首页顶部）
   const [page, setPage] = useState(1);
@@ -51,11 +70,18 @@ export default function ProjectsPage() {
   });
   const total = data?.pagination?.total ?? 0;
 
-  const finishModal = () => {
-    setOpen(false);
+  // B4-2（审计修复）：弹窗收尾清空（确定/取消共用）——此前 onCancel 只 setOpen(false)，
+  // 上传态残留：取消后再开弹窗新建项目，旧 file_id 会随 config 写入新项目（源码指向错包）。
+  // 取消不触发 invalidate（无服务端变更，列表无需重拉）。
+  const resetModalState = () => {
     form.resetFields();
     setFileList([]);
     setUploadFileId(null);
+    setUploadFileName('');
+  };
+  const finishModal = () => {
+    setOpen(false);
+    resetModalState();
     qc.invalidateQueries({ queryKey: ['projects'] });
   };
 
@@ -72,9 +98,13 @@ export default function ProjectsPage() {
         default_scan_mode: values.default_scan_mode,
       });
       const pid = resp.project_id;
-      // ADR-203: 上传件 file_id 落项目 config（ADR-200 端点返回 file_id，不再有解包目录）
+      // ADR-203: 上传件 file_id 落项目 config（ADR-200 端点返回 file_id，不再有解包目录）；
+      // 2026-09-09 起原始文件名一并落 config.upload_file_name（项目页/详情展示，storage 对象键不含原名）
       if (pid && uploadFileId) {
-        await updateProjectConfig(pid, { upload_file_id: uploadFileId });
+        await updateProjectConfig(pid, {
+          upload_file_id: uploadFileId,
+          ...(uploadFileName ? { upload_file_name: uploadFileName } : {}),
+        });
       }
       return { pid, repoUrl: values.repo_url?.trim() ?? '' };
     },
@@ -118,7 +148,8 @@ export default function ProjectsPage() {
   const columns = [
     { title: '项目', dataIndex: 'name', render: (_: unknown, rec: Project) => <Link to={`/projects/${rec.project_id}`}>{rec.name}</Link> },
     { title: 'ID', dataIndex: 'project_id' },
-    { title: '仓库', dataIndex: 'repo_url', render: (v: string, rec: Project) => v || (rec.project_id ? '（上传压缩包）' : '—') },
+    // 2026-09-09 用户指令: 上传型项目显示压缩包原始文件名（不再千篇一律"（上传压缩包）"）
+    { title: '源码', dataIndex: 'repo_url', render: (v: string, rec: Project) => v || (rec.project_id ? <UploadNameCell projectId={rec.project_id} /> : '—') },
     { title: '默认分支', dataIndex: 'default_branch' },
     { title: '默认模式', dataIndex: 'default_scan_mode', render: (m: string) => zh(SCAN_MODE, m) },
   ];
@@ -149,7 +180,7 @@ export default function ProjectsPage() {
       <Modal
         title="新建项目"
         open={open}
-        onCancel={() => setOpen(false)}
+        onCancel={() => { setOpen(false); resetModalState(); }}
         onOk={() => form.submit()}
         confirmLoading={create.isPending}
       >
@@ -181,6 +212,7 @@ export default function ProjectsPage() {
                 try {
                   const res = await uploadArchive(file);
                   setUploadFileId(res.file_id);
+                  setUploadFileName(file.name);
                   setFileList([{ uid: res.file_id, name: file.name, status: 'done' }]);
                   message.success('上传成功——项目将以该压缩包为源码');
                 } catch (e) {
@@ -193,11 +225,12 @@ export default function ProjectsPage() {
               onRemove={() => {
                 setFileList([]);
                 setUploadFileId(null);
+                setUploadFileName('');
               }}
             >
               <p className="ant-upload-drag-icon"><InboxOutlined /></p>
               <p className="ant-upload-text">点击或拖拽上传压缩包</p>
-              <p className="ant-upload-hint">扫描任务启动时从存储拉回解包，解包目录即扫描目标（ADR-200）</p>
+              <p className="ant-upload-hint">扫描启动时自动拉取并解包，无需手动处理</p>
             </Upload.Dragger>
           </Form.Item>
           <Form.Item name="default_branch" label="默认分支" initialValue="main" rules={[{ required: true }]}>

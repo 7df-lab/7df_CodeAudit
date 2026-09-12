@@ -98,6 +98,10 @@ message UnifiedFinding {
   // 时间戳
   google.protobuf.Timestamp created_at = 22;
   google.protobuf.Timestamp updated_at = 23;
+
+  // 增量扫描继承标记（ADR-225）：空=本任务实扫产出；非空=从该基线任务复制的继承项
+  //（连带 verdict/AI 建议等终态列；复制不是引用——本任务上的后续变更不回写基线）
+  string inherited_from_task_id = 25;
 }
 
 // ============================================================
@@ -900,6 +904,10 @@ service ResultService {
 
   // 误报反馈闭环（评审整合项）
   rpc SubmitFindingFeedback(SubmitFindingFeedbackRequest) returns (SubmitFindingFeedbackResponse);
+
+  // 增量扫描继承（ADR-225）：复制基线任务中"未变更文件"的 findings 到新任务
+  //（写路径物化，连带 verdict/AI 建议终态；变更∪删除文件的旧 findings 不继承）
+  rpc InheritFindings(InheritFindingsRequest) returns (InheritFindingsResponse);  // 幂等
 }
 
 // ------------------------------------------------------------
@@ -1020,6 +1028,9 @@ service StorageService {
   rpc GetFileInfo(GetFileInfoRequest) returns (StoredFile);
   rpc DeleteFile(DeleteFileRequest) returns (google.protobuf.Empty);
   rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+  // 存储档位探测（ADR-225）：mode="s3"（MinIO 持久档）|"memory"（07 §10 降级档，重启即丢）。
+  // 消费方=task-service 卷缓存 GC——memory 档绝不删除卷树（删=数据不可恢复）。
+  rpc GetStorageMode(GetStorageModeRequest) returns (GetStorageModeResponse);
 }
 
 // ------------------------------------------------------------
@@ -1047,6 +1058,11 @@ message CreateScanTaskRequest {
   Priority priority = 5;
   map<string, string> config = 6;
   string created_by = 7;          // ADR-199: 创建者（gateway 自 JWT 注入；事件通知收件人链）
+  // ---- 增量扫描（ADR-225，D5 类型化契约，替代 config 字符串键方案）----
+  bool incremental = 8;           // 增量意图；显式 baseline_task_id 无效时创建即 4xx（不静默替换）
+  string baseline_task_id = 9;    // 显式基线；空=服务端按"同项目最近 COMPLETED 且源码可达"自动选定
+  GitAnchor git_anchor = 10;      // 插件采集的版本锚点（非 git 工作区为空）
+  string diff_hint = 11;          // 客户端 git diff --name-status 原文，仅交叉核对提示，不作 diff 依据
 }
 message GetScanTaskRequest { string task_id = 1; }
 message CancelScanTaskRequest { string task_id = 1; string reason = 2; }
@@ -1133,6 +1149,15 @@ message TaskSnapshotDelta {
   bool settled = 4;                  // 任务已终态：本帧后服务端关流
 }
 
+// GitAnchor — 版本锚点（ADR-225 D5：插件经 vscode.git 采集；任务持有"当时"快照，
+// 供审计"扫的是哪个版本"与扫前无变更预检；不参与基线解析）
+message GitAnchor {
+  string commit = 1;   // HEAD 全长 hash；非 git 工作区为空
+  string branch = 2;
+  bool dirty = 3;      // 扫描时刻工作区有未提交改动
+  string remote = 4;   // origin URL，项目↔仓库关联参考
+}
+
 message ScanTask {
   string task_id = 1;
   string project_id = 2;
@@ -1150,6 +1175,12 @@ message ScanTask {
   // upload_file_id 回写任务自身；项目持有"当前"指针，任务持有"当时"快照，
   // 项目重传/任务重试不漂移，报告可回答"扫的是哪份包"
   map<string, string> config = 13;
+  // ---- 增量扫描快照（ADR-225；Prepare 解析后回写任务自身，重试不重算）----
+  string baseline_task_id = 14;        // 增量基线；空=全量任务（含增量降级为全量）
+  repeated string changed_files = 15;  // 新增∪修改，相对剥壳后项目根（口径与 findings.file_path 对齐）
+  repeated string deleted_files = 16;  // 相对剥壳后项目根
+  GitAnchor git_anchor = 17;           // 扫描时刻版本锚点快照
+  string diff_source = 18;             // diff 机制审计：content（V1）| git（repo 型演进预留）
 }
 message TaskProgress {
   string task_id = 1;
@@ -1264,6 +1295,19 @@ message SubmitFindingFeedbackRequest {
 }
 message SubmitFindingFeedbackResponse { string feedback_id = 1; bool accepted = 2; }
 
+// --- 增量扫描继承（ADR-225）---
+message InheritFindingsRequest {
+  RequestMetadata metadata = 1;        // 幂等键（R4；调用方用任务稳定键，重试幂等跳过已继承行）
+  string baseline_task_id = 2;
+  string new_task_id = 3;
+  repeated string exclude_paths = 4;   // 变更∪删除文件（相对项目根）；其基线 findings 不继承
+}
+message InheritFindingsResponse {
+  int32 inherited_count = 1;
+  int32 skipped_count = 2;   // 命中排除清单（变更/删除文件）而跳过的条数
+  int32 failed_count = 3;
+}
+
 message GenerateReportRequest {
   RequestMetadata metadata = 1;   // 幂等键
   string task_id = 2;
@@ -1292,8 +1336,18 @@ message RunAIAnalysisRequest {
   ScanMode scan_mode = 6;
   int32 max_iterations_per_agent = 7;
   float confidence_threshold = 8;        // 0.0-1.0
+  // ---- 增量扫描（ADR-225 D3：AI 全量上下文 + 增量聚焦提示词）----
+  repeated string changed_files = 9;   // 空=全量任务；非空=注入 AI 任务卡的变更清单
+  repeated string deleted_files = 10;
+  string incremental_diff = 11;        // 变更 unified diff 节选（带大小上限；超预算由 dsh 落项目树文件指路）
 }
-message RunAIAnalysisResponse { AIInferenceResult result = 1; repeated FixSuggestion fix_suggestions = 2; }
+message RunAIAnalysisResponse {
+  AIInferenceResult result = 1;
+  repeated FixSuggestion fix_suggestions = 2;
+  // R56（2026-09-11 报障修复）: 沙箱不可达走 RuleScan 兜底时置真——此前降级路径
+  // success 返回且无标志，编排/前端无从区分"AI 真跑完"与"已降级"（阶段照样绿勾）。
+  bool degraded = 3;
+}
 message VerifySASTResultsRequest {
   RequestMetadata metadata = 1;
   string task_id = 2;
@@ -1433,6 +1487,7 @@ message RunSASTScanRequest {
   string tool_id = 4;
   int32 timeout_ms = 5;
   map<string, string> tool_config = 6;
+  repeated string changed_files = 7;  // 增量扫描（ADR-225）：仅扫这些文件；空=全量目录
 }
 message RunSASTScanResponse { ToolScanResult result = 1; }
 message RunMultipleScansRequest {
@@ -1440,6 +1495,7 @@ message RunMultipleScansRequest {
   string task_id = 2;
   string project_path = 3;
   repeated string tool_ids = 4;
+  repeated string changed_files = 5;  // 增量扫描（ADR-225）：仅扫这些文件；空=全量目录
 }
 message RunMultipleScansResponse { SASTScanResult result = 1; }
 message ListAvailableToolsRequest {}
@@ -1480,6 +1536,9 @@ message DownloadFileChunk { bytes data = 1; }
 message GetPresignedUrlRequest { string file_path = 1; enum UrlOp { URL_OP_UNSPECIFIED = 0; URL_OP_UPLOAD = 1; URL_OP_DOWNLOAD = 2; } UrlOp operation = 2; int64 ttl_seconds = 3; }
 message GetPresignedUrlResponse { string url = 1; google.protobuf.Timestamp expires_at = 2; }
 message GetFileInfoRequest { string file_id = 1; }
+// ADR-225: 存储档位探测（只读；无幂等键要求——读 RPC）
+message GetStorageModeRequest {}
+message GetStorageModeResponse { string mode = 1; }  // "s3" | "memory"
 message DeleteFileRequest { string file_id = 1; }
 message ListFilesRequest { string prefix = 1; PaginationRequest pagination = 2; }
 message ListFilesResponse { repeated StoredFile files = 1; PaginationResponse pagination = 2; }

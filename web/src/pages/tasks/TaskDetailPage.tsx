@@ -1,23 +1,20 @@
 // 任务详情（14号 §3.3 ②）。ADR-188（人类指令 2026-09-03）：左右两栏——左=AI 交互日志
-// 内联常驻（吸顶），右=任务信息/阶段时间线/执行日志/报告摘要/发现 Tabs。
+// 内联常驻（吸顶），右=任务信息+报告摘要（合并首卡）/阶段时间线/执行日志/发现 Tabs。
 // 快照供给：WS 推流在线时帧驱动（ADR-188 起 250ms 聚合近实时），断线回退 10s 轮询（终态自停）。
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Card, Descriptions, Popconfirm, Space, Steps, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Descriptions, Divider, Popconfirm, Space, Steps, Tabs, Tag, Typography, message } from 'antd';
 import { useEffect, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { api, getAccessToken, pollIntervalMs } from '../../api/client';
-import type { ScanTask, TaskLogEntry, TaskProgress, TaskSnapshot, TaskStage } from '../../api/types';
+import { Link } from 'react-router-dom';
+import { api, getAccessToken, getProjects, getReportContent, openReportWindow, pollIntervalMs } from '../../api/client';
+import type { ScanTask, TaskLogEntry, TaskSnapshot, TaskStage, UnifiedFinding } from '../../api/types';
 
-type TaskLogEntryType = TaskLogEntry;
-import FindingsPage from '../findings/FindingsPage';
-import { getReportContent } from '../../api/client';
+import FindingsPage, { isDegradedFinding } from '../findings/FindingsPage';
 import FusionView from '../views/FusionView';
 import ReviewView from '../views/ReviewView';
-import TaskLogPanel from '../../components/TaskLogPanel';
+import TaskLogPanel, { MAX_LOG_ROWS } from '../../components/TaskLogPanel';
 import AIInteractionLogPanel from '../../components/AIInteractionLogPanel';
-import { SCAN_MODE, STAGE_STATUS, STAGE_TYPE, TASK_STATUS, reportFileExt, zh } from '../../dict';
-import { Tabs } from 'antd';
-import { actionLabel, allowedActions, dispatchAction, isTerminal, progressRefetchInterval, type TaskAction } from '../../tasks/stateMachine';
+import { SCAN_MODE, STAGE_TYPE, TASK_STATUS, reportFileExt, zh } from '../../dict';
+import { actionLabel, allowedActions, dispatchAction, isTerminal, type TaskAction } from '../../tasks/stateMachine';
 
 // proto bytes（protojson base64）→ utf-8 原文（AI 交互日志增量）
 function b64ToText(b64: string): string {
@@ -58,6 +55,25 @@ function stageTimeText(st: TaskStage): string {
   return start ? `开始于 ${start}` : '';
 }
 
+// 降级警示（R56）：隔离订阅 findings 缓存——缓存更新仅重渲染本组件，
+// 不连带发现表格（展开行定位稳定性）。
+function DegradedNotice({ taskId }: { taskId: string }) {
+  const findingsCache = useQuery({
+    queryKey: ['findings', taskId],
+    enabled: false,
+    queryFn: (): { pages: { findings: UnifiedFinding[] }[] } => ({ pages: [] }),
+  });
+  const degraded = (findingsCache.data?.pages ?? []).some((pg) => (pg.findings ?? []).some(isDegradedFinding));
+  if (!degraded) return null;
+  return (
+    <Alert
+      type="warning"
+      showIcon
+      message="AI 推理未生效——沙箱不可达，已由内置规则引擎（RuleScan）兜底，全部发现标记为需人工复核"
+    />
+  );
+}
+
 export default function TaskDetailPage({ taskId }: { taskId: string }) {
   const qc = useQueryClient();
 
@@ -65,7 +81,7 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
   // 断线回退本轮询器（保底语义不变）。日志/AI 游标在 refs 中累进。
   const logAfterRef = useRef('');
   const aiCursorRef = useRef(0);
-  const [logRows, setLogRows] = useState<TaskLogEntryType[]>([]);
+  const [logRows, setLogRows] = useState<TaskLogEntry[]>([]);
   const [aiText, setAiText] = useState('');
   const [aiMeta, setAiMeta] = useState({ complete: false, total: 0 });
   const wsLiveRef = useRef(false);
@@ -74,18 +90,31 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
   // 快照增量吸收：轮询响应与 WS 帧（ADR-172 同构 JSON）共用一条路径。
   // log_id 去重 + AI 游标单调：轮询与 WS 游标各自独立（服务端连接游标自订阅位起算），
   // 首帧/重连交叠时此处兜底，杜绝重复行。
+  // B4-3（审计修复）保尾上限：超长任务的执行日志/AI 正文此前无界累积（万条日志行/数 MB
+  // 文本拖垮标签页）。日志保尾 MAX_LOG_ROWS（1000）条、AI 正文保尾 1M 字符，均留最新侧；
+  // 游标不受影响（logAfter/aiCursor 是服务端口径，丢弃的只是客户端已渲染历史）。
+  // 完整内容下载入口延后：服务端无日志全量导出端点，暂不做（TaskLogPanel 顶部如实提示
+  // 截断）；AI 侧既有"下载完整日志"按钮下载的是保尾后的尾部文本，不另做全量入口。
   const seenLogIdsRef = useRef<Set<string>>(new Set());
+  const MAX_AI_TEXT_CHARS = 1_000_000;
   const absorbSnapshot = (d: TaskSnapshot) => {
     const newLogs = (d.logs?.logs ?? []).filter((l) => !seenLogIdsRef.current.has(l.log_id));
     if (newLogs.length > 0) {
       for (const l of newLogs) seenLogIdsRef.current.add(l.log_id);
       logAfterRef.current = newLogs[newLogs.length - 1].log_id;
-      setLogRows((prev) => [...prev, ...newLogs]);
+      setLogRows((prev) => {
+        const next = [...prev, ...newLogs].slice(-MAX_LOG_ROWS);
+        // 去重集同步收敛到窗口内 id——防 Set 随任务时长无界增长（保尾的另一半）
+        if (next.length === MAX_LOG_ROWS) {
+          seenLogIdsRef.current = new Set(next.map((l) => l.log_id));
+        }
+        return next;
+      });
     }
     const nextCursor = Number(d.ai?.next_cursor ?? 0);
     if (nextCursor > aiCursorRef.current && (d.ai?.chunk ?? '') !== '') {
       aiCursorRef.current = nextCursor;
-      setAiText((prev) => prev + b64ToText(d.ai!.chunk));
+      setAiText((prev) => (prev + b64ToText(d.ai!.chunk)).slice(-MAX_AI_TEXT_CHARS));
     }
     setAiMeta({ complete: !!d.ai?.complete, total: Number(d.ai?.total_bytes ?? 0) });
   };
@@ -199,7 +228,6 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
   const task: ScanTask | undefined = snap?.task;
-  const progress: TaskProgress | undefined = snap?.progress ?? undefined;
   const isTerminalQuery = !!task && isTerminal(task.status);
   const isCompletedTask = !!task && task.status === 'TASK_STATUS_COMPLETED';
 
@@ -230,6 +258,18 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
     onError: (e) => message.error(`操作被拒绝：${(e as Error).message}`),
   });
 
+  // 降级可见性（2026-09-11 用户报障）：AI 降级（RuleScan 兜底）时任务仍 COMPLETED、
+  // 阶段时间线绿色对勾，用户无从得知 AI 推理未生效。此处 enabled:false 只订阅
+  // ['findings', taskId] 缓存（数据由内嵌 FindingsPage 拉取，零重复请求），发现级
+  // 降级痕迹警示已下沉到 <DegradedNotice>（隔离订阅）——findings 缓存更新不再
+  // 连带本页（含发现表格/展开行）重渲染，定位器/滚动位置保持稳定（R56 报障修复）。
+  // 面板空态归因用非订阅快照（挂载时点读一次，不建立缓存依赖）。
+  const queryClient = useQueryClient();
+  const aiDegradedSnapshot = (() => {
+    const cached = queryClient.getQueryData<{ pages: { findings: UnifiedFinding[] }[] }>(['findings', taskId]);
+    return (cached?.pages ?? []).some((pg) => (pg.findings ?? []).some(isDegradedFinding));
+  })();
+
   // ADR-150: 报告初步判断内联——拉取本任务最新报告并解析 summary，不再绕行报告中心
   const { data: taskReports } = useQuery({
     queryKey: ['task-reports', taskId],
@@ -238,6 +278,13 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
       reports: { report_id: string; format: number }[];
     },
   });
+  // 2026-09-09 GUI 评审: 头部信息卡显示项目名称（而非裸项目 ID）
+  const { data: projectsIndex } = useQuery({
+    queryKey: ['projects-index'],
+    queryFn: () => getProjects({ page_size: 200 }),
+    staleTime: 60_000,
+  });
+  const projectName = projectsIndex?.projects.find((p) => p.project_id === task?.project_id)?.name;
   const latestReport = taskReports?.reports?.[0];
   const { data: reportContent } = useQuery({
     queryKey: ['report-content', latestReport?.report_id],
@@ -258,16 +305,16 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
   const viewReport = () => {
     if (!latestReport) return;
     getReportContent(latestReport.report_id).then(({ format, content }) => {
-      const w = window.open('', '_blank');
-      if (!w) return;
+      // 审计 B3-2 纵深防御（fix-plan-0911 §14 升级）：报告内容统一经 openReportWindow 的
+      // sandboxed iframe 渲染（脚本全灭，CSP meta 前置双保险，注入统一收口在 client.ts）；
+      // JSON 分支保持转义 <pre> 文本。
       if (format === 'html') {
-        w.document.write(content);
+        openReportWindow(content, 'text/html');
       } else {
-        w.document.write('<pre style="font-size:13px;white-space:pre-wrap">' +
+        openReportWindow('<pre style="font-size:13px;white-space:pre-wrap">' +
           JSON.stringify(JSON.parse(content), null, 2).replace(/[<>&]/g,
-            (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c] || c)) + '</pre>');
+            (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c] || c)) + '</pre>', 'text/html');
       }
-      w.document.close();
     }).catch(() => message.error('打开失败'));
   };
   const downloadReport = async () => {
@@ -285,17 +332,6 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   };
 
-  const regenerate = useMutation({
-    mutationFn: async () => api.post(`/v1/tasks/${taskId}/report`, {}),
-    onSuccess: () => {
-      message.success('报告已生成——可在"查看报告"中打开');
-      qc.invalidateQueries({ queryKey: ['reports'] });
-      // 报告初步判断卡片的数据源——此前只失效 ['reports']/['reports', taskId]（前缀不覆盖本 key），
-      // 重新生成后卡片仍显示旧摘要，看起来像没生效
-      qc.invalidateQueries({ queryKey: ['task-reports', taskId] });
-    },
-  });
-
   if (taskError) {
     // ADR-147: 区分 404（任务已清除）与其他错误（限流/网络）——此前限流也误报"不存在"
     const status = (taskErr as { response?: { status?: number } })?.response?.status;
@@ -310,7 +346,7 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
     return (
       <Alert type="warning" showIcon style={{ margin: 24 }}
         message="任务不存在或已被清除"
-        description="内存存储模式下服务重启会清除任务（演示口径）。报告中心的旧条目可能指向已清除的任务——报告文件本身仍在。"
+        description="报告中心的旧条目可能指向已清理的任务——报告文件本身仍在。"
         action={<Button onClick={() => window.history.back()}>返回</Button>} />
     );
   }
@@ -319,15 +355,23 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
 
   return (
     <div>
-      <Typography.Title level={3}>
+      {/* 2026-09-12 间距修复（人类反馈"导航栏与内容间空白太多"）：antd Title 默认
+          margin-top 24px 与 Content padding 24px 叠加，首屏标题行前出现 ~48px 空带——
+          置零贴住内容区 padding；右栏视口封顶高度同步把省出的 24px 还给内容（150→126）。 */}
+      <Typography.Title level={3} style={{ marginTop: 0 }}>
         任务 {task.task_id} <Tag color="blue">{zh(TASK_STATUS, task.status)}</Tag>
       </Typography.Title>
 
       {/* ADR-188（人类指令 2026-09-03）：左右两栏——左=AI 交互日志（50%，吸顶随滚常驻），
-          右=其余信息（任务信息/阶段时间线/执行日志/报告摘要/发现 Tabs）。min-width:0 防
-          flex 子元素内容把 50% 宽度撑破（长 token/URL 溢出）。 */}
+          右=其余信息。min-width:0 防 flex 子元素内容把 50% 宽度撑破（长 token/URL 溢出）。
+          2026-09-09 布局改版（人类指令）：右侧固定一页高（视口封顶、内部滚动）——任务信息
+          精简（去掉重试次数/进度/查看报告/重新生成报告）、阶段时间线横排紧凑、执行日志
+          压缩高度、产出视图（发现/融合 Tabs）占满剩余空间并框内滚动，为发现列表让出稳定
+          可视面积。
+          2026-09-12 布局调整（用户指令）：左栏高度与右栏总高一致（fill 撑满）；任务信息卡
+          与报告初步判断合并为右侧首卡；执行日志可视高度放大到 ≥10 行。 */}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-        <div style={{ width: '50%', minWidth: 0, position: 'sticky', top: 16 }}>
+        <div style={{ width: '50%', minWidth: 0, position: 'sticky', top: 16, height: 'calc(100vh - 126px)' }}>
           {/* ADR-168/170/172/188: AI 交互日志——人性化渲染流增量下发；终态=最终交互日志（可下载）。
               内联时间线为主视图（不再默认折叠），整页 Modal 为辅入口（组件内）。 */}
           <AIInteractionLogPanel
@@ -337,21 +381,28 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
             onRefresh={taskRetry}
             refreshing={snapFetching}
             live={wsLive}
+            degraded={aiDegradedSnapshot}
+            fill
           />
         </div>
 
-        <div style={{ width: '50%', minWidth: 0 }}>
-          <Card style={{ marginBottom: 16 }}>
+        <div style={{
+          width: '50%', minWidth: 0,
+          height: 'calc(100vh - 126px)',
+          display: 'flex', flexDirection: 'column', gap: 12,
+          overflow: 'hidden',
+        }}>
+          <Card size="small">
             <Descriptions column={2} size="small">
-              <Descriptions.Item label="项目">{task.project_id}</Descriptions.Item>
+              <Descriptions.Item label="项目">
+                <Link to={`/projects/${task.project_id}`} title={task.project_id}>{projectName || task.project_id}</Link>
+              </Descriptions.Item>
               <Descriptions.Item label="模式">{zh(SCAN_MODE, task.scan_mode)}</Descriptions.Item>
-              <Descriptions.Item label="重试次数">{task.retry_count}</Descriptions.Item>
-              <Descriptions.Item label="进度">{progress ? `${progress.overall_percent.toFixed(0)}%` : '—'}</Descriptions.Item>
             </Descriptions>
             {task.error_message && (
-              <Alert type="error" showIcon style={{ marginTop: 12 }} message={task.error_message} />
+              <Alert type="error" showIcon style={{ marginTop: 8 }} message={task.error_message} />
             )}
-            <Space style={{ marginTop: 12 }} wrap>
+            <Space style={{ marginTop: 8 }} wrap>
               {actions.map((a) =>
                 a === 'retry' ? (
                   <Popconfirm key={a} title="确认人工重试该任务？" onConfirm={() => act.mutate(a)}>
@@ -363,43 +414,63 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
                   </Button>
                 ),
               )}
-              {isTerminal(task.status) && task.status === 'TASK_STATUS_COMPLETED' && (
-                <>
-                  {/* ADR-182 模式相关视图：C/旧B→融合；D→对比；A 纯SAST 融合去重同样适用分组视图；发现已内嵌下方 Tabs */}
-                  {task.scan_mode === 'SCAN_MODE_COMPARE' && (
-                    <Link to={`/tasks/${taskId}/comparison`}><Button>对比视图</Button></Link>
-                  )}
-                  {/* 任务↔报告双向导航（ADR-142）：直达本任务报告过滤视图 */}
-                  <Link to={`/reports?task=${taskId}`}>
-                    <Button>查看报告</Button>
-                  </Link>
-                  <Popconfirm title="重新生成报告？" onConfirm={() => regenerate.mutate()}>
-                    <Button loading={regenerate.isPending}>重新生成报告</Button>
-                  </Popconfirm>
-                </>
+              {isTerminal(task.status) && task.status === 'TASK_STATUS_COMPLETED' && task.scan_mode === 'SCAN_MODE_COMPARE' && (
+                /* ADR-182 模式相关视图：D→对比（报告入口=下方报告摘要区与报告中心深链） */
+                <Link to={`/tasks/${taskId}/comparison`}><Button>对比视图</Button></Link>
               )}
             </Space>
+            {/* ADR-150: 报告初步判断内联（此前需跳报告中心再点在线查看，重复呆板）。
+                2026-09-12 布局调整（用户指令）：并入任务信息卡成为右侧首卡（原独立卡取消）——
+                项目/模式与最新报告摘要一目了然。 */}
+            {isTerminalQuery && isCompletedTask && reportSummary && (
+              <>
+                <Divider style={{ margin: '12px 0 8px' }} />
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
+                  <Typography.Text strong>报告初步判断（最新报告摘要）</Typography.Text>
+                  <Space>
+                    <Button size="small" onClick={viewReport}>在线查看完整报告</Button>
+                    <Button size="small" onClick={downloadReport}>下载</Button>
+                    <Link to="/reports">报告中心</Link>
+                  </Space>
+                </div>
+                <Descriptions column={4} size="small">
+                  <Descriptions.Item label="发现总数">{reportSummary.total_findings ?? 0}</Descriptions.Item>
+                  <Descriptions.Item label="确认为真">{reportSummary.true_positives ?? 0}</Descriptions.Item>
+                  <Descriptions.Item label="误报">{reportSummary.false_positives ?? 0}</Descriptions.Item>
+                  <Descriptions.Item label="未复核">{reportSummary.not_reviewed ?? 0}</Descriptions.Item>
+                </Descriptions>
+              </>
+            )}
           </Card>
 
-          <Card title="阶段时间线（proto TaskStage）" style={{ marginBottom: 16 }}>
+          <DegradedNotice taskId={taskId} />
+
+          <Card size="small" title="阶段时间线">
             {task.stages?.length ? (
               <Steps
-                direction="vertical"
+                direction="horizontal"
                 size="small"
                 items={task.stages.map((st) => ({
-                  title: `${zh(STAGE_TYPE, st.type)}（${st.stage_id}）`,
+                  title: zh(STAGE_TYPE, st.type),
                   status: STEP_STATUS[st.status] ?? 'wait',
                   description: (
                     <>
-                      <Tag color={st.status === 'STAGE_STATUS_RUNNING' ? 'processing' : undefined}>
-                        {st.status === 'STAGE_STATUS_RUNNING' ? `${zh(STAGE_STATUS, st.status)}…` : zh(STAGE_STATUS, st.status)}
-                      </Tag>
                       {stageTimeText(st) && (
-                        <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
                           {stageTimeText(st)}
                         </Typography.Text>
                       )}
-                      {st.error_message && <Typography.Text type="danger">{st.error_message}</Typography.Text>}
+                      {/* 引擎侧阶段 metadata 降级标志（兼容缺省：字段未透出则不渲染） */}
+                      {st.metadata?.degraded === 'true' && (
+                        <Typography.Text type="warning" style={{ fontSize: 12, display: 'block' }}>
+                          （已降级·RuleScan）
+                        </Typography.Text>
+                      )}
+                      {st.error_message && (
+                        <Typography.Text type="danger" style={{ fontSize: 12, display: 'block' }}>
+                          {st.error_message}
+                        </Typography.Text>
+                      )}
                     </>
                   ),
                 }))}
@@ -409,30 +480,21 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
             )}
           </Card>
 
-          {/* ADR-167/170/172: 执行日志——快照轮询或 WS 推流（live 徽标）增量下发 */}
-          <TaskLogPanel logs={logRows} terminal={isTerminal(task.status)} onRefresh={taskRetry} refreshing={snapFetching} live={wsLive} />
+          {/* ADR-167/170/172: 执行日志——快照轮询或 WS 推流（live 徽标）增量下发；
+              2026-09-12（用户指令）可视高度放大：行高 20px+上下 padding 24px，
+              maxHeight 250 保证 ≥10 行日志同时可见（原 150 仅 ~6 行） */}
+          <TaskLogPanel logs={logRows} terminal={isTerminal(task.status)} onRefresh={taskRetry} refreshing={snapFetching} live={wsLive} maxHeight={250} />
 
-          {/* ADR-150: 报告初步判断内联（此前需跳报告中心再点在线查看，重复呆板） */}
-          {isTerminalQuery && isCompletedTask && reportSummary && (
-            <Card title="报告初步判断（最新报告摘要）" style={{ marginTop: 16 }}
-              extra={
-                <Space>
-                  <Button size="small" onClick={viewReport}>在线查看完整报告</Button>
-                  <Button size="small" onClick={downloadReport}>下载</Button>
-                  <Link to="/reports">报告中心</Link>
-                </Space>
-              }>
-            <Descriptions column={2} size="small">
-              <Descriptions.Item label="发现总数">{reportSummary.total_findings ?? 0}</Descriptions.Item>
-              <Descriptions.Item label="确认为真">{reportSummary.true_positives ?? 0}</Descriptions.Item>
-              <Descriptions.Item label="误报">{reportSummary.false_positives ?? 0}</Descriptions.Item>
-              <Descriptions.Item label="未复核">{reportSummary.not_reviewed ?? 0}</Descriptions.Item>
-            </Descriptions>
-          </Card>
-          )}
           {isTerminal(task.status) && (
-            <Card style={{ marginTop: 16 }}>
+            <Card size="small" title="产出视图" style={{
+              flex: 1, minHeight: 120,
+              display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            }} styles={{ body: {
+              flex: 1, minHeight: 0, overflowY: 'auto',
+              display: 'flex', flexDirection: 'column',
+            } }}>
               <Tabs
+                tabBarStyle={{ position: 'sticky', top: 0, zIndex: 1, background: '#fff', marginBottom: 8 }}
                 items={[
                   { key: 'findings', label: '发现', children: <FindingsPage taskId={task.task_id} /> },
                   // ADR-186: 融合视图=产出融合去重清单的模式（C 并行融合 / A 纯SAST 去重合并 / D AI增强SAST 验证后融合 / 旧B 历史兼容）

@@ -7,7 +7,7 @@
 | 编号 | 文档 | 角色（唯一权威） |
 |------|------|----------------|
 | 01 | [01_总体架构设计.md](01_总体架构设计.md) | 八层架构、7服务（ADR-175/197）、四模式、技术栈、五Agent |
-| — | [codeaudit_common.proto](codeaudit_common.proto) | **★数据契约唯一事实源（V2.0）**：全部 message/enum/11个service |
+| — | [proto/codeaudit_common.proto](proto/codeaudit_common.proto) | **★数据契约唯一事实源（V2.0）**：全部 message/enum/11个service（D4 2026-09-11 收口：SSOT 唯一落在 proto/，根副本已删，verify G1 防回潮） |
 | 03 | [03_接口规范.md](03_接口规范.md) | 接口语义/错误码/幂等/鉴权（不含字段定义） |
 | 04 | [04_工作流设计.md](04_工作流设计.md) | 四模式流程、统一状态机、Saga、增量扫描 |
 | 05 | [05_知识与推理设计.md](05_知识与推理设计.md) | Skills+knowledge双层、三层KG、KG事件更新、反馈闭环 |

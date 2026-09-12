@@ -48,21 +48,35 @@ done
 cmd="${1:-deploy}"
 case "$cmd" in
     check|--check)
-        [ "$drift" = "0" ] && echo "in sync" || echo "^ CD differs from LXC runtime; run deploy.sh to apply"
-        exit 0
+        if [ "$drift" = "0" ]; then
+            echo "in sync"
+            exit 0
+        fi
+        # B2-2（2026-09-11 审计）：漂移必须非零退出——伞仓 sandbox-deploy.sh check 按退出码
+        # 聚合，恒 0 令 CD↔LXC 漂移在门禁静默通过（正是本脚本自述要防的场景）
+        echo "^ CD differs from LXC runtime; run deploy.sh to apply"
+        exit 1
         ;;
     deploy)
         if [ "$drift" = "0" ]; then echo "openshell-gateway: in sync, ensure only"; fi
-        run_remote mkdir -p "$DEPLOY_DIR"
-        for f in "${FILES[@]}"; do
-            if [ "$(md5_local "$f")" = "$(md5_remote "$f")" ]; then
-                echo "unchanged: $f"
-                continue
-            fi
-            run_remote cp "$DEPLOY_DIR/$f" "$DEPLOY_DIR/$f.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
-            pct push "$VMID" "$f" "$DEPLOY_DIR/$f"
-            echo "pushed: $f"
-        done
+        # REMOTE 空=本机模式（B1-5 审计修复）：mkdir/备份/pct push 都是宿主→LXC
+        # 的远程动作，本机无 LXC 可推——push 路径此前未纳入 REMOTE 契约，空串
+        # 时仍打真 pct 二进制。本机模式文件以仓内目录为事实源，跳过推送直接
+        # ensure（production-deploy.sh 即 REMOTE='' 直跑 lifecycle 的同构路径）。
+        if [ -z "$REMOTE" ]; then
+            echo "REMOTE 空=本机模式，跳过推送"
+        else
+            run_remote mkdir -p "$DEPLOY_DIR"
+            for f in "${FILES[@]}"; do
+                if [ "$(md5_local "$f")" = "$(md5_remote "$f")" ]; then
+                    echo "unchanged: $f"
+                    continue
+                fi
+                run_remote cp "$DEPLOY_DIR/$f" "$DEPLOY_DIR/$f.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+                pct push "$VMID" "$f" "$DEPLOY_DIR/$f"
+                echo "pushed: $f"
+            done
+        fi
         ./gateway_lifecycle.sh ensure
         ;;
     status|start|stop|restart)

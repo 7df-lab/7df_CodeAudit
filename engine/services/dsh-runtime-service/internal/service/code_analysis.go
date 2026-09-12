@@ -140,6 +140,13 @@ func (s *CodeAnalysisServiceImpl) AnalyzeCode(ctx context.Context, req *pb.Analy
 // 诚实语义: 文件不存在时返回含说明的 JSON（不冒充图数据）。
 func (s *CodeAnalysisServiceImpl) QueryCPG(ctx context.Context, req *pb.QueryCPGRequest) (*pb.QueryCPGResponse, error) {
 	if p := req.GetCpgStoragePath(); p != "" {
+		// R54: 路径消毒——合法 cpg_storage_path 只能是 <projectPath>/.codeaudit/cpg.json
+		//（AnalyzeCode :53 生成形态），其余一律拒绝（防任意文件读取）
+		cp := filepath.Clean(p)
+		if filepath.Base(filepath.Dir(cp)) != ".codeaudit" || filepath.Base(cp) != "cpg.json" {
+			return &pb.QueryCPGResponse{ResultJson: fmt.Sprintf(
+				`{"error":"cpg_storage_path rejected","level":"ast-summary","reason":"path must be <project>/.codeaudit/cpg.json"}`)}, nil
+		}
 		if data, err := os.ReadFile(p); err == nil {
 			return &pb.QueryCPGResponse{ResultJson: string(data)}, nil
 		}

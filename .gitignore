@@ -1,5 +1,5 @@
 deploy/env.sim
 deploy/production.env
 deploy/.manager-stage/
-.agent/sessions/
-.agent/evidence/
+# AI 会话工作账本/证据/锁（人类指令 2026-09-13：.agent 整目录任何层级都不入库）
+.agent/

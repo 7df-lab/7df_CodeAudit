@@ -64,4 +64,14 @@ describe('guards（结构守卫：无声漂移类缺陷的门禁）', () => {
     const imported = [...new Set([...testSources.matchAll(/'\.\.\/src\/([a-zA-Z]+)'/g)].map((m) => m[1]))].sort();
     assert.deepStrictEqual(imported, srcModules, 'src 模块 ⇄ 测试引用必须互为全集（新模块必须带测试，见 docs/regressions.md 纪律 3）');
   });
+
+  it('相似度实现单一来源：applyPatch 复用 diffParse 导出，不得自带 Levenshtein 副本（回归锁：双副本阈值漂移，B2-8）', () => {
+    const applyPatchSrc = fs.readFileSync(path.join(ROOT, 'src', 'applyPatch.ts'), 'utf8');
+    const diffParseSrc = fs.readFileSync(path.join(ROOT, 'src', 'diffParse.ts'), 'utf8');
+    assert.ok(!/function\s+(levenshteinDistance|calculateSimilarity)/.test(applyPatchSrc), 'applyPatch 不得自带 levenshtein/similarity 副本');
+    assert.match(applyPatchSrc, /import\s*\{[^}]*similarity[^}]*\}\s*from\s*'\.\/diffParse'/, 'applyPatch 必须从 diffParse 导入共享 similarity');
+    assert.match(applyPatchSrc, /SIMILARITY_THRESHOLD/, 'applyPatch 相似度阈值必须引用共享常量');
+    assert.match(diffParseSrc, /export const SIMILARITY_THRESHOLD = 0\.66/, '阈值常量须在 diffParse 单点定义');
+    assert.match(diffParseSrc, /export function similarity/, 'similarity 须从 diffParse 导出');
+  });
 });

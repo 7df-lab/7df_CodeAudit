@@ -150,6 +150,16 @@ def test_route_table_nonempty():
 # 2. 鉴权链结构
 # ---------------------------------------------------------------------------
 
+def test_gateway_auth_ratelimit_chain_built_once():
+    """R41: /v1/auth/* 免认证链的限流中间件必须启动时构造一次——RateLimitMiddleware
+    每次调用 newRateLimiter 建独立计数表，per-request 包装=每请求新桶=登录面限流完全失效。"""
+    main_src = read("services/gateway-service/cmd/main.go")
+    assert "rateLimited(authMux)" not in main_src, \
+        "auth 链限流在请求路径上每请求构造（rateLimited(authMux)）——计数表随请求重建，限流失效（R41）"
+    assert "authLimited.ServeHTTP" in main_src, \
+        "auth 链应使用启动时一次性构造的 authLimited"
+
+
 def test_gateway_auth_chain_order():
     """保护链必须 JWT 外置包 RateLimit（限流键读 sub，ADR-212⑨）；/v1/auth/* 免 JWT。"""
     main_src = read("services/gateway-service/cmd/main.go")
@@ -229,12 +239,14 @@ def proto_services():
 
 
 def test_proto_rpc_counts():
-    """proto 11 service / 110 RPC 口径（文档与实际声明的结构不变量；
-    2026-09-07 ADR-217 起 104→110：DSHRuntimeService +6 推理管理面 RPC）。"""
+    """proto 11 service / 112 RPC 口径（文档与实际声明的结构不变量；
+    2026-09-07 ADR-217 起 104→110：DSHRuntimeService +6 推理管理面 RPC；
+    2026-09-10 ADR-225 起 110→111：ResultService +InheritFindings 增量继承；
+    2026-09-10 ADR-225 S5 起 111→112：StorageService +GetStorageMode 档位探测）。"""
     services = proto_services()
     assert set(services) == set(SERVICE_DIRS), f"proto service 集合漂移: {set(services) ^ set(SERVICE_DIRS)}"
     total = sum(len(v) for v in services.values())
-    assert total == 110, f"proto RPC 总数 {total} != 110（文档/api-internal.md 需同步）"
+    assert total == 112, f"proto RPC 总数 {total} != 112（文档/api-internal.md 需同步）"
 
 
 def test_every_proto_rpc_has_impl():

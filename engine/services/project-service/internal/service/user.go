@@ -16,9 +16,11 @@ import (
 )
 
 const (
-	// Token expiry: access=1h, refresh=24h (03 §4)
-	accessTokenExpiry  = 1 * time.Hour  // 07 §JWT access token TTL
-	refreshTokenExpiry = 24 * time.Hour // 07 §JWT refresh token TTL
+	// Token expiry: access=30min, refresh=7d（B5-2/D2 裁决 2026-09-11：实现 1h/24h 与
+	// 契约三方冲突——03 §4、configs yaml access_ttl_min=30·refresh_ttl_day=7、gateway
+	// taskwatch wsMaxLifetime=6h 按 30min 推导——改代码对齐；现网影响仅 token 提前续期）
+	accessTokenExpiry  = 30 * time.Minute
+	refreshTokenExpiry = 7 * 24 * time.Hour
 )
 
 // UserService holds business methods for user operations and JWT auth.
@@ -28,25 +30,29 @@ type UserService struct {
 	// auth — 注册策略（V2.1 ADR-205，configs codeaudit.yaml auth.*，main.go 装配）。
 	auth AuthConfig
 
-	// revokedTokens holds blacklisted access tokens (logout).
+	// revokedTokens holds blacklisted access tokens (logout)。
+	// R69（2026-09-12 待办收尾）：值改撤销时刻——惰性清扫超 24h 条目（access TTL
+	// 30min，超窗撤销记录永不再命中；原 map[string]struct{} 无界增长）。
 	mu            sync.RWMutex
-	revokedTokens map[string]struct{}
+	revokedTokens map[string]time.Time
 }
 
 // NewUserService creates a UserService backed by the given store.
 func NewUserService(store *repo.MemoryStore) *UserService {
 	return &UserService{
 		store:         store,
-		revokedTokens: make(map[string]struct{}),
+		revokedTokens: make(map[string]time.Time),
 	}
 }
 
 // jwtSecret reads the secret from CODEAUDIT_JWT_SECRET env var (03 §4).
-// Falls back to a development default if unset.
+// R65（2026-09-12 待办收尾）：未配置即 panic（fail-fast，对齐 gateway 同键位口径）——
+// 原 fail-open 落开发缺省密钥：签发/校验两侧密钥不一致时表现为全量登录失败难归因，
+// 且缺省密钥已知=伪造令牌面。compose/env 模板均已要求该键。
 func jwtSecret() []byte {
 	secret := os.Getenv("CODEAUDIT_JWT_SECRET")
 	if secret == "" {
-		secret = "codeaudit-dev-secret-change-in-production"
+		panic("CODEAUDIT_JWT_SECRET unset — refusing to sign with a known default (R65; gateway fails fast on the same key)")
 	}
 	return []byte(secret)
 }
@@ -57,10 +63,11 @@ func jwtSecret() []byte {
 func (s *UserService) Login(username, password string) (*v1.LoginResponse, error) {
 	rec, ok := s.store.GetUserByUsername(username)
 	if !ok {
-		return nil, fmt.Errorf("user not found: %s", username)
+		// R65：失败文案合一（防用户名枚举——网关 401 原文透传）
+		return nil, fmt.Errorf("invalid username or password")
 	}
 	if bcrypt.CompareHashAndPassword([]byte(rec.Password), []byte(password)) != nil {
-		return nil, fmt.Errorf("invalid password for user: %s", username)
+		return nil, fmt.Errorf("invalid username or password")
 	}
 
 	now := time.Now()
@@ -104,7 +111,13 @@ func (s *UserService) Login(username, password string) (*v1.LoginResponse, error
 func (s *UserService) Logout(accessToken string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.revokedTokens[accessToken] = struct{}{}
+	now := time.Now()
+	s.revokedTokens[accessToken] = now
+	for tok, at := range s.revokedTokens { // R69: 惰性清扫（access TTL 30min，24h 足裕）
+		if now.Sub(at) > 24*time.Hour {
+			delete(s.revokedTokens, tok)
+		}
+	}
 }
 
 // IsRevoked checks if a token was revoked via Logout.

@@ -25,7 +25,7 @@ export default function LoginPage() {
             try {
               await login(username, password);
               navigate('/');
-            } catch (e) {
+            } catch {
               setError('登录失败：用户名或密码错误，或服务不可用');
             } finally {
               setLoading(false);

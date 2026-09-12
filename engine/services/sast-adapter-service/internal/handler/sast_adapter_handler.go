@@ -31,6 +31,7 @@ import (
 // 一律来自全局配置 sast_adapter.tools，代码内不留工具命令缺省）。
 type toolCommand struct {
 	argv         []string // 含占位 {project}
+	filesArgv    []string // ADR-225 增量：含占位 {files}（可选；缺省=降级全目录）
 	rawFormat    string   // raw 输出的解析器 = Registry key
 	pythonModule string   // PATH 无该命令时的 python -m 兜底
 	pythonPath   string   // python -m 所需 PYTHONPATH
@@ -50,6 +51,10 @@ func loadToolCommands() map[string]toolCommand {
 			panic(fmt.Sprintf("sast-adapter config: %v (ADR-137)", err))
 		}
 		tc := toolCommand{argv: argv, rawFormat: id}
+		// ADR-225: files_argv 为可选键（缺省=空，运行时诚实降级全目录）
+		if fa, ferr := cfg.StrSlice(fmt.Sprintf("sast_adapter.tools.%s.files_argv", id)); ferr == nil {
+			tc.filesArgv = fa
+		}
 		if m, merr := cfg.Str(fmt.Sprintf("sast_adapter.tools.%s.python_module", id)); merr == nil {
 			tc.pythonModule = m
 			if pp, perr := cfg.Str(fmt.Sprintf("sast_adapter.tools.%s.pythonpath", id)); perr == nil {
@@ -68,6 +73,8 @@ type SASTAdapterHandler struct {
 	mu           sync.RWMutex // ADR-212: findingsOf 读路径与 scanOneTool 写路径并发（此前无锁读=并发 map 读写 fatal）
 	store        map[string]*pb.UnifiedFinding // taskID-scoped finding id → entity
 	byTask       map[string]map[string]bool    // taskID → toolID → 已执行过扫描（进度按 task+tool 口径, ADR-133）
+	byTaskOrder  []string                       // R69: byTask 插入序（FIFO 容量驱逐）
+	idemCount    int                            // R69: 幂等缓存计数（容量护栏）
 	idempotency  sync.Map                      // request_id → cached response
 	resultAddr   string                        // result-service 地址（落盘用；09 §2 行）
 	scanTimeout  time.Duration                 // 单工具扫描超时（07 §8 正式口径 20m 的本地映射；值在全局配置 sast_adapter.scan_timeout_s）
@@ -154,6 +161,13 @@ func resolveToolArgv(argv []string, project string) ([]string, error) {
 			out[i] = a
 		}
 	}
+	return ensureCommand(out)
+}
+
+// ensureCommand — 可执行可用性校验 + python -m 兜底（ADR-137）。
+// 目录模式与增量文件清单模式共用（增量模式原在 buildFilesArgv 内联，
+// 抽出后 buildFilesArgv 回归纯模板展开，可测性同源）。
+func ensureCommand(out []string) ([]string, error) {
 	// 模块入口兜底：PATH 无命令但配置了 python_module 且 pythonpath 存在时走 python -m（ADR-137）
 	if tc := toolCommandFor(out[0]); tc.pythonModule != "" {
 		if _, err := exec.LookPath(out[0]); err != nil {
@@ -169,7 +183,7 @@ func resolveToolArgv(argv []string, project string) ([]string, error) {
 	return out, nil
 }
 
-func (h *SASTAdapterHandler) runTool(projectPath string, tool string) ([]byte, error) {
+func (h *SASTAdapterHandler) runTool(projectPath string, tool string, changedFiles []string) ([]byte, error) {
 	tc, ok := h.toolCommands[tool]
 	if !ok {
 		return nil, status.Errorf(codes.InvalidArgument, "no executor mapping for tool %s (ADR-121)", tool)
@@ -177,6 +191,18 @@ func (h *SASTAdapterHandler) runTool(projectPath string, tool string) ([]byte, e
 	abs, err := filepath.Abs(projectPath)
 	if err != nil {
 		return nil, err
+	}
+	// ADR-225 增量：changed_files 非空且工具配置了 files_argv → 文件清单模式；
+	// 未配置/清单超限 → 诚实降级全目录（WARN 留痕，不静默装作增量）
+	if len(changedFiles) > 0 {
+		if len(tc.filesArgv) > 0 && len(changedFiles) <= maxIncrementalFiles {
+			return h.runFilesMode(abs, tool, tc, changedFiles)
+		}
+		reason := "未配置 files_argv"
+		if len(changedFiles) > maxIncrementalFiles {
+			reason = fmt.Sprintf("变更文件数 %d 超上限 %d", len(changedFiles), maxIncrementalFiles)
+		}
+		log.Printf("[sast-adapter][%s] 增量文件清单不可用（%s），降级全目录扫描（ADR-225 诚实降级）", tool, reason)
 	}
 	argv, err := resolveToolArgv(tc.argv, abs)
 	if err != nil {
@@ -208,13 +234,13 @@ func (h *SASTAdapterHandler) runTool(projectPath string, tool string) ([]byte, e
 }
 
 // scanOneTool 执行单工具并解析为 proto UnifiedFinding 列表。
-func (h *SASTAdapterHandler) scanOneTool(taskID, projectID, projectPath, tool string) (*pb.ToolScanResult, []*pb.UnifiedFinding, error) {
+func (h *SASTAdapterHandler) scanOneTool(taskID, projectID, projectPath, tool string, changedFiles []string) (*pb.ToolScanResult, []*pb.UnifiedFinding, error) {
 	parser, err := adapters.GetParser(tool)
 	if err != nil {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	start := time.Now()
-	raw, rerr := h.runTool(projectPath, tool)
+	raw, rerr := h.runTool(projectPath, tool, changedFiles)
 
 	if rerr != nil {
 		// 04 §6: SAST 工具失败→跳过继续（记录状态 FAILED，不中断任务）
@@ -296,6 +322,12 @@ func (h *SASTAdapterHandler) scanOneTool(taskID, projectID, projectPath, tool st
 		h.store[f.FindingID] = finding
 		if h.byTask[taskID] == nil {
 			h.byTask[taskID] = map[string]bool{}
+			h.byTaskOrder = append(h.byTaskOrder, taskID) // R69: FIFO 序（容量驱逐用）
+			if len(h.byTaskOrder) > 200 {                 // R69: 任务级进度态容量上限（长生命周期防无界）
+				evict := h.byTaskOrder[0]
+				h.byTaskOrder = h.byTaskOrder[1:]
+				delete(h.byTask, evict)
+			}
 		}
 		h.byTask[taskID][tool] = true
 		h.mu.Unlock()
@@ -347,7 +379,7 @@ func (h *SASTAdapterHandler) RunSASTScan(ctx context.Context, req *pb.RunSASTSca
 		return nil, status.Error(codes.InvalidArgument, "task_id is required")
 	}
 
-	tsr, protoFindings, err := h.scanOneTool(req.GetTaskId(), "", projectPath, req.GetToolId())
+	tsr, protoFindings, err := h.scanOneTool(req.GetTaskId(), "", projectPath, req.GetToolId(), req.GetChangedFiles())
 	if err != nil {
 		// 已产出 FAILED ToolScanResult 时正常返回（04 §6），只有系统性错误才返回错误码
 		if tsr == nil {
@@ -369,6 +401,13 @@ func (h *SASTAdapterHandler) RunSASTScan(ctx context.Context, req *pb.RunSASTSca
 
 	resp := &pb.RunSASTScanResponse{Result: tsr}
 	h.idempotency.Store(reqID, resp)
+	// R69: 幂等缓存容量护栏——超限整体重置（语义=重启遗忘；ADR-149b 每尝试独立键
+	// 令该表天然随任务数增长，长生命周期需上界）
+	h.idemCount++
+	if h.idemCount > 10_000 {
+		h.idempotency.Range(func(k, _ any) bool { h.idempotency.Delete(k); return true })
+		h.idemCount = 0
+	}
 	return resp, nil
 }
 
@@ -411,7 +450,7 @@ func (h *SASTAdapterHandler) RunMultipleScans(ctx context.Context, req *pb.RunMu
 		wg.Add(1)
 		go func(i int, tool string) {
 			defer wg.Done()
-			tsr, protoFindings, err := h.scanOneTool(req.GetTaskId(), "", projectPath, tool)
+			tsr, protoFindings, err := h.scanOneTool(req.GetTaskId(), "", projectPath, tool, req.GetChangedFiles())
 			outs[i] = toolOut{tsr: tsr, findings: protoFindings, err: err}
 		}(i, tool)
 	}

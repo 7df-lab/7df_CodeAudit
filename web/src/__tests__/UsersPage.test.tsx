@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import UsersPage from '../pages/admin/UsersPage';
-import { httpError, useFakeGateway } from '../testsupport/fakeGateway';
+import { httpError, useFakeGateway, type HandlerCtx } from '../testsupport/fakeGateway';
 
 // useFakeGateway 必须在用例执行前注册（beforeEach 语义）——handler 表模块级可变，
 // 各用例按需覆写（test-gates §8：只在传输层造假，未建模路由响亮失败）。
@@ -123,6 +123,55 @@ describe('UsersPage（V2.1 列表）', () => {
         { user_id: 'u-1', username: 'admin', email: 'a@x', state: 'USER_STATE_ACTIVE', role: 'ROLE_ADMIN', must_change_password: false, created_at: null },
         { user_id: 'u-2', username: 'dev1', email: 'd@x', state: 'USER_STATE_ACTIVE', role: 'ROLE_DEVELOPER', must_change_password: true, created_at: null },
       ],
+      pagination: { total: 2 },
+    };
+  });
+});
+
+// ===== B3-1（审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询 =====
+describe('UsersPage 无限查询分页（B3-1）', () => {
+  const u1 = { user_id: 'u-1', username: 'admin', email: 'a@x', state: 'USER_STATE_ACTIVE', role: 'ROLE_ADMIN', must_change_password: false, created_at: null };
+  const u2 = { user_id: 'u-9', username: 'second-page-user', email: 's@x', state: 'USER_STATE_ACTIVE', role: 'ROLE_DEVELOPER', must_change_password: false, created_at: null };
+
+  it('加载更多翻页后前页保留、后页追加（第二页请求携带 next_cursor）', async () => {
+    routes['GET /v1/users'] = (ctx: HandlerCtx) => {
+      const cursor = JSON.parse(ctx.query.get('pagination') ?? '{"cursor":""}').cursor ?? '';
+      if (cursor === '') return { users: [u1], pagination: { next_cursor: 'c2', has_next: true, total: 2 } };
+      return { users: [u2], pagination: { next_cursor: '', has_next: false, total: 2 } };
+    };
+    renderPage();
+    await waitFor(() => expect(screen.getByText('admin')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /加载更多/ }));
+    await waitFor(() => expect(screen.getByText('second-page-user')).toBeTruthy());
+    expect(screen.getByText('admin')).toBeTruthy(); // 前页保留（此前单 cursor 整表替换会丢）
+    const last = gateway.requests.filter((r) => r.method === 'GET' && r.url === '/v1/users').pop()!;
+    expect(last.query).toContain(encodeURIComponent('"cursor":"c2"'));
+  });
+
+  it('筛选变化重置分页：切状态筛选后新请求回首页（无旧游标、携带新筛选）', async () => {
+    routes['GET /v1/users'] = (ctx: HandlerCtx) => {
+      const cursor = JSON.parse(ctx.query.get('pagination') ?? '{"cursor":""}').cursor ?? '';
+      if (cursor === '') return { users: [u1], pagination: { next_cursor: 'c2', has_next: true, total: 2 } };
+      return { users: [u2], pagination: { next_cursor: '', has_next: false, total: 2 } };
+    };
+    renderPage();
+    await waitFor(() => expect(screen.getByText('admin')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /加载更多/ }));
+    await waitFor(() => expect(screen.getByText('second-page-user')).toBeTruthy());
+    // 切状态筛选（服务端过滤条件在 queryKey → 换 key 即重置回首页）
+    fireEvent.mouseDown(document.body.querySelector<HTMLElement>('.ant-select-selector')!);
+    const opt = await waitFor(() =>
+      document.body.querySelector<HTMLElement>('.ant-select-item-option[title="激活"]'),
+    );
+    fireEvent.click(opt!);
+    await waitFor(() => {
+      const last = gateway.requests.filter((r) => r.method === 'GET' && r.url === '/v1/users').pop()!;
+      expect(last.query).toContain('state=USER_STATE_ACTIVE');
+      expect(last.query).not.toContain(encodeURIComponent('"cursor":"c2"')); // 游标已重置
+    });
+    // 还原默认路由（模块级 routes 表跨用例共享）
+    routes['GET /v1/users'] = {
+      users: [u1, { ...u2, user_id: 'u-2', username: 'dev1', email: 'd@x', must_change_password: true }],
       pagination: { total: 2 },
     };
   });

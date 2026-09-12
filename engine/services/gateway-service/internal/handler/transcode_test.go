@@ -486,6 +486,11 @@ func TestTP12T0_NotificationsAndSkillsAndTools(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("mark read: %d", code)
 	}
+	// ADR-222: read-all 走组合路径（fake List 返回 1 条未读 → marked=1）
+	code, out = httpJSON(t, tr, "POST", "/v1/notifications/read-all", "")
+	if code != 200 || out["marked"] != float64(1) {
+		t.Fatalf("read-all: code=%d out=%v", code, out)
+	}
 	code, out = httpJSON(t, tr, "GET", "/v1/tools", "")
 	if code != 200 || out["tools"] == nil {
 		t.Fatalf("tools: code=%d out=%v", code, out)

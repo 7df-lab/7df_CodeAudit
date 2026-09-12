@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { mapFinding, severityRank } from '../src/diagnosticsMapper';
+import { mapFinding, severityRank, SEVERITY_LABEL } from '../src/diagnosticsMapper';
 import type { UnifiedFinding } from '../src/types';
 
 function finding(over: Partial<UnifiedFinding> = {}): UnifiedFinding {
@@ -55,5 +55,16 @@ describe('diagnosticsMapper', () => {
     assert.ok(m!.message.includes('CWE-79'));
     assert.ok(m!.message.includes('AI:AI_VERDICT_CONFIRMED'));
     assert.strictEqual(m!.code, 'CWE-79');
+  });
+
+  it('SEVERITY_LABEL 键集 golden：与 proto Severity 六枚举全等（漂移即红，B2-4；伞仓 parity 闸门同口径）', () => {
+    assert.deepStrictEqual(Object.keys(SEVERITY_LABEL), [
+      'SEVERITY_CRITICAL',
+      'SEVERITY_HIGH',
+      'SEVERITY_MEDIUM',
+      'SEVERITY_LOW',
+      'SEVERITY_INFO',
+      'SEVERITY_UNSPECIFIED',
+    ]);
   });
 });

@@ -5,6 +5,11 @@ import { Button, Card, Segmented, Tag, Tooltip, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import type { TaskLogEntry } from '../api/types';
 
+// B4-3（审计修复）：执行日志客户端保尾上限——任务详情页吸收快照时只保留最新 1000 条
+// （超长任务无界累积会拖垮标签页）。此常量由 TaskDetailPage 消费，提示文案在此渲染。
+// 完整内容下载入口延后（服务端无日志全量导出端点），顶部如实提示截断。
+export const MAX_LOG_ROWS = 1000;
+
 const LEVEL_COLOR: Record<string, string> = {
   TASK_LOG_LEVEL_INFO: '#8b949e',
   TASK_LOG_LEVEL_WARN: '#d29922',
@@ -31,8 +36,8 @@ function hhmmss(tsMs: number | string) {
 }
 
 export default function TaskLogPanel(
-  { logs, terminal, onRefresh, refreshing, live }:
-  { logs: TaskLogEntry[]; terminal: boolean; onRefresh: () => void; refreshing: boolean; live?: boolean },
+  { logs, terminal, onRefresh, refreshing, live, maxHeight = 360 }:
+  { logs: TaskLogEntry[]; terminal: boolean; onRefresh: () => void; refreshing: boolean; live?: boolean; maxHeight?: number },
 ) {
   const [filter, setFilter] = useState<Filter>('all');
   const boxRef = useRef<HTMLDivElement>(null);
@@ -64,6 +69,12 @@ export default function TaskLogPanel(
           <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
             （沙箱生命周期 / 降级链 / 挖掘统计）
           </Typography.Text>
+          {/* B4-3：保尾窗口生效（已达上限）时如实告知截断——更早日志已不在客户端 */}
+          {logs.length >= MAX_LOG_ROWS && (
+            <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 400, marginLeft: 8 }}>
+              仅显示最近 {MAX_LOG_ROWS} 条
+            </Typography.Text>
+          )}
         </span>
       }
       style={{ marginTop: 16 }}
@@ -86,7 +97,7 @@ export default function TaskLogPanel(
             ]}
             style={{ marginRight: 8 }}
           />
-          <Tooltip title={terminal ? '刷新' : live ? 'WebSocket 推流在线（亚秒级到达即刷新）' : '随快照每 3 秒自动刷新'}>
+          <Tooltip title={terminal ? '刷新' : live ? 'WebSocket 推流在线（亚秒级到达即刷新）' : '随快照每 10 秒自动刷新'}>
             <Button size="small" onClick={onRefresh} loading={refreshing}>
               刷新
             </Button>
@@ -105,7 +116,7 @@ export default function TaskLogPanel(
           fontSize: 12,
           lineHeight: '20px',
           padding: '12px 16px',
-          maxHeight: 360,
+          maxHeight,
           overflowY: 'auto',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-all',

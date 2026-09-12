@@ -30,16 +30,38 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [booting, setBooting] = useState(true);
 
-  // F5/直链恢复会话：有 refresh_token 则静默续签（否则直接进登录页）
+  // F5/直链恢复会话：有 refresh_token 则静默续签（否则直接进登录页）。
+  // P-22：续签成功=会话有效，me 失败可能只是瞬时限流/网关抖动（GUI 429 风暴实证：
+  // 旧口径首败即 user=null，活跃用户被静默甩到登录页）——退避重试后才认未登录。
   useEffect(() => {
     if (!readRefreshToken()) {
       setBooting(false);
       return;
     }
+    let cancelled = false;
     bootRefresh()
-      .then(() => refreshUserRef.current())
+      .then(async () => {
+        for (const delayMs of [1000, 2000, 4000]) {
+          try {
+            await refreshUserRef.current();
+            return;
+          } catch {
+            if (!cancelled) await new Promise((r) => setTimeout(r, delayMs));
+          }
+        }
+        try {
+          await refreshUserRef.current(); // 重试耗尽后末次尝试，仍败则保持未登录口径
+        } catch {
+          /* user=null → 登录页（与真实无凭据一致的兜底） */
+        }
+      })
       .catch(() => {})
-      .finally(() => setBooting(false));
+      .finally(() => {
+        if (!cancelled) setBooting(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const refreshUser = useCallback(async () => {
@@ -54,7 +76,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const resp = await api.post('/v1/auth/login', { username, password });
     const { access_token, refresh_token } = resp.data;
     setAccessToken(access_token);
-    saveRefreshToken(refresh_token); // Q3 裁决：localStorage + 严格 CSP，风险显式接受
+    // Q3 裁决：refresh_token 存 localStorage（XSS 下可被读取，风险显式接受）。
+    // 纵深缓解（B4-3 修正口径，原注释"严格 CSP"名不副实——此前无任何响应头落地）：
+    // nginx 已下发最小安全响应头（nosniff / frame-ancestors 'none' / object-src 'none'，
+    // 见 nginx/default.conf.template）；CSP 未覆盖脚本/样式源（SPA 内联依赖），收紧待真机验证。
+    saveRefreshToken(refresh_token);
     await refreshUser();
   }, [refreshUser]);
 

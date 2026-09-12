@@ -122,3 +122,10 @@ func (h *StorageHandler) ListFiles(ctx context.Context, req *v1.ListFilesRequest
 
 // Ensure interface compliance at compile time.
 var _ v1.StorageServiceServer = (*StorageHandler)(nil)
+
+// GetStorageMode — ADR-225 存储档位探测（只读）：mode="s3"（MinIO 持久档）|
+// "memory"（07 §10 降级档）。消费方=task-service 卷缓存 GC 的硬保护
+// （memory 档绝不删卷树——对象在内存重启即失，删卷树=数据不可恢复）。
+func (h *StorageHandler) GetStorageMode(ctx context.Context, req *v1.GetStorageModeRequest) (*v1.GetStorageModeResponse, error) {
+	return &v1.GetStorageModeResponse{Mode: h.svc.StorageMode()}, nil
+}

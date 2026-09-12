@@ -51,6 +51,8 @@ func mustMaxAutoRetries() int {
 type TaskServiceImpl struct {
 	pb.UnimplementedTaskServiceServer
 	events *TaskEventProducer // ADR-199: Kafka 事件发布器（nil=禁用档）
+	resultAddr string          // R64/D5: finding.created 收尾拉取 findings 用
+	cancels    map[string]context.CancelFunc // R67: 取消传播——taskID→编排协程 ctx 取消器
 	mu     sync.RWMutex
 	tasks  map[string]*pb.ScanTask // task_id -> ScanTask
 	idem   map[string]*idemRecord  // request_id -> 幂等记录（03 §2 三态）
@@ -60,6 +62,7 @@ type TaskServiceImpl struct {
 	configs      map[string]map[string]string
 	contexts     map[string]*pb.TaskContext    // task_id → 编排产出上下文
 	logs         map[string][]*pb.TaskLogEntry // task_id → 执行日志环形缓存（ADR-167）
+	incrementalCtx map[string]*orchestrator.IncrementalContext // task_id → 增量上下文（ADR-225）
 	logIdem      map[string]string             // request_id → log_id（AppendTaskLog 幂等，R4）
 	logSeq       int64                         // 日志全局单调序（跨任务分配 log_id）
 	sm           *statemachine.StateMachine
@@ -105,14 +108,28 @@ func NewTaskService() *TaskServiceImpl {
 	// step_timeouts_s 已整体撤销（ADR-191 补遗，人类指令"都撤掉"）：编排步骤无外层时限。
 	reposDir := must(cfg.Str("task.repos_dir", "CODEAUDIT_TASK_REPOS_DIR"))               // ADR-163
 	cloneTimeout := time.Duration(mustInt(cfg.Int("task.clone_timeout_s"))) * time.Second // ADR-163
+	// ADR-225 D6: 卷缓存回收器配置（桶为 SSOT 前提下的可丢弃缓存；键见 yaml task.repo_cache_*）
+	gcEnabled := func() bool {
+		v, err := cfg.Bool("task.repo_cache_gc_enabled", "CODEAUDIT_TASK_REPO_CACHE_GC_ENABLED")
+		if err != nil {
+			panic(fmt.Sprintf("task-service config: %v (ADR-137)", err))
+		}
+		return v
+	}()
+	gcInterval := time.Duration(mustInt(cfg.Int("task.repo_cache_gc_interval_s", "CODEAUDIT_TASK_REPO_CACHE_GC_INTERVAL_S"))) * time.Second
+	gcTTL := time.Duration(mustInt(cfg.Int("task.repo_cache_ttl_s", "CODEAUDIT_TASK_REPO_CACHE_TTL_S"))) * time.Second
+	gcOrphan := time.Duration(mustInt(cfg.Int("task.repo_cache_orphan_ttl_s", "CODEAUDIT_TASK_REPO_CACHE_ORPHAN_TTL_S"))) * time.Second
+	gcMax := int64(mustInt(cfg.Int("task.repo_cache_max_bytes", "CODEAUDIT_TASK_REPO_CACHE_MAX_BYTES")))
 	s := &TaskServiceImpl{
-		tasks:        make(map[string]*pb.ScanTask),
-		idem:         make(map[string]*idemRecord),
-		stgIdm:       make(map[string]string),
-		projectPaths: make(map[string]string),
-		configs:      make(map[string]map[string]string),
-		contexts:     make(map[string]*pb.TaskContext),
-		logs:         make(map[string][]*pb.TaskLogEntry),
+		tasks:          make(map[string]*pb.ScanTask),
+	cancels:        make(map[string]context.CancelFunc),
+		idem:           make(map[string]*idemRecord),
+		stgIdm:         make(map[string]string),
+		projectPaths:   make(map[string]string),
+		configs:        make(map[string]map[string]string),
+		contexts:       make(map[string]*pb.TaskContext),
+		logs:           make(map[string][]*pb.TaskLogEntry),
+		incrementalCtx: make(map[string]*orchestrator.IncrementalContext),
 		logIdem:      make(map[string]string),
 		sm:           statemachine.New(),
 		hub:          newTaskWatchHub(),
@@ -124,6 +141,7 @@ func NewTaskService() *TaskServiceImpl {
 			DSHRuntimeAddr:    dshAddr,
 			ResultAddr:      resultAddr,
 		}),
+	resultAddr: resultAddr,
 	}
 	// R-31: 任务实体 PG 持久化——DSN 非空即启用写穿镜像 + 启动回放；空=内存档（诚实降级）。
 	// DSN 已配置但 PG 不可用属 fail-loud（与 ADR-137 配置 panic 同口径）。
@@ -142,6 +160,9 @@ func NewTaskService() *TaskServiceImpl {
 		}
 		log.Printf("[task-store] PG 持久化启用：回放 %d 个历史任务", len(replayed))
 	}
+	// ADR-225 D6: 卷缓存对账回收器（三触发线+硬保护，repo_cache.go；ADR-210 同模式）
+	go (&repoCacheGC{s: s, enabled: gcEnabled, interval: gcInterval,
+		ttl: gcTTL, orphanTTL: gcOrphan, maxBytes: gcMax}).run()
 	return s
 }
 
@@ -187,6 +208,7 @@ func cloneLocked(task *pb.ScanTask) *pb.ScanTask {
 }
 
 // fingerprintCreate — CreateScanTask 请求体指纹（03 §2 同键异体判定）。
+// ADR-225: 增量四字段入指纹——同幂等键携带不同增量意图属"同键异体"。
 func fingerprintCreate(req *pb.CreateScanTaskRequest) string {
 	keys := make([]string, 0, len(req.GetConfig()))
 	for k := range req.GetConfig() {
@@ -197,8 +219,14 @@ func fingerprintCreate(req *pb.CreateScanTaskRequest) string {
 	for _, k := range keys {
 		cfg.WriteString(k + "=" + req.GetConfig()[k] + ";")
 	}
-	return fmt.Sprintf("%s|%s|%s|%s", req.GetProjectId(), req.GetScanMode().String(),
-		strings.Join(req.GetSastTools(), ","), cfg.String())
+	anchor := ""
+	if a := req.GetGitAnchor(); a != nil {
+		anchor = a.GetCommit() + "," + a.GetBranch()
+	}
+	return fmt.Sprintf("%s|%s|%s|%s|inc=%v|base=%s|anchor=%s|hint=%d",
+		req.GetProjectId(), req.GetScanMode().String(),
+		strings.Join(req.GetSastTools(), ","), cfg.String(),
+		req.GetIncremental(), req.GetBaselineTaskId(), anchor, len(req.GetDiffHint()))
 }
 
 // CreateScanTask creates a new scan task.
@@ -221,13 +249,44 @@ func (s *TaskServiceImpl) CreateScanTask(ctx context.Context, req *pb.CreateScan
 	if rec, ok := s.idem[requestID]; ok {
 		if rec.fingerprint == fp {
 			log.Printf("Idempotent replay for task %s", requestID)
-			return s.tasks[requestID], nil
+			return cloneLocked(s.tasks[requestID]), nil // R48: 回放也出克隆（活引用=调用方可改内部态）
 		}
 		// 同键异体：按 03 §2 三态规则返回 ALREADY_EXISTS，不重放旧响应
 		return nil, status.Errorf(codes.AlreadyExists,
 			"request_id %s already used with a different request body (03 §2)", requestID)
 	}
+	// R68（2026-09-12 待办收尾）：idem 表内存态而任务实体 PG 持久（R-31）——服务重启后
+	// 同 request_id 重放（直连 gRPC 客户端重试）会走"新建"覆盖既有任务（状态归 CREATED）。
+	// task_id=request_id（03 §2）——任务在即重放：指纹随任务 Config 落库（_idem_fp 内部键）。
+	if existing, ok := s.tasks[requestID]; ok {
+		if existing.GetConfig()["_idem_fp"] == fp {
+			log.Printf("Idempotent replay (post-restart, task persisted) for task %s", requestID)
+			return cloneLocked(existing), nil
+		}
+		return nil, status.Errorf(codes.AlreadyExists,
+			"request_id %s already used with a different request body (03 §2)", requestID)
+	}
 
+	// ADR-225: 显式基线强契约校验——存在/同项目/COMPLETED 三者齐备，否则创建即
+	// InvalidArgument（显式指定是强契约：不静默替换、不自动降级；自动选定才允许降级）。
+	if b := req.GetBaselineTaskId(); b != "" {
+		bt, ok := s.tasks[b]
+		switch {
+		case !ok:
+			return nil, status.Errorf(codes.InvalidArgument, "baseline_task_id %s not found (ADR-225)", b)
+		case bt.GetProjectId() != req.GetProjectId():
+			return nil, status.Errorf(codes.InvalidArgument,
+				"baseline_task_id %s belongs to project %s (ADR-225)", b, bt.GetProjectId())
+		case bt.GetStatus() != pb.TaskStatus_TASK_STATUS_COMPLETED:
+			return nil, status.Errorf(codes.InvalidArgument,
+				"baseline_task_id %s is %s, not COMPLETED (ADR-225)", b, bt.GetStatus().String())
+		}
+	}
+
+	cfgSnapshot := make(map[string]string, len(req.GetConfig()))
+	for k, v := range req.GetConfig() {
+		cfgSnapshot[k] = v
+	}
 	task := &pb.ScanTask{
 		TaskId:    requestID, // task_id=request_id（03 §2 口径；幂等键即任务标识）
 		ProjectId: req.GetProjectId(),
@@ -237,7 +296,20 @@ func (s *TaskServiceImpl) CreateScanTask(ctx context.Context, req *pb.CreateScan
 		CreatedBy: req.GetCreatedBy(), // ADR-199: 事件通知收件人链（gateway 自 JWT 注入）
 		CreatedAt: timestamppb.Now(),
 		UpdatedAt: timestamppb.Now(),
-		Config:    req.GetConfig(), // ADR-203 补遗: 任务自带 config 快照（proto L1128 config=13，随 GetTask 外露）
+		Config:        cfgSnapshot, // ADR-203 补遗: 任务自带 config 快照（proto L1128 config=13，随 GetTask 外露）
+		BaselineTaskId: req.GetBaselineTaskId(), // ADR-225: 显式基线快照（自动选定者启动阶段回填）
+		GitAnchor:      req.GetGitAnchor(),      // ADR-225 D5: 版本锚点"当时"快照
+	}
+	// ADR-225: 增量意图 + diff_hint（截断）落 config——随 PG payload 持久、API 可见
+	task.Config["_idem_fp"] = fp // R68: 指纹随任务持久（重启后重放判定；内部键 "_" 前缀）
+	if req.GetIncremental() {
+		task.Config["incremental"] = "true"
+		if h := req.GetDiffHint(); h != "" {
+			if len(h) > maxDiffHintBytes {
+				h = h[:maxDiffHintBytes] + "…(truncated)"
+			}
+			task.Config["diff_hint"] = h
+		}
 	}
 	// 项目路径按任务登记（ADR-131：不再写服务级单例字段）
 	if p, ok := req.GetConfig()["project_path"]; ok {
@@ -248,8 +320,11 @@ func (s *TaskServiceImpl) CreateScanTask(ctx context.Context, req *pb.CreateScan
 	s.persistTaskLocked(task) // R-31: 创建即落库
 	s.idem[requestID] = &idemRecord{fingerprint: fp}
 	log.Printf("Created task %s", task.TaskId)
-	s.events.PublishAsync("task.created", task) // ADR-199: 09 §2 task→Kafka 行
-	return task, nil
+	cp := cloneLocked(task)
+	// R48: 事件与返回值都出克隆——异步消费方（Kafka 发布）与后续状态机并发写同一
+	// message 是 data race（proto MessageState 非并发安全）
+	s.events.PublishAsync("task.created", cp) // ADR-199: 09 §2 task→Kafka 行
+	return cp, nil
 }
 
 // GetScanTask retrieves a scan task by ID.
@@ -301,66 +376,104 @@ func (s *TaskServiceImpl) StartTask(ctx context.Context, req *pb.StartTaskReques
 		if uploadID := task.GetConfig()["upload_file_id"]; uploadID != "" {
 			prepare, msg := s.storagePrepare(task, uploadID)
 			if msg != "" {
+				task.ErrorMessage = msg // R49: 先赋值再 transition——persist 才带上原因
 				_ = s.transitionLocked(task, pb.TaskStatus_TASK_STATUS_FAILED, "start")
-				task.ErrorMessage = msg
+				s.finalizeStagesLocked(task, fmt.Errorf("%s", msg)) // R63: 早失败阶段收敛（原悬挂全 PENDING）
 				s.mu.Unlock()
 				return nil, status.Error(codes.FailedPrecondition, msg)
 			}
 			r.Prepare = prepare
 		}
+	}
+	// R47: 项目侧解析链（项目 config.upload_file_id → repo_url clone 兜底）需 project-service
+	// RPC，移到锁外执行——此前持 s.mu 拨 gRPC（fetchProjectConfigValue/fetchProjectRepo），
+	// project-service 慢/挂时 StartTask 卡锁，全服务任务面（创建/列表/快照/流）一并冻结。
+	// 锁内只留快照，RPC 后重锁校验状态未变再应用结果。
+	needProjectLookup := r.ProjectPath == "" && r.Prepare == nil && task.GetProjectId() != ""
+	projectID := task.GetProjectId()
+	s.mu.Unlock()
+
+	var projUploadID, repoURL, repoBranch, projFetchErr string
+	if needProjectLookup {
+		uid, cfgErr := s.fetchProjectConfigValueErr(projectID, "upload_file_id") // R63: 失败原因带回
+		projUploadID = uid
+		projFetchErr = cfgErr
+		url, branch, gerr := s.fetchProjectRepo(projectID)
+		if gerr != nil {
+			projFetchErr = fmt.Sprintf("项目配置读取失败（repo_url 兜底不可用）: %v", gerr)
+		} else {
+			repoURL, repoBranch = url, branch
+		}
+	}
+
+	s.mu.Lock()
+	task, ok = s.tasks[req.GetTaskId()]
+	if !ok {
+		s.mu.Unlock()
+		return nil, status.Errorf(codes.NotFound, "task %s not found", req.GetTaskId())
+	}
+	if task.GetStatus() != pb.TaskStatus_TASK_STATUS_RUNNING {
+		// RPC 窗口内被 Cancel/Pause 等转移——放弃启动编排，如实返回当前态
+		cp := cloneLocked(task)
+		s.mu.Unlock()
+		log.Printf("[task %s] start aborted: status changed during project lookup to %s", req.GetTaskId(), task.GetStatus())
+		return cp, nil
 	}
 	// ADR-203: 项目级上传件兜底——项目弹窗上传（人类 2026-09-05 裁决"保留入口并改造"）经
 	// gateway 零落盘直传 storage，upload_file_id 存项目 config；任务未携带上传件时从
 	// 项目配置解析并**快照回写任务 config**（审核意见①：项目持"当前"指针，任务持"当时"
 	// 快照——创建/启动间项目重传或 DEAD 重试前重传均不漂移，报告可回答"扫的是哪份包"）。
 	// 解析链（ADR-203 补遗收口）：任务 config.upload_file_id → 项目 config.upload_file_id → repo_url clone。
-	if r.ProjectPath == "" && r.Prepare == nil && task.GetProjectId() != "" {
-		if uploadID := s.fetchProjectConfigValue(task.GetProjectId(), "upload_file_id"); uploadID != "" {
-			prepare, msg := s.storagePrepare(task, uploadID)
-			if msg != "" {
-				_ = s.transitionLocked(task, pb.TaskStatus_TASK_STATUS_FAILED, "start")
-				task.ErrorMessage = msg
-				s.mu.Unlock()
-				return nil, status.Error(codes.FailedPrecondition, msg)
-			}
-			r.Prepare = prepare
-			// 快照回写（proto ScanTask.config 与进程内 configs 双写；仅在任务尚未自带时写，
-			// 任务自带指针者本就是自包含快照，重试语义不受项目后续变化影响）
-			if task.GetConfig()["upload_file_id"] == "" {
-				if task.Config == nil {
-					task.Config = map[string]string{}
-				}
-				task.Config["upload_file_id"] = uploadID
-			}
-			if s.configs[task.GetTaskId()] == nil {
-				s.configs[task.GetTaskId()] = map[string]string{}
-			}
-			if s.configs[task.GetTaskId()]["upload_file_id"] == "" {
-				s.configs[task.GetTaskId()]["upload_file_id"] = uploadID
-			}
-			log.Printf("[task %s] storage mode via project config upload: %s (snapshot into task config)", task.GetTaskId(), uploadID)
+	if needProjectLookup && projUploadID != "" {
+		prepare, msg := s.storagePrepare(task, projUploadID)
+		if msg != "" {
+			task.ErrorMessage = msg // R49: 先赋值再 transition——persist 才带上原因
+			_ = s.transitionLocked(task, pb.TaskStatus_TASK_STATUS_FAILED, "start")
+			s.finalizeStagesLocked(task, fmt.Errorf("%s", msg)) // R63: 早失败阶段收敛
+			s.mu.Unlock()
+			return nil, status.Error(codes.FailedPrecondition, msg)
 		}
+		r.Prepare = prepare
+		// 快照回写（proto ScanTask.config 与进程内 configs 双写；仅在任务尚未自带时写，
+		// 任务自带指针者本就是自包含快照，重试语义不受项目后续变化影响）
+		if task.GetConfig()["upload_file_id"] == "" {
+			if task.Config == nil {
+				task.Config = map[string]string{}
+			}
+			task.Config["upload_file_id"] = projUploadID
+		}
+		if s.configs[task.GetTaskId()] == nil {
+			s.configs[task.GetTaskId()] = map[string]string{}
+		}
+		if s.configs[task.GetTaskId()]["upload_file_id"] == "" {
+			s.configs[task.GetTaskId()]["upload_file_id"] = projUploadID
+		}
+		log.Printf("[task %s] storage mode via project config upload: %s (snapshot into task config)", task.GetTaskId(), projUploadID)
 	}
 	// ADR-163: 仓库拉取模式——路径仍缺省且项目配置 repo_url 时，编排协程内前置 git clone
 	// （不阻塞 StartTask RPC；clone 失败走编排既有 FAILED→QUEUED 重试→DEAD 链，错误含 git 输出）。
 	// ADR-209: 守卫必须含 r.Prepare == nil——repo clone 是解析链第三档**兜底**（任务级/项目级
 	// upload_file_id 已解析出 storage 拉包闭包时，此处不得覆盖；自 ADR-200 起缺此条件导致
 	// 优先级倒置，任务级上传件被静默换成 git clone）。
-	if r.ProjectPath == "" && r.Prepare == nil && task.GetProjectId() != "" {
-		if url, branch, gerr := s.fetchProjectRepo(task.GetProjectId()); gerr == nil && url != "" {
-			dest := filepath.Join(s.reposDir, task.GetTaskId())
-			timeout := s.cloneTimeout
-			r.Prepare = func(ctx context.Context) (string, error) {
-				log.Printf("[task %s] repo mode: cloning %s (branch=%s)", task.GetTaskId(), url, branch)
-				return cloneRepo(ctx, url, branch, dest, timeout)
-			}
+	if needProjectLookup && r.Prepare == nil && repoURL != "" {
+		dest := filepath.Join(s.reposDir, task.GetTaskId())
+		timeout := s.cloneTimeout
+		r.Prepare = func(ctx context.Context) (string, error) {
+			log.Printf("[task %s] repo mode: cloning %s (branch=%s)", task.GetTaskId(), repoURL, repoBranch)
+			return cloneRepo(ctx, repoURL, repoBranch, dest, timeout)
 		}
 	}
 	if r.ProjectPath == "" && r.Prepare == nil {
 		// 明确失败：不空跑（此前回退 tests/samples 会让陌生项目扫到无关代码）
+		// R47: fetchProjectRepo 失败不再静默——真实原因追加进 ErrorMessage（暂态 RPC 失败
+		// 与终态"未配置"同走 FAILED 诚实路径，但排障可见差异）
 		msg := "project_path 未配置：请上传代码压缩包或为项目配置 repo_url（ADR-148/ADR-163）"
+		if projFetchErr != "" {
+			msg += "；" + projFetchErr
+		}
+		task.ErrorMessage = msg // R49: 先赋值再 transition——persist 才带上原因
 		_ = s.transitionLocked(task, pb.TaskStatus_TASK_STATUS_FAILED, "start")
-		task.ErrorMessage = msg
+		s.finalizeStagesLocked(task, fmt.Errorf("%s", msg)) // R63: 早失败阶段收敛
 		s.mu.Unlock()
 		return nil, status.Error(codes.FailedPrecondition, msg)
 	}
@@ -368,11 +481,44 @@ func (s *TaskServiceImpl) StartTask(ctx context.Context, req *pb.StartTaskReques
 	if repoPath != "" {
 		r.ProjectPath = repoPath // 环境变量显式覆盖（E2E/CI 口径保留）
 	}
+	// ADR-225 D6: 源码树持久层——Prepare 产出剥壳根后异步树 tar 入桶（全量/增量
+	// 一视同仁：桶是 SSOT，卷降级为可丢弃缓存）；失败不阻塞任务主流程。
+	// 静态路径（Prepare==nil）也包一层，让 Execute 统一经 Prepare 产出根。
+	{
+		bp, sp := r.Prepare, r.ProjectPath
+		taskID := task.GetTaskId()
+		r.Prepare = func(ctx context.Context) (string, error) {
+			var p string
+			var err error
+			if bp != nil {
+				p, err = bp(ctx)
+			} else {
+				p = sp
+			}
+			if err != nil {
+				return "", err
+			}
+			go s.uploadTreeTar(taskID, p)
+			return p, nil
+		}
+	}
+	// ADR-225: 增量意图装配——包装既有 Prepare/静态路径，解包产出新树根后跑增量解析
+	//（基线选定/内容 diff/快照回写/降级，见 incremental.go）。全量任务零行为差异。
+	if task.GetConfig()["incremental"] == "true" {
+		inc := &orchestrator.IncrementalContext{}
+		r.Incremental = inc
+		s.incrementalCtx[task.GetTaskId()] = inc
+		r.Prepare = s.wrapIncrementalPrepare(task.GetTaskId(), r.Prepare, r.ProjectPath)
+	}
 	orch := s.orch
 	recorder := s.stageRecorder(task.GetTaskId())
+	// R67（2026-09-12 待办收尾）：取消传播——编排协程用可取消 ctx（原恒 Background，
+	// CancelScanTask 只改状态不通知在途编排，阻塞 RPC/重试循环继续跑完）
+	orchCtx, orchCancel := context.WithCancel(context.Background())
+	s.cancels[task.GetTaskId()] = orchCancel
 	s.mu.Unlock()
 
-	go s.runOrchestration(orch, r, recorder)
+	go s.runOrchestration(orchCtx, orch, r, recorder)
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -380,9 +526,22 @@ func (s *TaskServiceImpl) StartTask(ctx context.Context, req *pb.StartTaskReques
 	return cp, nil
 }
 
+// emitIncrementalScopeNotice — A6.3 视野声明（验收 F6）：增量任务执行日志明示
+// "以文件为边界"的精度口径（taint 类跨文件规则可能漏报跨文件数据流）。
+// 零变更任务零扫全继承，无扫描即无此声明。
+func (s *TaskServiceImpl) emitIncrementalScopeNotice(taskID string, inc *orchestrator.IncrementalContext) {
+	if inc == nil {
+		return
+	}
+	if active, _, changed, _, _ := inc.Snapshot(); active && len(changed) > 0 {
+		s.emitTaskLog(taskID, pb.TaskLogLevel_TASK_LOG_LEVEL_WARN, "task",
+			fmt.Sprintf("增量扫描以文件为边界（%d 个变更文件）：taint 类跨文件规则可能漏报跨文件数据流，需全量精度请选全量", len(changed)))
+	}
+}
+
 // runOrchestration — 执行编排并处理终态与自动重试。
 // 依据: 04 §1 RUNNING→FAILED→QUEUED 自动重试≤2→耗尽 DEAD（proto L174/L177）
-func (s *TaskServiceImpl) runOrchestration(orch *orchestrator.Orchestrator, r orchestrator.RunRequest, recorder orchestrator.StageRecorder) {
+func (s *TaskServiceImpl) runOrchestration(orchCtx context.Context, orch *orchestrator.Orchestrator, r orchestrator.RunRequest, recorder orchestrator.StageRecorder) {
 	// ADR-181 修复：Recorder 此前创建了却从未挂到 RunRequest——阶段事件从未到达
 	// 阶段看板（时间线全程静止，终态靠 finalize 盖章；人类反馈"没有中间态"的根因）。
 	r.Recorder = recorder
@@ -390,10 +549,25 @@ func (s *TaskServiceImpl) runOrchestration(orch *orchestrator.Orchestrator, r or
 	// 返回失败尝试的缓存结果（其发现已被补偿删除），产出空报告的"假成功"。
 	baseID := r.RequestID
 	attempt := 0
+	s.mu.Lock()
+	delete(s.cancels, r.TaskID) // R67: 编排退出即注销取消器（防泄漏）
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if s.cancels[r.TaskID] != nil {
+			delete(s.cancels, r.TaskID)
+		}
+		s.mu.Unlock()
+	}()
 	for {
+		select {
+		case <-orchCtx.Done(): // R67: 任务已被取消——不再发起下一次尝试（状态由 CancelTask 落 CANCELLED）
+			return
+		default:
+		}
 		r.RequestID = fmt.Sprintf("%s-a%d", baseID, attempt)
 		attempt++
-		summary, err := orch.Execute(context.Background(), r)
+		summary, err := orch.Execute(orchCtx, r)
 		s.mu.Lock()
 		cur, ok := s.tasks[r.TaskID]
 		if !ok || cur.Status != pb.TaskStatus_TASK_STATUS_RUNNING { // 被取消等迁移则不覆盖
@@ -407,17 +581,19 @@ func (s *TaskServiceImpl) runOrchestration(orch *orchestrator.Orchestrator, r or
 			s.storeContextLocked(cur, r, summary)
 			s.finalizeStagesLocked(cur, nil)
 			s.events.PublishAsync("task.completed", cur) // ADR-199: 终态事件
+			createdBy := cur.GetCreatedBy()
 			s.mu.Unlock()
+			s.publishHighSeverityFindings(r.TaskID, createdBy) // R64/D5: 高危发现通知（锁外，非致命）
 			return
 		}
 
 		log.Printf("[task %s] orchestration failed (retry_count=%d): %v", r.TaskID, cur.GetRetryCount(), err)
 		if int(cur.GetRetryCount()) < maxAutoRetries {
 			// FAILED→QUEUED 自动重试（proto L174）
+			cur.ErrorMessage = err.Error() // R49: 先赋值再 transition——persist 才带上原因
 			if terr := s.transitionLocked(cur, pb.TaskStatus_TASK_STATUS_FAILED, "fail"); terr != nil {
 				log.Printf("[task %s] fail transition: %v", r.TaskID, terr)
 			}
-			cur.ErrorMessage = err.Error()
 			cur.RetryCount++
 			if terr := s.transitionLocked(cur, pb.TaskStatus_TASK_STATUS_QUEUED, "auto-retry"); terr != nil {
 				log.Printf("[task %s] auto-retry transition: %v", r.TaskID, terr)
@@ -434,10 +610,10 @@ func (s *TaskServiceImpl) runOrchestration(orch *orchestrator.Orchestrator, r or
 			continue
 		}
 		// 重试耗尽 → DEAD（proto L177；经 FAILED 过渡）
+		cur.ErrorMessage = err.Error() // R49: 先赋值再 transition——persist 才带上原因
 		if terr := s.transitionLocked(cur, pb.TaskStatus_TASK_STATUS_FAILED, "fail"); terr != nil {
 			log.Printf("[task %s] fail transition: %v", r.TaskID, terr)
 		}
-		cur.ErrorMessage = err.Error()
 		if terr := s.transitionLocked(cur, pb.TaskStatus_TASK_STATUS_DEAD, "retry-exhausted"); terr != nil {
 			log.Printf("[task %s] retry-exhausted transition: %v", r.TaskID, terr)
 		}
@@ -501,7 +677,7 @@ func (s *TaskServiceImpl) registerStagesLocked(task *pb.ScanTask) {
 func (s *TaskServiceImpl) stageRecorder(taskID string) orchestrator.StageRecorder {
 	return func(eventKey, msg string) {
 		if id, ok := strings.CutPrefix(eventKey, "done:"); ok {
-			s.completeStage(taskID, id)
+			s.completeStage(taskID, id, msg)
 			return
 		}
 		id := stageEventStageID(eventKey)
@@ -515,6 +691,17 @@ func (s *TaskServiceImpl) stageRecorder(taskID string) orchestrator.StageRecorde
 			return
 		}
 		st := findOrInsertStageLocked(task, id)
+		// R57: 事件 msg 落 metadata（进度行与 "[降级]" 标记进看板——此前整体丢弃，
+		// AI 降级 RuleScan 兜底时前端阶段照样绿勾，用户误以为 AI 真跑完）
+		if msg != "" {
+			if st.Metadata == nil {
+				st.Metadata = map[string]string{}
+			}
+			st.Metadata["message"] = msg
+			if strings.HasPrefix(msg, "[降级]") {
+				st.Metadata["degraded"] = "true"
+			}
+		}
 		if st.Status == pb.StageStatus_STAGE_STATUS_PENDING {
 			st.Status = pb.StageStatus_STAGE_STATUS_RUNNING
 			st.StartedAt = timestamppb.Now()
@@ -524,7 +711,8 @@ func (s *TaskServiceImpl) stageRecorder(taskID string) orchestrator.StageRecorde
 }
 
 // completeStage — 实时完成阶段（已终态则幂等跳过；未启动过的阶段补 StartedAt）。
-func (s *TaskServiceImpl) completeStage(taskID, stageID string) {
+// R57: 收尾 msg 落 metadata["message"]（降级标记 metadata["degraded"] 不被覆盖）。
+func (s *TaskServiceImpl) completeStage(taskID, stageID, msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	task, ok := s.tasks[taskID]
@@ -545,6 +733,12 @@ func (s *TaskServiceImpl) completeStage(taskID, stageID string) {
 		}
 		st.Status = pb.StageStatus_STAGE_STATUS_COMPLETED
 		st.CompletedAt = now
+		if msg != "" {
+			if st.Metadata == nil {
+				st.Metadata = map[string]string{}
+			}
+			st.Metadata["message"] = msg
+		}
 		s.hub.notify(taskID) // ADR-189
 		return
 	}
@@ -695,6 +889,10 @@ func (s *TaskServiceImpl) CancelScanTask(ctx context.Context, req *pb.CancelScan
 	if err := s.transitionLocked(task, pb.TaskStatus_TASK_STATUS_CANCELLED, "cancel"); err != nil {
 		return nil, err
 	}
+	if cancel, ok := s.cancels[req.GetTaskId()]; ok { // R67: 取消传播到在途编排
+		delete(s.cancels, req.GetTaskId())
+		cancel()
+	}
 	return cloneLocked(task), nil
 }
 
@@ -794,7 +992,7 @@ func (s *TaskServiceImpl) ListScanTasks(ctx context.Context, req *pb.ListScanTas
 	s.mu.RLock()
 	tasks := make([]*pb.ScanTask, 0, len(s.tasks))
 	for _, t := range s.tasks {
-		tasks = append(tasks, t)
+		tasks = append(tasks, cloneLocked(t)) // R48: 出锁克隆——锁外排序/过滤/分页期间编排协程会并发写
 	}
 	s.mu.RUnlock()
 
@@ -874,8 +1072,10 @@ func (s *TaskServiceImpl) ListScanTasks(ctx context.Context, req *pb.ListScanTas
 	// ADR-149: 与报告中心同一套排序语义——"最新活动优先"。
 	// 列表展示列是"更新时间"，排序键=updated_at 降序（与报告中心"最新生成优先"一致），
 	// task_id 决胜保证稳定序（03 §5）。
+	// R68（2026-09-12 待办收尾）：排序键改 created_at——不可变，offset 游标页间稳定；
+	// 原按 updated_at（高频变更）翻页期间任务跨页边界移动 → 重复/跳页。
 	sort.Slice(tasks, func(i, j int) bool {
-		ti, tj := tasks[i].GetUpdatedAt().AsTime(), tasks[j].GetUpdatedAt().AsTime()
+		ti, tj := tasks[i].GetCreatedAt().AsTime(), tasks[j].GetCreatedAt().AsTime()
 		if !ti.Equal(tj) {
 			return ti.After(tj)
 		}
@@ -975,11 +1175,16 @@ func progressOf(task *pb.ScanTask) *pb.TaskProgress {
 	if total > 0 {
 		pct = float32(done) / float32(total) * 100
 	}
+	// R48: Stages 深拷贝出锁——原引用让 RPC 序列化（锁外）与编排阶段上报并发读写
+	stages := make([]*pb.TaskStage, 0, total)
+	for _, st := range task.GetStages() {
+		stages = append(stages, proto.Clone(st).(*pb.TaskStage))
+	}
 	return &pb.TaskProgress{
 		TaskId:         task.GetTaskId(),
 		Status:         task.GetStatus(),
 		OverallPercent: pct,
-		Stages:         task.GetStages(),
+		Stages:         stages,
 	}
 }
 
@@ -1149,4 +1354,38 @@ func sortedKeys(m map[string]string) string {
 		parts = append(parts, k+"="+m[k])
 	}
 	return strings.Join(parts, ";")
+}
+
+
+// publishHighSeverityFindings — R64/D5（2026-09-11 跨仓审计）：finding.created 此前
+// 只有消费端零生产者（高危发现站内通知永远不触发）。任务成功收尾时拉取本任务
+// findings，HIGH/CRITICAL 者补发 finding.created（收件人=任务创建者）。失败非致命
+// （通知缺失不阻任务终态），翻页拉全。
+func (s *TaskServiceImpl) publishHighSeverityFindings(taskID, createdBy string) {
+	if s.events == nil || createdBy == "" {
+		return // 未启用事件档/无收件人（系统任务）——消费端同口径跳过
+	}
+	conn, err := grpc.Dial(s.resultAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Printf("[task %s] finding.created: dial result: %v (non-fatal)", taskID, err)
+		return
+	}
+	defer conn.Close()
+	client := pb.NewResultServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cursor := ""
+	for {
+		resp, err := client.ListFindings(ctx, &pb.ListFindingsRequest{
+			TaskId: taskID, Pagination: &pb.PaginationRequest{PageSize: 100, Cursor: cursor}})
+		if err != nil {
+			log.Printf("[task %s] finding.created: list: %v (non-fatal)", taskID, err)
+			return
+		}
+		s.events.PublishFindingsCreatedAsync(taskID, createdBy, resp.GetFindings())
+		if !resp.GetPagination().GetHasNext() {
+			return
+		}
+		cursor = resp.GetPagination().GetNextCursor()
+	}
 }

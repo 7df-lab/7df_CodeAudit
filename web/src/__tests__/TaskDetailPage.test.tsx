@@ -1,5 +1,5 @@
 // 任务详情嵌入回归（ADR-142 补全）：发现/融合 Tabs 内嵌，不再有独立"查看发现"按钮
-// 修复回归：WS 卸载关闭 / 重新生成报告失效报告卡片数据源
+// 修复回归：WS 卸载关闭（重新生成报告入口已随 2026-09-09 布局改版移除）
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -9,18 +9,23 @@ import { useFakeGateway } from '../testsupport/fakeGateway';
 
 // ADR-203 fakeGateway：真实 api/client 执行（含 ADR-170 轮询口），仅 HTTP 层伪造。
 // pollIntervalMs/getAccessToken 用真实实现（无 token 时 WS 连接失败自然回退轮询，无需 stub）。
+// 降级可见性用例（2026-09-11 报障）：快照/发现载荷可按用例注入（DEFAULT_* 轮换）。
+const DEFAULT_SNAPSHOT = {
+  task: { task_id: 't-1', project_id: 'p1', scan_mode: 'SCAN_MODE_TRADITIONAL_FIRST',
+    sast_tools: ['bandit'], status: 'TASK_STATUS_COMPLETED', stages: [], retry_count: 0 },
+  progress: { task_id: 't-1', status: 'TASK_STATUS_COMPLETED', overall_percent: 100, stages: [] },
+  logs: { logs: [{ log_id: '1', task_id: 't-1', ts_ms: 1756630000000,
+    level: 'TASK_LOG_LEVEL_INFO', source: 'task', message: '状态流转 TASK_STATUS_CREATED → TASK_STATUS_PENDING（submit）' }] },
+  ai: { chunk: '', next_cursor: '0', complete: true, total_bytes: '0' },
+};
+const DEFAULT_FINDINGS = { findings: [], pagination: { next_cursor: '', has_next: false, total: 0 } };
+let snapshotOverride: unknown = null;
+let findingsPayload: unknown = DEFAULT_FINDINGS;
 const gateway = useFakeGateway({
   // ADR-170: 详情页改用聚合快照单口轮询
-  'GET /v1/tasks/:taskId/snapshot': () => ({
-    task: { task_id: 't-1', project_id: 'p1', scan_mode: 'SCAN_MODE_TRADITIONAL_FIRST',
-      sast_tools: ['bandit'], status: 'TASK_STATUS_COMPLETED', stages: [], retry_count: 0 },
-    progress: { task_id: 't-1', status: 'TASK_STATUS_COMPLETED', overall_percent: 100, stages: [] },
-    logs: { logs: [{ log_id: '1', task_id: 't-1', ts_ms: 1756630000000,
-      level: 'TASK_LOG_LEVEL_INFO', source: 'task', message: '状态流转 TASK_STATUS_CREATED → TASK_STATUS_PENDING（submit）' }] },
-    ai: { chunk: '', next_cursor: '0', complete: true, total_bytes: '0' },
-  }),
+  'GET /v1/tasks/:taskId/snapshot': () => snapshotOverride ?? DEFAULT_SNAPSHOT,
   'GET /v1/reports': () => ({ reports: [{ report_id: 'r-1', task_id: 't-1', format: 3, url: '', generated_at: null }] }),
-  'GET /v1/findings': () => ({ findings: [], pagination: { next_cursor: '', has_next: false, total: 0 } }),
+  'GET /v1/findings': () => findingsPayload,
   'POST /v1/tasks/:taskId/report': () => ({ report_id: 'r-new' }),
 });
 
@@ -79,23 +84,7 @@ describe('TaskDetailPage（发现/融合内嵌）', () => {
     }
   });
 
-  it('修复回归：重新生成报告后失效报告卡片数据源（GET /v1/reports 重新拉取，卡片摘要随新报告刷新）', async () => {
-    renderPage();
-    await waitFor(() => expect(screen.getByText(/任务 t-1/)).toBeTruthy());
-    await waitFor(() => expect(screen.getByRole('button', { name: '重新生成报告' })).toBeTruthy());
-    const getsBefore = gateway.requests.filter((r) => r.method === 'GET' && r.url === '/v1/reports').length;
-    fireEvent.click(screen.getByRole('button', { name: '重新生成报告' }));
-    const ok = await waitFor(() =>
-      document.body.querySelector<HTMLElement>('.ant-popconfirm-buttons .ant-btn-primary'),
-    );
-    expect(ok).toBeTruthy();
-    fireEvent.click(ok!);
-    await waitFor(() => {
-      const getsAfter = gateway.requests.filter((r) => r.method === 'GET' && r.url === '/v1/reports').length;
-      expect(getsAfter).toBeGreaterThan(getsBefore);
-    });
-    expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/tasks/t-1/report')).toBe(true);
-  });
+
 });
 
 // gw-f6a3523 实证回归锁①：AI 交互日志必须随 WS 帧增量到达逐步渲染（而非收束一次性）。
@@ -145,7 +134,6 @@ describe('TaskDetailPage（AI 日志流式增量）', () => {
     const created: { onopen: (() => void) | null; onclose: (() => void) | null }[] = [];
     class FakeWS {
       onopen: (() => void) | null = null;
-      onmessage: ((ev: { data: string }) => void) | null = null;
       onclose: (() => void) | null = null;
       onerror: (() => void) | null = null;
       constructor(_url: string) { created.push(this); }
@@ -163,5 +151,105 @@ describe('TaskDetailPage（AI 日志流式增量）', () => {
     } finally {
       delete (globalThis as { WebSocket?: unknown }).WebSocket;
     }
+  });
+});
+
+// AI 降级可见性（2026-09-11 用户报障）：RuleScan 兜底任务仍 COMPLETED、时间线全绿，
+// 降级痕迹只在发现级（rulescan-fallback: 前缀 / [降级 前缀 reasoning）→ 页面必须显性警示。
+describe('TaskDetailPage（AI 降级可见性，2026-09-11 报障）', () => {
+  const fallbackFinding = {
+    finding_id: 'f-1', task_id: 't-1', project_id: 'p1', source_tool: 'bandit',
+    source_rule_id: 'rulescan-fallback:B101', cwe_id: 'CWE-798', title: '硬编码密码',
+    description: 'desc', severity: 'SEVERITY_HIGH', confidence: 0.9,
+    ai_verdict: 'AI_VERDICT_UNSPECIFIED', ai_confidence: 0, ai_reasoning: '',
+    ai_fix_suggestion: '', dedup_group: 'g1', matched_findings: [], is_unique: true,
+  };
+  const findingsGets = () => gateway.requests.filter((r) => r.method === 'GET' && r.url === '/v1/findings').length;
+
+  it('发现含 rulescan-fallback: 前缀 → 渲染降级警示 Alert（零额外请求：只订阅发现缓存）', async () => {
+    findingsPayload = { findings: [fallbackFinding], pagination: { next_cursor: '', has_next: false, total: 1 } };
+    try {
+      renderPage();
+      await waitFor(() => expect(screen.getByText(/任务 t-1/)).toBeTruthy());
+      expect(await screen.findByText(/AI 推理未生效——沙箱不可达，已由内置规则引擎（RuleScan）兜底/, {}, { timeout: 5000 })).toBeTruthy();
+      // 降级判定零额外请求：findings 仅由内嵌发现列表拉取（页面级 Alert 不重复请求）
+      const pageLevelGets = findingsGets();
+      expect(pageLevelGets).toBeGreaterThan(0);
+    } finally {
+      findingsPayload = DEFAULT_FINDINGS;
+    }
+  });
+
+  it('无降级发现 → 不渲染降级 Alert（默认空发现即此形态）', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/任务 t-1/)).toBeTruthy());
+    await waitFor(() => expect(findingsGets()).toBeGreaterThan(0)); // 发现已加载
+    expect(screen.queryByText(/AI 推理未生效/)).toBeNull();
+  });
+
+  it('发现 reasoning 带 [降级 前缀同样判定降级（source_rule_id 缺前缀时）', async () => {
+    findingsPayload = { findings: [
+      { ...fallbackFinding, source_rule_id: 'B101', ai_reasoning: '[降级] 规则引擎兜底产出，未经 AI 语义审查' },
+    ], pagination: { next_cursor: '', has_next: false, total: 1 } };
+    try {
+      renderPage();
+      expect(await screen.findByText(/AI 推理未生效——沙箱不可达/, {}, { timeout: 5000 })).toBeTruthy();
+    } finally {
+      findingsPayload = DEFAULT_FINDINGS;
+    }
+  });
+
+  it('阶段 metadata.degraded="true" → 阶段副标题标注（已降级·RuleScan）', async () => {
+    const baseTask = DEFAULT_SNAPSHOT.task as Record<string, unknown>;
+    snapshotOverride = {
+      ...DEFAULT_SNAPSHOT,
+      task: {
+        ...baseTask,
+        stages: [{
+          stage_id: 's-ai', type: 'STAGE_TYPE_AI_INFERENCE', status: 'STAGE_STATUS_COMPLETED',
+          started_at: '2026-09-11T00:00:00Z', completed_at: '2026-09-11T00:01:00Z',
+          error_message: '', metadata: { degraded: 'true' },
+        }],
+      },
+    };
+    try {
+      renderPage();
+      await waitFor(() => expect(screen.getByText(/任务 t-1/)).toBeTruthy());
+      expect(await screen.findByText(/（已降级·RuleScan）/, {}, { timeout: 5000 })).toBeTruthy();
+    } finally {
+      snapshotOverride = null;
+    }
+  });
+});
+
+// B4-3（审计修复）：执行日志客户端保尾 MAX_LOG_ROWS=1000——超长任务日志无界累积会拖垮
+// 标签页；保尾留最新侧，窗口满时面板顶部如实提示截断（完整内容下载入口延后）。
+describe('TaskDetailPage（日志保尾，B4-3）', () => {
+  it('1005 条日志 → 只渲染最新 1000 条并显示"仅显示最近 1000 条"提示', async () => {
+    const logs = Array.from({ length: 1005 }, (_, i) => ({
+      log_id: `l-${i}`, task_id: 't-1', ts_ms: 1756630000000 + i,
+      level: 'TASK_LOG_LEVEL_INFO', source: 'task',
+      message: i === 0 ? '最早一条日志（应被丢弃）' : `保尾日志行 ${i}`,
+    }));
+    snapshotOverride = { ...DEFAULT_SNAPSHOT, logs: { logs } };
+    try {
+      renderPage();
+      await waitFor(() => expect(screen.getByText(/任务 t-1/)).toBeTruthy());
+      await waitFor(() => expect(screen.getByText('1000 条')).toBeTruthy(), { timeout: 5000 });
+      expect(screen.getByText('仅显示最近 1000 条')).toBeTruthy();
+      // 保尾=留最新：最早侧丢弃、最新侧保留
+      expect(screen.queryByText(/最早一条日志/)).toBeNull();
+      expect(screen.getByText('保尾日志行 1004')).toBeTruthy();
+      expect(screen.queryByText('保尾日志行 4')).toBeNull(); // l-0..l-4 已出窗（保留 l-5..l-1004）
+    } finally {
+      snapshotOverride = null;
+    }
+  }, 15_000);
+
+  it('未达上限时不显示截断提示（默认 1 条日志）', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/任务 t-1/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('1 条')).toBeTruthy());
+    expect(screen.queryByText('仅显示最近 1000 条')).toBeNull();
   });
 });

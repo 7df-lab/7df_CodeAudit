@@ -3,12 +3,15 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	pb "github.com/codeaudit/proto-gen"
 	"github.com/codeaudit/services/result-service/internal/model"
 	"github.com/codeaudit/services/result-service/internal/repository"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // MockReportRepository is a mock implementation of ReportRepository
@@ -350,4 +353,85 @@ func TestHandleTaskCompleted_Redelivery_Idempotent(t *testing.T) {
 	if len(queried) != 2 || queried[0] != "kafka_t-1" || queried[1] != "kafka_t-1" {
 		t.Fatalf("request_id must be deterministic kafka_<task>, got %v", queried)
 	}
+}
+
+// R42（2026-09-11 审计修复批次）: 代码片段列必须逐字段 htmlEsc——finding 的 code
+// 字段来自被扫源码（攻击者可控），未转义直写 <pre> 即存储型 XSS（web 报告窗口渲染）。
+func TestRenderHTMLReport_SnippetEscaped(t *testing.T) {
+	items := []map[string]interface{}{{
+		"severity": "HIGH", "cwe": "CWE-79", "rule_id": "bandit.B101", "file": "a.py",
+		"line": 1, "verdict": "AI_VERDICT_TRUE_POSITIVE", "title": "t",
+		"source_raw": `{"code": "<script>alert(1)</script>"}`,
+	}}
+	payload := map[string]interface{}{
+		"task_id": "t-r42", "generated_at": "2026-09-11",
+		"summary": map[string]int{"total_findings": 1, "true_positives": 0, "false_positives": 0, "not_reviewed": 1},
+	}
+	html := renderHTMLReport(payload, items)
+	if strings.Contains(html, "<script>alert") {
+		t.Fatal("report snippet rendered unescaped — stored XSS via finding code field (R42)")
+	}
+	if !strings.Contains(html, "&lt;script&gt;alert") {
+		t.Fatal("escaped form expected in rendered report")
+	}
+}
+
+// R44（2026-09-11 审计修复批次）: 已归档报告的读路径必须返回真实归档 Url——
+// 恒造 report:// 伪协议令客户端拿到不可取回的地址（归档信息被丢弃）。
+func TestGetReport_ReturnsArchivedUrl(t *testing.T) {
+	mockRepo := &MockReportRepository{
+		GetReportByIDFn: func(id string) (*model.Report, error) {
+			return &model.Report{
+				ID: "report-arch", TaskID: "task-arch", Format: "REPORT_FORMAT_PDF",
+				Status: "COMPLETED", Url: "https://storage.internal/reports/report-arch",
+				CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}, nil
+		},
+	}
+	resp, err := NewReportServiceImpl(mockRepo).GetReport(context.Background(),
+		&pb.GetReportRequest{ReportId: "report-arch"})
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	if resp.GetUrl() != "https://storage.internal/reports/report-arch" {
+		t.Fatalf("archived url expected, got %q (report:// pseudo-url = archived url dropped, R44)", resp.GetUrl())
+	}
+}
+
+// R66（2026-09-12 待办收尾）：内容生成失败必须如实报错（FailedPrecondition）——
+// 此前 success 返回令编排发 done:report 阶段绿勾（FAILED 报告伪装成功）。
+func TestGenerateReport_ContentFailureHonest(t *testing.T) {
+	repo := &MockReportRepository{
+		GetReportByRequestIDFn: func(string) (*model.Report, error) { return nil, fmt.Errorf("not found") },
+		DeleteReportFn:         func(string) error { return nil },
+		CreateReportFn:         func(r *model.Report) error { return nil },
+	}
+	s := NewReportServiceImpl(repo)
+	_, err := s.GenerateReport(context.Background(), &pb.GenerateReportRequest{
+		Metadata: &pb.RequestMetadata{RequestId: "req-r66"}, TaskId: "", // 空 task_id? 需真失败——用缺任务触发内容失败
+	})
+	_ = err // 占位：空 task_id 在参数校验即 400——真正内容失败用不可聚合任务
+	// 构造内容失败：ListFindings 报错路径经 mock repo 不可达（service 层 generateReportContent 依赖聚合）
+	// 用 handler 级注入太重；此处锁"FAILED 行为经 FakeRepo 模拟内容错误"不可行时，
+	// 以行为锚：直接调用私有路径不可取（test-gates 口径），改锁公开行为——见下
+	s.SetFindingRepository(&failingFindingsRepo{})
+	_, err = s.GenerateReport(context.Background(), &pb.GenerateReportRequest{
+		Metadata: &pb.RequestMetadata{RequestId: "req-r66b"}, TaskId: "t-r66",
+	})
+	if err == nil {
+		t.Fatal("content-failure path must return error (R66) — got success")
+	}
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("want FailedPrecondition (content failure honest, R66), got %v", err)
+	}
+	if !strings.Contains(err.Error(), "report_id=report_t-r66") {
+		t.Fatalf("error should carry report id for retry-same-id, got %v", err)
+	}
+}
+
+// failingFindingsRepo — List 恒错（注入内容聚合失败）。
+type failingFindingsRepo struct{ repository.FindingRepository }
+
+func (f *failingFindingsRepo) List(cursor string, limit int, taskID, q string) ([]*model.Finding, string, error) {
+	return nil, "", fmt.Errorf("injected aggregate failure")
 }

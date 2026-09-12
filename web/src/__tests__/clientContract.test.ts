@@ -72,7 +72,7 @@ describe('E-14/E-15 响应裸形直传（无包装）', () => {
 });
 
 describe('E-11 uploadArchive multipart 契约', () => {
-  it('FormData 字段名 file；timeout 120s；响应 UploadArchiveResponse 直传', async () => {
+  it('FormData 字段名 file；timeout 300s（B4-3 慢速上行大包）；响应 UploadArchiveResponse 直传', async () => {
     const file = new File(['PK'], 'src.zip', { type: 'application/zip' });
     const resp = await uploadArchive(file);
     const req = gateway.requests.find((r) => r.url === '/v1/uploads/archive')!;
@@ -80,7 +80,7 @@ describe('E-11 uploadArchive multipart 契约', () => {
     // 非字符串 body 原样进日志——multipart 时即 FormData 本体（字段名 file 是 E-11 契约）
     expect(req.body).toBeInstanceOf(FormData);
     expect((req.body as FormData).get('file')).toBe(file);
-    expect(req.config.timeout).toBe(120_000);
+    expect(req.config.timeout).toBe(300_000);
     expect(resp.file_id).toBe('file-1');
     expect(resp).toMatchObject({ upload_id: 'up-1', file_path: 'uploads/up-1/src.zip', size_bytes: 2 });
   });

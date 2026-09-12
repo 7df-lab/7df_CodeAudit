@@ -22,6 +22,7 @@ import (
 	pb "github.com/codeaudit/proto-gen"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
@@ -95,6 +96,10 @@ type RunRequest struct {
 	// Prepare 可选：编排前置步骤（ADR-163 仓库拉取），返回实际 project_path。
 	// 失败=编排失败，走既有 FAILED→QUEUED 重试→DEAD 链；在编排协程内执行，不阻塞 StartTask RPC。
 	Prepare func(ctx context.Context) (string, error)
+	// Incremental 可选：增量扫描上下文（ADR-225）——task-service 的增量 Prepare
+	// 包装层在解包后填充（基线/changed/deleted/diff）；未激活（全量或已降级）时
+	// 编排行为与现状逐字节一致（兼容回归锚点）。
+	Incremental *IncrementalContext
 }
 
 // Execute drives the full pipeline for the given scan mode and returns summary.
@@ -119,6 +124,16 @@ func (o *Orchestrator) Execute(ctx context.Context, r RunRequest) (map[string]in
 	}
 
 	stage("S1", "task accepted")
+
+	// ADR-225 增量前置：未变更文件 findings 继承（物化到本任务 task_id）。
+	// 放在模式分支之前——继承集只依赖 Prepare 产出的 diff，与扫描模式正交；
+	// 失败=编排失败（缺继承行的完整视图是假完整，诚实失败走重试链）。
+	if r.Incremental != nil {
+		if ierr := o.runIncrementalInherit(ctx, r, stage); ierr != nil {
+			o.compensateFindings(r, collector.snapshot(), stage)
+			return summary, ierr
+		}
+	}
 
 	var err error
 	switch r.ScanMode {
@@ -178,7 +193,7 @@ func (o *Orchestrator) compensateFindings(r RunRequest, ids []string, stage Stag
 		defer dCancel()
 		if _, err := client.DeleteFinding(dCtx,
 			&pb.DeleteFindingRequest{FindingId: id}); err != nil {
-			if status.Code(err) != status.Code(nil) && status.Code(err).String() == "NotFound" {
+			if status.Code(err) == codes.NotFound { // R51: 直写枚举（原字符串比较绕）
 				deleted++ // 已不存在=补偿目标已达成
 				continue
 			}
@@ -524,12 +539,26 @@ func (o *Orchestrator) runMultipleScans(ctx context.Context, r RunRequest, stage
 	// 正式口径 07 §8 RunMultipleScans 20m；本地样本取 120s 上界
 	scanCtx, scanCancel := ctx, context.CancelFunc(func() {})
 	defer scanCancel()
-	resp, err := client.RunMultipleScans(scanCtx, &pb.RunMultipleScansRequest{
+	scanReq := &pb.RunMultipleScansRequest{
 		Metadata:    md(r.RequestID + "-scans"),
 		TaskId:      r.TaskID,
 		ProjectPath: r.ProjectPath,
 		ToolIds:     r.SastTools,
-	})
+	}
+	// ADR-225: 增量任务仅扫变更文件；零变更=零工具调用（A6.2：空清单语义在编排层
+	// 区分——proto 字段"空=全量"保持兼容旧客户端，零变更由 inc.active 判定），
+	// findings 全量继承已在 Execute 前置完成，SAST 跳过不构成"全失败"。
+	if r.Incremental != nil {
+		if active, _, changed, _, _ := r.Incremental.Snapshot(); active {
+			if len(changed) == 0 {
+				stage("scans", "增量零变更：SAST 零调用（findings 全继承）")
+				stage("done:sast", "zero-change skip")
+				return nil, false
+			}
+			scanReq.ChangedFiles = changed
+		}
+	}
+	resp, err := client.RunMultipleScans(scanCtx, scanReq)
 	if err != nil {
 		o.record(r.TaskID, "scans", "RunMultipleScans failed: "+err.Error())
 		return nil, true
@@ -572,17 +601,30 @@ func (o *Orchestrator) runAIAnalysis(ctx context.Context, r RunRequest, extraIDs
 	aiCtx, aiCancel := ctx, context.CancelFunc(func() {})
 	defer aiCancel()
 	stage("ai", "submitting RunAIAnalysis") // ADR-181: 阶段开始即 RUNNING
-	resp, err := client.RunAIAnalysis(aiCtx, &pb.RunAIAnalysisRequest{
+	aiReq := &pb.RunAIAnalysisRequest{
 		Metadata:       md(r.RequestID + "-ai"),
 		TaskId:         r.TaskID,
 		ProjectPath:    r.ProjectPath,
 		SastFindingIds: extraIDs,
 		ScanMode:       r.ScanMode,
-	})
+	}
+	// ADR-225 D3: AI 全量上下文 + 增量聚焦提示词——沙箱代码树仍为全量（tar 链路
+	// 不变），任务卡注入变更清单与 diff 节选（大 patch 由 dsh 落文件指路）。
+	if r.Incremental != nil {
+		if active, _, changed, deleted, diffText := r.Incremental.Snapshot(); active {
+			aiReq.ChangedFiles = changed
+			aiReq.DeletedFiles = deleted
+			aiReq.IncrementalDiff = diffText
+		}
+	}
+	resp, err := client.RunAIAnalysis(aiCtx, aiReq)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("RunAIAnalysis: %w", err)
 	}
 	res := resp.GetResult()
+	if resp.GetDegraded() { // R56/R57: 降级可感知（沙箱不可达 → RuleScan 兜底）
+		stage("ai", "[降级] RuleScan 兜底（沙箱路径不可达）——发现由内置规则引擎产出，全部需人工复核")
+	}
 	stage("ai", fmt.Sprintf("ai_findings=%d verified=%d fp=%d sug=%d",
 		res.GetAiFindingsCount(), res.GetVerifiedCount(), res.GetFalsePositiveCount(), len(resp.GetFixSuggestions())))
 	stage("done:ai", "RunAIAnalysis settled") // ADR-181: 实时完成

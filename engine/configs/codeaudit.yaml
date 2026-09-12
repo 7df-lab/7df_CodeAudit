@@ -40,7 +40,7 @@ gateway:
   # 限流是否信任 X-Forwarded-For（仅部署于可信反向代理之后为 true）
   # 依据: 07 §7 单用户限流口径；ADR-132 防客户端伪造
   trust_proxy: false
-  rate_limit_per_min: 50            # 07 §7 gateway（单用户）50 req/min
+  rate_limit_per_min: 100           # 07 §7 gateway（单用户）100 req/min（2026-09-10 人类指令 50→100）
   grpc_call_timeout_s: 30           # 网关→服务同步调用上界（07 §8 矩阵最短行 10m 的 REST 交互口径）
   shutdown_grace_s: 15              # 优雅停机排空窗口
   uploads_dir: data/uploads         # ADR-145: 代码压缩包上传解包根目录（相对仓库根）
@@ -61,6 +61,12 @@ task:
   repos_dir: data/repos            # ADR-163: 仓库拉取模式 git clone 根目录（项目配 repo_url 时启动前置 clone）
   clone_timeout_s: 300             # ADR-163: 单次 git clone 上限
   pg_dsn: ""                       # R-31: 空=内存档诚实降级；env CODEAUDIT_TASK_PG_DSN 优先（compose 部署档指向 codeaudit_task 库）
+  # ---- 卷缓存生命周期（ADR-225 D6：桶为持久 SSOT，共享卷降级为可丢弃缓存）----
+  repo_cache_gc_enabled: true      # 回收器总开关
+  repo_cache_gc_interval_s: 600    # 对账回收周期（ADR-210 孤儿沙箱回收器同模式）
+  repo_cache_ttl_s: 86400          # 终态任务卷树保留窗口（0=终态后下一轮即删）
+  repo_cache_orphan_ttl_s: 604800  # 孤儿目录（无任务记录/rehy 残留）清理窗口
+  repo_cache_max_bytes: 21474836480 # 容量压力线（旧→新强制驱逐；硬保护见 repo_cache_gc.go）
 
 result:
   page_size_default: 20             # proto L227 "每页大小，默认20"
@@ -80,8 +86,11 @@ sast_adapter:
   tools:
     # 工具执行映射（实现细节级配置，ADR-121；解析器注册见 adapters.Registry）
     # {project} 占位符 = 扫描目标路径
+    # files_argv（ADR-225 增量扫描，可选键）：{files}=变更文件清单（分批展开）；
+    # 未配置的工具收到 changed_files 非空时诚实降级为全目录扫描并记 WARN
     bandit:
       argv: ["bandit", "-r", "-f", "json", "-q", "{project}"]
+      files_argv: ["bandit", "-f", "json", "-q", "{files}"]   # 文件清单模式（无 -r：文件参数与递归互斥）
       python_module: bandit         # PATH 无该命令时的 python -m 兜底
       pythonpath: .toolchain/pylibs
     opengrep:
@@ -89,6 +98,7 @@ sast_adapter:
       # 默认导出 dataflow_trace 变量级污点链路（semgrep OSS 不导出）。
       # {rules}=仓库内本服务规则目录（handler 启动时解析）；{project}=扫描目标
       argv: ["opengrep", "--json", "--quiet", "--no-git-ignore", "--config", "{rules}/sql-taint.yaml", "{project}"]
+      files_argv: ["opengrep", "--json", "--quiet", "--no-git-ignore", "--config", "{rules}/sql-taint.yaml", "{files}"]
 
 dsh_runtime:
   session:

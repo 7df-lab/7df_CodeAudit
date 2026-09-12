@@ -20,10 +20,13 @@ __main__.py ──> api.serve() ──> uvicorn ──> create_app() 的路由
 
 facade 无状态、懒加载单例（`api.facade` 模块级；测试经 `client_factory` 注入假 SDK）。
 HTTP 层保证：调进 facade 的参数**已经过类型校验**；facade 抛出的异常按 §4 映射。
+七个 async def 端点（create/wait-ready/exec/update-config/services/inference 写操作）
+的南向调用一律 `await run_in_threadpool(facade.xxx, …)`（B3-1 审计修复：同步 gRPC
+裸跑在 event loop 上会阻塞 /healthz 探活与全部并发请求；对齐上传路径既有形态）。
 
 | facade 方法 | 输入（HTTP 层校验后保证） | 输出 dict 形态 | 可能异常 |
 |---|---|---|---|
-| `health()` | 无 | `{"ok": bool, "endpoint": str}`（SDK health() 为 None → ok=False） | SDK 异常直抛（→502） |
+| `health()` | 无 | `{"ok": bool, "endpoint": str}`（SDK health() 为 None → ok=False） | SDK 异常直抛（→500） |
 | `create(workspace=, name=, spec=)` | workspace/name: str；spec: dict | 沙箱引用投影（§1.1） | ValueError（ParseDict 失败，api 层转 400） |
 | `get(name=, workspace=)` | str ×2 | 沙箱引用投影 | LookupError（不存在 → 404） |
 | `list_all(limit=)` | int | `[沙箱引用投影…]` | SDK 异常 |
@@ -112,7 +115,7 @@ HTTP 层保证：调进 facade 的参数**已经过类型校验**；facade 抛�
 | `LookupError`（含其子类） | `_lookup` | 404 | `{"error": str(exc)}` |
 | `StarletteHTTPException` 404 | `_http_exc` | 404 | `{"error": "no route for METHOD /path"}`（尾斜杠 rstrip） |
 | `StarletteHTTPException` 其余（如 405） | `_http_exc` | 原码 | `{"error": detail}` |
-| 其他一切 `Exception` | `_unhandled` 兜底 | 502 | `{"error": "<ExcType>: <msg>"}` |
+| 其他一切 `Exception` | `_unhandled` 兜底 | 500 | `{"error": "internal error"}`（`ExcType: msg` 进服务端 stderr 日志——B3-3：原 502+细节泄漏既触发上游"网关不可达"误判又暴露内部信息） |
 
 api 层主动转换：`ValueError`（ParseDict/绝对路径）→ 400；`UploadError` → 400；
 `json_format.ParseError` → 400；校验失败 → `ApiError(400, …)` 且**绝不触达 facade**。
@@ -121,10 +124,10 @@ api 层主动转换：`ValueError`（ParseDict/绝对路径）→ 400；`UploadE
 
 | 函数 | 返回 | 消费点 | 失败行为 |
 |---|---|---|---|
-| `manager_token()` | str（空=免鉴权） | `require_token`、`serve()` 提示语 | tokenFile 读失败视为空 |
+| `manager_token()` | str（空=免鉴权） | `require_token`、`serve()` 提示语 | tokenFile **不存在**=未配置 → 空（放行维持现状）；**存在但读失败**（EACCES/EIO 等 OSError）→ `TokenFileError`（require_token 503 fail-closed + stderr 日志，B3-2；修复前吞异常当空=读失败瞬间鉴权失效）。文件解析结果 5s 缓存（`_token_cache`；env 分支不缓存直读）——require_token 是 async 依赖，防每请求阻塞磁盘 IO；异常不落缓存，权限恢复即自愈 |
 | `manager_bind()` / `manager_port()` | str / int | `serve()` → uvicorn | port 坏值回落 18800 |
 | `gateway_endpoint()` | str | `GatewayFacade._default_client_factory`、health 投影 | 有内置默认，不失败 |
-| `max_upload_bytes()` | int（0=不限） | `_handle_upload` 413 判断 | 坏值回落 0 |
+| `max_upload_bytes()` | int（缺省 2 GiB；0=不限） | `_handle_upload` 413 判断 | 坏值回落 2 GiB（B3-3：原缺省/回落 0 让防误操作上限形同虚设） |
 | `openshell_lib_path()` | Path | `_ensure_sdk_path` | 找不到 SDK 目录 → RuntimeError（fail-loud） |
 | `validate()` | None / raise | `serve()` 启动前 | 非环回 bind 且无 token → RuntimeError 拒启 |
 
@@ -140,5 +143,5 @@ api 层主动转换：`ValueError`（ParseDict/绝对路径）→ 400；`UploadE
 | `facade._route_client` | gateway.py | 替换 InferenceRouteClient |
 | `gw.pb_grpc_stub` | gateway.py 模块函数 | 假 admin stub（services/providers） |
 | `api.facade` | api.py 模块级单例 | app 工厂绑定被测 facade |
-| `OPENSHELL_MANAGER_CONFIG` + `_config_cache=None` | config.py | 配置隔离 |
+| `OPENSHELL_MANAGER_CONFIG` + `_config_cache=None` + `_token_cache=None` | config.py | 配置/ token 缓存隔离 |
 | `GatewayFacade.UPLOAD_CHUNK_BYTES` | gateway.py 类属性 | 缩小分块触发多块路径 |

@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { CodeAuditClient, ApiError, encodeQuery, type FetchLike, type TokenStore } from '../src/apiClient';
+import { CodeAuditClient, ApiError, encodeQuery, REQUEST_TIMEOUT_MS, UPLOAD_TIMEOUT_MS, type FetchLike, type TokenStore } from '../src/apiClient';
 
 function makeStore(access = '', refresh = ''): TokenStore & { access: string; refresh: string } {
   const s = { access, refresh };
@@ -120,6 +120,19 @@ describe('CodeAuditClient', () => {
     assert.ok(c.rateLimitUntil <= Date.now() + 61_000);
   });
 
+  it('429 响应体单次读取：ApiError 携带完整 body，retry_after 正常解析（回归锁：json+text 双读丢 body）', async () => {
+    const store = makeStore('ok', 'R');
+    const fetchFn: FetchLike = async () =>
+      new Response(JSON.stringify({ retry_after: 7, error: 'rate limited, slow down' }), { status: 429, headers: { 'Content-Type': 'application/json' } });
+    const c = new CodeAuditClient('http://x', store as TokenStore, fetchFn);
+    const err = await c.listProjects().then(() => assert.fail('应抛 429'), (e: unknown) => e as ApiError);
+    assert.strictEqual(err.status, 429);
+    assert.match(err.message, /rate limited, slow down/, '错误消息保留响应体（原实现 body 双读后被吞成空串）');
+    assert.match(String(err.body ?? ''), /rate limited/);
+    assert.ok(c.rateLimitUntil > Date.now() + 6_000, 'retry_after=7 已从单次读取的 body 解析');
+    assert.ok(c.rateLimitUntil <= Date.now() + 61_000);
+  });
+
   it('taskSnapshot 增量游标：logs_after/ai_cursor 进 query，空游标不发参数', async () => {
     const store = makeStore('ok', 'R');
     const seenUrls: string[] = [];
@@ -213,5 +226,115 @@ describe('CodeAuditClient 连通性跟踪（offline 与 isLoggedIn 正交）', (
     await c2.listTools().then(() => assert.fail('应抛出'), () => undefined);
     assert.strictEqual(http401.getRefreshToken(), '', 'refresh 被拒=会话失效，凭据必须清');
     assert.strictEqual(c2.isLoggedIn(), false);
+  });
+});
+
+describe('createTask 增量载荷（ADR-225 D5）', () => {
+  it('全量调用不携带任何增量键（旧契约零变化）', async () => {
+    let body: Record<string, unknown> | undefined;
+    const fetchFn: FetchLike = async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+      return jsonResponse(200, { task_id: 't1', status: 'TASK_STATUS_CREATED' });
+    };
+    const c = new CodeAuditClient('http://x', makeStore('A'), fetchFn);
+    await c.createTask('p1', 'SCAN_MODE_PARALLEL', [], { upload_file_id: 'f1' });
+    assert.ok(!('incremental' in (body ?? {})));
+    assert.ok(!('git_anchor' in (body ?? {})));
+    assert.strictEqual((body?.config as Record<string, string> | undefined)?.upload_file_id, 'f1');
+  });
+
+  it('增量调用携带 incremental/git_anchor/diff_hint（snake_case 契约）', async () => {
+    let body: Record<string, unknown> | undefined;
+    const fetchFn: FetchLike = async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+      return jsonResponse(200, { task_id: 't2', status: 'TASK_STATUS_CREATED' });
+    };
+    const c = new CodeAuditClient('http://x', makeStore('A'), fetchFn);
+    await c.createTask('p1', 'SCAN_MODE_PARALLEL', [], { upload_file_id: 'f2' }, {
+      git_anchor: { commit: 'abc', branch: 'main', dirty: true, remote: 'git://x' },
+      diff_hint: 'M\ta.py',
+    });
+    assert.strictEqual(body?.incremental, true);
+    assert.deepStrictEqual(body?.git_anchor, { commit: 'abc', branch: 'main', dirty: true, remote: 'git://x' });
+    assert.strictEqual(body?.diff_hint, 'M\ta.py');
+    assert.ok(!('baseline_task_id' in (body ?? {}))); // 自动选定时省略（服务端 ADR-225 规则）
+  });
+});
+
+describe('refresh 失败仅 401 清凭据（B2-3 回归锁）', () => {
+  // 组合路由：业务请求带过期 access → 401 触发单飞刷新；refresh 端点按脚本返回 status
+  const expiredThenRefresh = (refreshStatus: number): FetchLike => async (url) =>
+    /\/v1\/auth\/refresh/.test(String(url))
+      ? jsonResponse(refreshStatus, { error: 'refresh rejected' })
+      : jsonResponse(401, { error: 'token expired' });
+
+  it('refresh 502 → 抛错但凭据保留（网关瞬态故障不把用户登出）', async () => {
+    const store = makeStore('stale', 'R');
+    const c = new CodeAuditClient('http://x', store as TokenStore, expiredThenRefresh(502));
+    await c.listTools().then(() => assert.fail('应抛出'), (e) => assert.ok(/refresh failed: 502/.test((e as Error).message)));
+    assert.strictEqual(store.access, 'stale', 'access 不得被清');
+    assert.strictEqual(store.refresh, 'R', 'refresh 不得被清');
+    assert.strictEqual(c.isLoggedIn(), true, '瞬态失败期间会话仍视为存在（可用缓存 token 重试）');
+  });
+
+  it('refresh 429 → 抛错但凭据保留（限流不等于会话失效）', async () => {
+    const store = makeStore('stale', 'R');
+    const c = new CodeAuditClient('http://x', store as TokenStore, expiredThenRefresh(429));
+    await c.listTools().then(() => assert.fail('应抛出'), (e) => assert.ok(/refresh failed: 429/.test((e as Error).message)));
+    assert.strictEqual(store.access, 'stale');
+    assert.strictEqual(store.refresh, 'R');
+    assert.strictEqual(c.isLoggedIn(), true);
+  });
+
+  it('refresh 401 → 凭据清空（服务端明确拒绝 token，会话失效口径不变）', async () => {
+    const store = makeStore('stale', 'R');
+    const c = new CodeAuditClient('http://x', store as TokenStore, expiredThenRefresh(401));
+    await c.listTools().then(() => assert.fail('应抛出'), () => undefined);
+    assert.strictEqual(store.access, '');
+    assert.strictEqual(store.refresh, '');
+    assert.strictEqual(c.isLoggedIn(), false);
+  });
+});
+
+describe('REST 超时注入（B2-7 回归锁）', () => {
+  it('requestJson 注入 AbortSignal.timeout：普通请求 60s 档', async () => {
+    const orig = AbortSignal.timeout.bind(AbortSignal);
+    const seen: number[] = [];
+    (AbortSignal as any).timeout = (ms: number) => { seen.push(ms); return orig(ms); };
+    try {
+      const fetchFn: FetchLike = async () => jsonResponse(200, { tools: [] });
+      const c = new CodeAuditClient('http://x', makeStore('A'), fetchFn);
+      await c.listTools();
+      assert.deepStrictEqual(seen, [REQUEST_TIMEOUT_MS], '普通 JSON 请求走 REQUEST_TIMEOUT_MS 档');
+      assert.strictEqual(REQUEST_TIMEOUT_MS, 60_000, '缺省 60s');
+    } finally {
+      (AbortSignal as any).timeout = orig;
+    }
+  });
+
+  it('上传走 600s 长档（UPLOAD_TIMEOUT_MS）', async () => {
+    const orig = AbortSignal.timeout.bind(AbortSignal);
+    const seen: number[] = [];
+    (AbortSignal as any).timeout = (ms: number) => { seen.push(ms); return orig(ms); };
+    try {
+      const fetchFn: FetchLike = async () => jsonResponse(200, { file_id: 'f1' });
+      const c = new CodeAuditClient('http://x', makeStore('A'), fetchFn);
+      await c.uploadArchive(new Blob(['zip-bytes']));
+      assert.deepStrictEqual(seen, [UPLOAD_TIMEOUT_MS], 'multipart 上传走 UPLOAD_TIMEOUT_MS 长档');
+      assert.strictEqual(UPLOAD_TIMEOUT_MS, 600_000, '缺省 600s');
+    } finally {
+      (AbortSignal as any).timeout = orig;
+    }
+  });
+
+  it('doRefresh 裸 fetch 亦注入超时信号（刷新悬挂同样受控）', async () => {
+    let captured: RequestInit | undefined;
+    const store = makeStore('stale', 'R');
+    const c = new CodeAuditClient('http://x', store as TokenStore, async (_url, init) => {
+      captured = init;
+      return jsonResponse(401, { error: 'expired' });
+    });
+    await c.listTools().then(() => assert.fail('应抛出'), () => undefined);
+    assert.ok(captured?.signal instanceof AbortSignal, 'refresh 裸 fetch 必须带超时 signal');
   });
 });

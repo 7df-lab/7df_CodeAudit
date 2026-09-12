@@ -25,11 +25,18 @@ function isTaintRule(ruleId: string | undefined): boolean {
   return !!ruleId && ruleId.includes('taint');
 }
 
-// AI 输出的 reasoning 前缀约定（创建期由 AI 链路写入；人工裁决 RPC 无此前缀）：
+// 机器写入的 reasoning 前缀约定（引擎创建期写入；人工裁决 RPC 无此前缀）：
 //   [DSH-sandbox] = 沙箱内 DSH 语义分析（ADR-140/166）
 //   [LLM:<model>] = 服务端 LLM 逐条审查（llm_review）
+//   [降级]        = 系统降级标记（规则兜底/沙箱不可用，非 AI 语义判定、非人工）
 export function isAIReasoning(reasoning: string | undefined): boolean {
   return !!reasoning && (reasoning.startsWith('[DSH-sandbox]') || /^\[LLM:[^\]]+\]/.test(reasoning));
+}
+
+// [降级] 前缀 = 系统自动写入的处置标记（规则引擎兜底等）——此前被"有理由=人工"启发式
+// 误标为人工（2026-09-09 用户报障），识别为第三类机器写入。
+export function isSystemReasoning(reasoning: string | undefined): boolean {
+  return !!reasoning && reasoning.startsWith('[降级]');
 }
 
 // base64 → UTF-8 文本。atob 产出的是"每字符一字节"的 Latin-1 串，源码中文
@@ -190,6 +197,10 @@ const qc = useQueryClient();
       // ADR-152 补充：同步失效发现列表缓存——否则外层行标签停留在"未判定"
       qc.invalidateQueries({ queryKey: ['findings'] });
       qc.invalidateQueries({ queryKey: ['finding', findingId] });
+      // B4-3（审计修复）：本组件还内嵌于 ReviewView 行展开（I-A0），且任务详情 Tabs 的
+      // 融合/审核视图读 ai_verdict——裁决成功联动前缀失效，切 Tab/展开不再停留旧结论。
+      qc.invalidateQueries({ queryKey: ['fusion-findings'] });
+      qc.invalidateQueries({ queryKey: ['review-findings'] });
     },
     onError: (e) => message.error(`回写失败：${(e as Error).message}`),
   });
@@ -199,11 +210,13 @@ const qc = useQueryClient();
   const codeCtx = extractCodeContext(f.source_raw, loc?.file_path, loc?.start_line);
   const dfTrace = extractDataflowTrace(f.source_raw); // ADR-158: 变量级污点链路（OpenGrep）
   const startLine = loc?.start_line ?? 0;
-  // 写入方推断（ADR-167 补遗修正）：AI 链路创建期即写 verdict+reasoning（带
-  // [DSH-sandbox]/[LLM:] 前缀）→ 由此区分；其余有理由的判定=人工（UpdateVerdict 链路）。
+  // 写入方推断（ADR-167 补遗 + 2026-09-09 三分法）：AI 链路创建期即写 verdict+reasoning
+  // （带 [DSH-sandbox]/[LLM:] 前缀），系统降级标记带 [降级] 前缀 → 由此区分；其余有理由的
+  // 判定=人工（UpdateVerdict 链路）。
   const verdictSet = !!f.ai_verdict && f.ai_verdict !== 'AI_VERDICT_UNSPECIFIED';
   const isAI = isAIReasoning(f.ai_reasoning);
-  const isHuman = verdictSet && !!f.ai_reasoning && !isAI;
+  const isSystem = !isAI && isSystemReasoning(f.ai_reasoning);
+  const isHuman = verdictSet && !!f.ai_reasoning && !isAI && !isSystem;
 
   return (
     // ADR-151: 展开态铺满表格宽度（与其他内容对齐）；独立页场景同为响应式全宽
@@ -222,7 +235,7 @@ const qc = useQueryClient();
       </Card>
 
       <Card
-        title="代码上下文（复核依据，ADR-141/143；源码全文与链路定位 ADR-195）"
+        title="代码上下文"
         style={{ marginBottom: 16 }}
         extra={srcQuery.isSuccess ? <Tag color="blue">源码全文</Tag> : codeCtx ? <Tag>{codeCtx.kind}</Tag> : <Tag>工具未提供代码片段</Tag>}
       >
@@ -230,11 +243,11 @@ const qc = useQueryClient();
         {isAI && (
           <div style={{ marginBottom: 12 }} data-testid="chain-hops">
             <Typography.Text type="secondary">
-              AI 结论链路（解析自结论原文，按出现顺序；点击定位对应文件）：
+              AI 结论引用的代码位置（点击定位到对应文件）：
             </Typography.Text>
             <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {chain.hops.length === 0 ? (
-                <Typography.Text type="secondary">未解析到 file:line 链路——仅可选漏洞所在文件复核。</Typography.Text>
+                <Typography.Text type="secondary">结论未引用其他代码位置，仅可查看漏洞所在文件。</Typography.Text>
               ) : chain.hops.map((h, i) => (
                 <Tooltip key={`${h.path}:${h.line}-${h.endLine ?? ''}`} title={h.snippet}>
                   <Button
@@ -267,7 +280,7 @@ const qc = useQueryClient();
               options={fileOptions.map((p) => ({ value: p, label: baseName(p) }))}
             />
             {fileOptions.length <= 1 && (
-              <Typography.Text type="secondary">（未解析到链路，仅漏洞所在文件可选）</Typography.Text>
+              <Typography.Text type="secondary">（仅漏洞所在文件）</Typography.Text>
             )}
             {srcQuery.data && (
               <Typography.Text type="secondary">
@@ -284,8 +297,8 @@ const qc = useQueryClient();
             style={{ marginBottom: 8 }}
             type="warning"
             showIcon
-            message="源码全文不可用，降级为扫描时捕获的片段"
-            description={`原因：${((srcQuery.error as Error)?.message ?? '未知').slice(0, 220)}。全文复核需任务源目录可回查（上传/仓库拉取任务；ADR-195 根解析四流）。`}
+            message="源码全文不可用，已降级为扫描时捕获的代码片段"
+            description={`原因：${((srcQuery.error as Error)?.message ?? '未知').slice(0, 220)}。上传压缩包或仓库拉取方式创建的任务支持全文复核。`}
           />
         )}
         {openPath && !srcQuery.isLoading && (srcQuery.isError || !srcQuery.data) && (
@@ -304,7 +317,7 @@ const qc = useQueryClient();
                 })}
               </pre>
               <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-                匹配点 ±10 行上下文（扫描时真实捕获；高亮行 = 工具标记位置）。
+                扫描时捕获的上下文片段，高亮行为工具标记位置。
               </Typography.Text>
             </>
           ) : codeCtx ? (
@@ -320,7 +333,7 @@ const qc = useQueryClient();
             </pre>
           ) : (
             <Typography.Text type="secondary">
-              该发现未携带代码片段且全文不可用（V1 口径：仅展示工具已有数据；全文浏览待任务源目录可回查，14号 Q5/ADR-195）。
+              该发现未携带代码片段，且当前任务不支持源码全文回查。
             </Typography.Text>
           )
         )}
@@ -337,7 +350,7 @@ const qc = useQueryClient();
         )}
         {!openPath && (
           <Typography.Text type="secondary">
-            该发现未携带位置信息（location 为空），无法定位源码；V1 口径仅展示工具已有数据。
+            该发现未携带代码位置信息，无法定位源码。
           </Typography.Text>
         )}
         {loc && (
@@ -352,7 +365,7 @@ const qc = useQueryClient();
             style={{ marginTop: 12 }}
             type="warning"
             showIcon
-            message="污点传播链路（OpenGrep taint 引擎真实计算，非推测）"
+            message="污点传播链路"
             description={
               <div>
                 {dfTrace.source && (
@@ -383,8 +396,7 @@ const qc = useQueryClient();
                   </div>
                 )}
                 <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-                  链路由 OpenGrep taint 引擎在扫描时真实计算（同 schema 解析自 source_raw）；
-                  跨文件/净化器级明细仍需 CPG 后端（01 §2 引擎层 Joern，尚未接入）。
+                  链路由扫描引擎在扫描时计算得出；跨文件与净化器级别的追踪暂不支持。
                 </Typography.Paragraph>
               </div>
             }
@@ -396,7 +408,7 @@ const qc = useQueryClient();
             style={{ marginTop: 12 }}
             type="warning"
             showIcon
-            message="污点传播已确认：引擎判定 source -> sink 可达"
+            message="污点传播已确认（Source → Sink 可达）"
             description={
               <div>
                 <Typography.Text code>Source: 函数参数（上下文窗口内 def 行）</Typography.Text>
@@ -405,59 +417,69 @@ const qc = useQueryClient();
                   Sink: {loc ? `${loc.file_path.split('/').pop()}:${loc.start_line}` : 'execute()'}
                 </Typography.Text>
                 <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-                  该发现未携带变量级逐步链路（历史 semgrep 数据或引擎未导出）；换用 OpenGrep 重新扫描可得完整链路。
+                  该发现未携带变量级逐步链路；使用污点规则重新扫描可获得完整链路。
                 </Typography.Paragraph>
               </div>
             }
           />
         )}
-        {/* ADR-143/159 诚实声明：非 taint 规则的发现, 引擎不输出数据流——精确说明而非笼统"不可用" */}
+        {/* ADR-143/159 诚实声明 → 生产化收敛（2026-09-09 用户反馈"不专业"）：非 taint 规则
+            的发现不产出数据流，缺席不再用大号 Alert 宣告，降为一行次要说明 */}
         {!isTaintRule(f.source_rule_id) && (
-        <Alert
-          style={{ marginTop: 12 }}
-          type="info"
-          showIcon
-          message="Sink 数据流链路：该发现未携带（不推测）"
-          description={`该发现来自 ${f.source_tool || '规则匹配类工具'}——模式/规则匹配类扫描不产生污点传播数据，本页不编造链路。需要链路时请用 opengrep 污点规则扫描（命中后此处展示 SOURCE→传播→SINK 变量级链路）；跨文件/净化器级明细仍需 CPG 后端（01 §2 引擎层 Joern，尚未接入）。`}
-        />
+          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
+            数据流链路仅由污点类规则扫描产出，该发现未携带链路数据。
+          </Typography.Text>
         )}
       </Card>
 
-      {/* ADR-153 方案A（会话#42 人类反馈）：写入方按实际数据推断标注——
-          依据写入链路分析：仅人工裁决 RPC（UpdateVerdict, proto L1240）写 reasoning，
-          AI 链路（CreateFinding 创建期 AiVerdict / BatchUpdateVerdict proto L1232）均不写理由。
-          "有理由=人工"是推断而非记录，判定者字段根治待 proto V2.1（方案B review_source）。 */}
+      {/* ADR-153 方案A（会话#42 人类反馈）+ 2026-09-09 三分法：写入方按 reasoning 前缀推断
+          标注——AI（[DSH-sandbox]/[LLM:]）、系统降级（[降级]）、其余有理由=人工（UpdateVerdict
+          链路）；无理由的已判定如实标"来源未记录"。判定者字段根治待 proto V2.1（方案B）。 */}
       <Card title="当前结论" style={{ marginBottom: 16 }}>
         <Space direction="vertical" style={{ width: '100%' }}>
           <Space wrap>
-            <Tag color={VERDICT_COLOR[f.ai_verdict]}>{zh(AI_VERDICT, f.ai_verdict)}</Tag>
+            {/* 空值显式归一"未判定"（zh 已无枚举特判，B3-5；展示行为不变） */}
+            <Tag color={VERDICT_COLOR[f.ai_verdict]}>{zh(AI_VERDICT, f.ai_verdict || 'AI_VERDICT_UNSPECIFIED')}</Tag>
             {verdictSet && (
-              <Tag color={isAI ? 'geekblue' : isHuman ? 'blue' : 'default'}>
-                {isAI ? '写入方：AI' : isHuman ? '写入方：人工' : '写入方：AI（或人工未留理由，V1 契约无法区分）'}
+              <Tag color={isAI ? 'geekblue' : isSystem ? 'gold' : isHuman ? 'blue' : 'default'}>
+                {isAI
+                  ? '写入方：AI 分析'
+                  : isSystem
+                    ? '写入方：系统（自动降级标记）'
+                    : isHuman
+                      ? '写入方：人工'
+                      : '写入方：未记录'}
               </Tag>
             )}
             <Typography.Text type="secondary">置信度 {f.ai_confidence || '—'}</Typography.Text>
           </Space>
           {!verdictSet && (
-            <Typography.Text type="secondary">
-              V1 契约说明：AI 判定与人工裁决共用同一结论字段；该发现尚未判定。
-            </Typography.Text>
+            <Typography.Text type="secondary">该发现尚未判定。</Typography.Text>
           )}
           {/* AI 结论原文（创建期写入，前缀标来源；人类需求：AI 结论须可见并标明是 AI 输出） */}
           {isAI && (
             <Alert
               type="info"
               showIcon
-              message={`AI 结论（原文，${f.ai_reasoning?.startsWith('[DSH-sandbox]') ? '沙箱内 DSH 语义分析' : '服务端 LLM 审查'}产出）`}
+              message={`AI 分析结论（${f.ai_reasoning?.startsWith('[DSH-sandbox]') ? '沙箱语义分析' : 'LLM 审查'}）`}
               description={<Typography.Text style={{ whiteSpace: 'pre-wrap' }}>{f.ai_reasoning}</Typography.Text>}
             />
           )}
-          {/* P4：人工裁决理由必须原文展示 */}
+          {/* 系统降级标记（规则兜底等）：原文展示，说明其非 AI 语义判定亦非人工 */}
+          {isSystem && (
+            <Alert
+              type="warning"
+              showIcon
+              message="系统自动标记"
+              description={<Typography.Text style={{ whiteSpace: 'pre-wrap' }}>{f.ai_reasoning}</Typography.Text>}
+            />
+          )}
+          {/* P4：裁决理由必须原文展示 */}
           {isHuman && (
             <Alert
               type={f.ai_verdict === 'AI_VERDICT_NEEDS_MANUAL' ? 'warning' : 'info'}
               showIcon
-              message="人工裁决理由（原文）"
+              message="裁决理由"
               description={<Typography.Text style={{ whiteSpace: 'pre-wrap' }}>{f.ai_reasoning}</Typography.Text>}
             />
           )}
@@ -465,14 +487,14 @@ const qc = useQueryClient();
             <Card size="small" title="修复建议">
               <Typography.Text style={{ whiteSpace: 'pre-wrap' }}>{f.ai_fix_suggestion}</Typography.Text>
               {f.ai_fix_suggestion.startsWith('MANUAL_REVIEW_REQUIRED') && (
-                <Alert type="warning" showIcon style={{ marginTop: 8 }} message="该建议为“需人工处置”声明，非自动生成方案" />
+                <Alert type="warning" showIcon style={{ marginTop: 8 }} message="该条目为“需人工处置”标记，非自动生成的修复方案" />
               )}
             </Card>
           )}
         </Space>
       </Card>
 
-      <Card title="人工裁决（triage）">
+      <Card title="人工裁决">
         <Space direction="vertical" style={{ width: '100%' }}>
           <Select
             style={{ width: 240 }}
@@ -483,7 +505,7 @@ const qc = useQueryClient();
           <Input.TextArea
             value={reasoning}
             onChange={(e) => setReasoning(e.target.value)}
-            placeholder="裁决理由（写入 finding.reasoning，proto L1240）"
+            placeholder="填写裁决理由（可选，将随结论一并保存）"
           />
           <Button type="primary" loading={triage.isPending} onClick={() => triage.mutate()}>
             提交裁决

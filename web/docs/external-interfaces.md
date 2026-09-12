@@ -48,7 +48,7 @@
 
 | ID | 端点 | 预期输入 | 预期输出（200） | 错误语义 | 锚点 |
 |----|------|----------|----------------|----------|------|
-| E-11 | `POST /v1/uploads/archive` | **multipart/form-data**，字段名 `file`（File 对象）；timeout 120s；≤100MB（zip/tar.gz；前端 file.size 预检，超限本地拒绝不发请求）；nginx `client_max_body_size 100m` | `{upload_id, file_id, file_path, size_bytes}`——`file_id` 是唯一下游消费字段（→ 项目 config.upload_file_id 或任务 config.upload_file_id；网关零落盘转 storage，ADR-200） | 4xx/5xx → 上传失败文案（「上传失败（仅支持 zip/tar.gz，≤100MB）」/「上传失败：<详情>」）；**响应形状变更必须显式修 file_id 消费链**（ADR-200 改形状无一测试报红的历史教训 → 本契约行即锚） | clientContract.test.ts「uploadArchive…」；ProjectsPage.test.tsx、TaskNewPage.test.tsx |
+| E-11 | `POST /v1/uploads/archive` | **multipart/form-data**，字段名 `file`（File 对象）；timeout 300s（B4-3：120s→300s，慢速上行大包与 nginx 反代窗对齐）；≤100MB（zip/tar.gz；前端 file.size 预检，超限本地拒绝不发请求）；nginx `client_max_body_size 100m` | `{upload_id, file_id, file_path, size_bytes}`——`file_id` 是唯一下游消费字段（→ 项目 config.upload_file_id；**任务级 config.upload_file_id 档随 2026-09-09 人类指令退役**——项目层级决定源码；网关零落盘转 storage，ADR-200。storage 对象键不含原始文件名，故项目创建时把 `file.name` 落 config.upload_file_name 供展示） | 4xx/5xx → 上传失败文案（「上传失败（仅支持 zip/tar.gz，≤100MB）」/「上传失败：<详情>」）；**响应形状变更必须显式修 file_id 消费链**（ADR-200 改形状无一测试报红的历史教训 → 本契约行即锚） | clientContract.test.ts「uploadArchive…」；ProjectsPage.test.tsx |
 
 ### 1.4 项目
 
@@ -66,7 +66,7 @@
 | ID | 端点 | 预期输入 | 预期输出（200） | 错误语义 | 锚点 |
 |----|------|----------|----------------|----------|------|
 | E-18 | `GET /v1/tasks` | query：`pagination={page_size:20, cursor:"(page-1)*20"}`；`project_id`（ADR-160 服务端过滤）；`filter={"conditions":[{field:"scan_mode",operator:"FILTER_OPERATOR_EQ",value:<mode>}]}`（契约 L1108-1112 形状；**服务端未实现的过滤字段会诚实报 400**） | `{tasks: ScanTask[], pagination: {next_cursor, has_next, total}}` | — | TasksPagePaging.test.tsx（cursor/filter 形状锚定）；ProjectDetailPage.test.tsx（project_id 过滤守卫） |
-| E-19 | `POST /v1/tasks` | JSON `{project_id, scan_mode, sast_tools: string[], config: Record<string,string>}`。config 键域：`upload_file_id`（storage 优先）/ `project_path`（兜底，二者互斥）/ `review_depth` / `assess_severity`、`verify_location`、`generate_suggestions`（"true"/"false" 字符串，仅旧模式D） | `{task_id}` | 创建失败必须 message.error（ADR-154：此前静默无反馈） | TaskNewPage.test.tsx 请求体矩阵①② |
+| E-19 | `POST /v1/tasks` | JSON `{project_id, scan_mode, sast_tools: string[], config: Record<string,string>}`。config 键域：`review_depth` / `assess_severity`、`verify_location`、`generate_suggestions`（"true"/"false" 字符串，仅旧模式D）。**源码键（`upload_file_id`/`project_path`）不再由向导写入**——2026-09-09 人类指令"项目层级决定源代码仓库"，源码由项目 config/repo_url 在启动时解析（后端键域兼容保留，历史任务不受影响） | `{task_id}` | 创建失败必须 message.error（ADR-154：此前静默无反馈） | TaskNewPage.test.tsx（config 无任务级源码键锁） |
 | E-20 | `GET /v1/tasks/:id/snapshot` | query：`logs_after=<log_id>`（增量游标）、`ai_cursor=<int>`（字节游标；均首省） | `TaskSnapshot{task: ScanTask, progress?, logs?: {logs: TaskLogEntry[]}, ai?: {chunk(b64), next_cursor, complete, total_bytes}}`（ADR-170 聚合单口；**响应须被幂等吸收：客户端按 log_id 去重、AI 游标单调**） | 404=任务不存在/已被清除（内存存储重启语义，ADR-147 专页）；其他=「加载失败（<status>）」+重试 | TaskDetailSnapshot.test.tsx（增量吸收/404/500 三分支） |
 | E-21 | `POST /v1/tasks/:id/{start,cancel,retry,pause,resume}` | 空 body `{}` | `{}`；服务端状态机为转换权威，非法转换 FailedPrecondition → 「操作被拒绝：<msg>」 | 前端按钮可见性=展示镜像（stateMachine.ts ALLOWED_ACTIONS），不预校验放行 | TaskDetailSnapshot.test.tsx「RUNNING 动作…」；stateMachine.test.ts |
 | E-22 | `POST /v1/tasks/:id/report` | 空 JSON `{}` | `{report_id}`；成功后必须失效 `['task-reports', taskId]`（否则摘要卡片显示旧报告——2026-09-06 六缺陷之一） | — | TaskDetailPage.test.tsx「重新生成报告…」 |
@@ -94,6 +94,7 @@
 |----|------|----------|----------------|----------|------|
 | E-30 | `GET /v1/notifications` | query `user_id=<当前用户>`（App 角标 60s 轮询 + 通知页同参数） | `{notifications: [{notification_id, user_id, title, body, read, created_at}]}` | — | pages2.test.tsx；AppRouting.test.tsx（角标） |
 | E-31 | `POST /v1/notifications/:id/read` | 空 body | `{}`；成功后失效 `['notifications', uid]` **与** `['notify-unread']`（角标即时消失，ADR-156） | — | pages2.test.tsx |
+| E-31a | `POST /v1/notifications/read-all` | 空 body | `{marked: <int>}`（网关组合 List 未读+逐条标记，engine ADR-222；user_id 强制 JWT）；成功后失效同 E-31 两者；页面按钮未读=0 时禁用 | — | pages2.test.tsx（read-all） |
 | E-32 | `GET /v1/tools` | 无 | `{tools: ToolInfo[]}`——**gateway 手写 JSON**（非 transcode）：`{tool_id, name, supported_languages, output_format, valid, errors}`；`valid=false` 的工具只展示不可选 | — | TaskNewPage.test.tsx（tools 模型） |
 | E-33 | `GET /v1/tasks/:id/comparison-report` | 路径参数 | `ComparisonReport{report_id, summary: ComparisonSummary{...七桶计数+metrics 七指标}, venn_data_url(诚实留空 ADR-133)}` | 加载失败/无 summary → 「对比报告不可用」警告 | views.test.tsx |
 

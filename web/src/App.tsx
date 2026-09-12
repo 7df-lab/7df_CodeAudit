@@ -1,10 +1,9 @@
 // 路由表 = 14号 §3.2 页面清单（T1 仅实现 P0 三页骨架，其余路由占位到 T2+）
-import { Navigate, Route, Routes, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu, Button } from 'antd';
-import { useQueryClient } from '@tanstack/react-query';
+import { Navigate, Route, Routes, useNavigate, useLocation, useParams } from 'react-router-dom';
+import { Layout, Menu, Button, Typography } from 'antd';
+import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { useSession } from './auth/session';
 import { api } from './api/client';
-import { useQuery } from '@tanstack/react-query';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import ChangePasswordPage from './pages/ChangePasswordPage';
@@ -22,9 +21,6 @@ import NotificationsPage from './pages/notifications/NotificationsPage';
 import UsersPage from './pages/admin/UsersPage';
 import ProvidersPage from './pages/admin/ProvidersPage';
 import { ApiErrorOverlay, ErrorPage } from './components/errors';
-
-import { useParams } from 'react-router-dom';
-import { Typography } from 'antd';
 import type { ReactNode } from 'react';
 
 // ADR-156: 顶部"通知"菜单挂未读角标——通知的价值在"不在该页也知道有事"；
@@ -128,7 +124,11 @@ function FindingDetailWithParams() {
 
 function TaskDetailWithParams() {
   const { id = '' } = useParams();
-  return <TaskDetailPage taskId={id} />;
+  // B4-1（审计修复）：key 随任务 id 重建组件实例——同路由 `/tasks/:id` 切换任务时
+  // react-router 默认复用组件实例，旧任务的增量游标（logAfter/aiCursor/seenLogIds refs）
+  // 与已吸收的日志/AI 正文会带进新任务（快照带旧 logs_after 游标、面板残留旧 AI 片段）。
+  // 实例重建 = 全部 state/refs 自然复位，无需逐项 reset。
+  return <TaskDetailPage key={id} taskId={id} />;
 }
 
 // V2.1 (ADR-205): 管理端路由守卫——非 ROLE_ADMIN 渲染 403（后端网关 requireAdmin 为最终防线）
