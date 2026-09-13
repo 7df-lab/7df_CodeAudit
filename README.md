@@ -76,6 +76,18 @@ AI 代码分析运行在**一次性 MicroVM 沙箱**中（按需拉起、任务�
 - **第一梯队（完整支持）**：Python、JavaScript、TypeScript、Java、Go；
 - **第二梯队（基础支持）**：C、C++、Rust、Ruby、PHP。
 
+## 🖼️ 界面预览
+
+以下为 Web 控制台实际运行截图——一次对真实开源 C++ 图像解码库（RawSpeed）的模式 C 融合扫描任务。
+
+| 总览：任务状态与最近任务 | 任务详情：AI 交互时间线 |
+|---|---|
+| ![总览](docs/screenshots/dashboard.png) | ![任务详情](docs/screenshots/task-detail.png) |
+
+| 发现列表：严重级 / 来源 / 位置与人工复核 | 融合视图：双引擎发现归并 |
+|---|---|
+| ![发现列表](docs/screenshots/findings.png) | ![融合视图](docs/screenshots/fusion-view.png) |
+
 ## 🏗️ 系统架构
 
 ```
