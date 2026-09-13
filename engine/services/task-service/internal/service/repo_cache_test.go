@@ -369,7 +369,7 @@ func TestRunIncrementalDiff_RehydrateLevel3UploadArchive(t *testing.T) {
 	}
 }
 
-// R52（2026-09-11 审计修复批次）: 容量线记账必须用驱逐前体积——此前删后 dirSize 恒 0，
+// R52（2026-09-11 修复批次）: 容量线记账必须用驱逐前体积——此前删后 dirSize 恒 0，
 // total 永不下降→水位 break 失效→超线即逐出全部候选（而非驱至 90% 水位）。
 func TestRepoCacheGC_CapacityStopsAtWatermark(t *testing.T) {
 	addr := startFakeStorage(t, &fakeStorageServer{mode: "s3", fileOK: map[string]bool{"tar-1": true, "tar-2": true}})

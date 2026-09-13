@@ -9,15 +9,15 @@
 //   User += role=6、must_change_password=7；新增 enum Role（admin/developer/viewer）。
 //   均为 additive（字段号新增不复用，06 兼容策略 §6）。
 //
-// V2.0 变更记录（相对 V1.x，见《设计体系综合评估报告.md》R1-R7）：
-//   [R1] 确立本文件为唯一契约源；V1.x 中接口文档内嵌的冲突定义全部作废
-//   [R4] ScanMode 补 SAST_REVIEW=4；TaskStatus 补 TIMEOUT=7、CREATED=8；
-//        枚举编号基准统一为 AI_ONLY=1（工作流文档旧版 AI_ONLY=0 作废）
-//   [R5] 新增 StorageService、NotificationService 服务定义（兑现"补充8接口"声明）
-//   [R7] DSHRuntimeService 定版 11 个 RPC
-//   [3.1] 新增服务定义段：14 个 logical service ↔ 9 个部署服务的映射见
-//        《01 总体架构设计.md》；CompareResults 并入 SASTFusionService（N7），
-//        KnowledgeGraphService 新增 GetKGQuality（评审缺口补齐）
+// V2.0 变更记录（相对 V1.x）：
+//   确立本文件为唯一契约源
+//   ScanMode 补 SAST_REVIEW=4；TaskStatus 补 TIMEOUT=7、CREATED=8；
+//        枚举编号基准统一为 AI_ONLY=1
+//   新增 StorageService、NotificationService 服务定义
+//   DSHRuntimeService 定版 11 个 RPC
+//   新增服务定义段：14 个 logical service ↔ 9 个部署服务的映射见
+//        《01 总体架构设计.md》；CompareResults 并入 SASTFusionService，
+//        KnowledgeGraphService 新增 GetKGQuality
 //   修正：LanguageInfo 字段号 1/2/3（原从 2 起编）；
 //        REVIEW_CONJECTION_FAIL → REVIEW_CONCLUSION_FAIL（拼写）；
 //        FindingReview.confidence 由 int32 百分制改为 float 0.0-1.0（全局统一）；
@@ -162,7 +162,7 @@ enum FindingStatus {
 
 // 扫描模式：五模式定版（模式D=AI增强SAST=AI_ENHANCED_SAST）。
 // 编号基准：AI_ONLY=1。工作流文档旧版（AI_ONLY=0）与接口文档旧版（无SAST_REVIEW）均作废。
-// 五模式矩阵（ADR-186，人类决策 2026-09-03；ADR-182 四模式矩阵的扩展）：
+// 五模式矩阵（ADR-186；ADR-182 四模式矩阵的扩展）：
 //   A=纯SAST（多工具并行→去重合并） / B=纯AI / C=SAST+AI并行→融合去重输出（默认推荐） /
 //   D=AI增强SAST（SAST扫描→同段去重→逐条DSH沙箱验证→SAST+AI判断汇总→报告） /
 //   E=SAST+AI并行各自完成→单SAST/单AI/SAST+AI 三分桶同维度对比（ADR-182 前称"模式D"）。
@@ -898,7 +898,7 @@ service ResultService {
   rpc GetTaskResultStats(GetTaskResultStatsRequest) returns (ResultStats);
   rpc ExportFindings(ExportFindingsRequest) returns (ExportFindingsResponse);
 
-  // 误报反馈闭环（评审整合项）
+  // 误报反馈闭环
   rpc SubmitFindingFeedback(SubmitFindingFeedbackRequest) returns (SubmitFindingFeedbackResponse);
 }
 

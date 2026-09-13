@@ -17,7 +17,7 @@ Run spotbugs: `spotbugs tests/samples/java/App.java`
 贯通」一次性入库，仅用于该次 E2E 验证（bandit 扫描整树）。**无任何已提交测试/脚本/CI 依赖
 它们**，日常单测/契约/冒烟/e2e 只用上方小样本（python / python_flask / javascript / java）。
 
-按 ADR-178（2026-09-01 人类决策）该语料移出 git 跟踪、仅本机留存；git 历史未重写，需要复现
+按 ADR-178（2026-09-01 ）该语料移出 git 跟踪、仅本机留存；git 历史未重写，需要复现
 模式D大型语料验证时从历史恢复：
 
     git restore --source=4821dea --worktree -- tests/samples/package tests/samples/package.zip

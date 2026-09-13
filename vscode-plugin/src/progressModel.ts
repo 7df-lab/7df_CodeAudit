@@ -87,7 +87,7 @@ export function appendAiChunk(
   // 衔接：只取 cursor 之后新增的字节（按 utf-8 边界切）。步进按完整 code point
   // 计算（String.fromCodePoint 的字节长）：代理对（emoji 等 4 字节字符）占 2 个
   // UTF-16 code unit，按单 code unit 取 Buffer.byteLength 会把孤立代理项算成 3 字节
-  // （CESU-8），skip 落在代理对中间时会劈开字符、往渲染文本里塞进孤立代理项（B2-8）
+  // （CESU-8），skip 落在代理对中间时会劈开字符、往渲染文本里塞进孤立代理项
   const skip = cursor - chunkStart;
   let off = 0;
   let rest = chunkText;

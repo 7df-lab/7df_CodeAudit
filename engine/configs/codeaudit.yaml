@@ -40,7 +40,7 @@ gateway:
   # 限流是否信任 X-Forwarded-For（仅部署于可信反向代理之后为 true）
   # 依据: 07 §7 单用户限流口径；ADR-132 防客户端伪造
   trust_proxy: false
-  rate_limit_per_min: 100           # 07 §7 gateway（单用户）100 req/min（2026-09-10 人类指令 50→100）
+  rate_limit_per_min: 100           # 07 §7 gateway（单用户）100 req/min
   grpc_call_timeout_s: 30           # 网关→服务同步调用上界（07 §8 矩阵最短行 10m 的 REST 交互口径）
   shutdown_grace_s: 15              # 优雅停机排空窗口
   uploads_dir: data/uploads         # ADR-145: 代码压缩包上传解包根目录（相对仓库根）
@@ -51,9 +51,9 @@ gateway:
 
 task:
   orchestrator:
-    # step_timeouts_s 已整体撤销（ADR-191 补遗，人类指令"都撤掉"2026-09-03）：编排
+    # step_timeouts_s 已整体撤销（ADR-191 补遗）：编排
     # 全部步骤不再设外层时限——沙箱 DSH 审计回合（ai/verify/missed/review）深度分析
-    # 实测 30m 仍健康流式（gw-9b602266 实证被网掐死于提交前一步）；其余步骤同样
+    # 实测 30m 仍健康流式（实证被网掐死于提交前一步）；其余步骤同样
     # ctx 直通（任务取消仍可传播）。回合结束只认 DSH 流式显式信号；断流自愈=
     # SSE streamErr→teardown→降级链（07 §10）。07 §8 矩阵超时列自此仅供 RPC
     # 客户端参考，编排器不再强制。
@@ -115,10 +115,12 @@ dsh_runtime:
     manager_url: "http://gateway.internal:18800"  # env OPENSHELL_MANAGER_URL 优先；现役=LXC 107 容器化实例（CD/openshell-manager）
     manager_token: ""               # 空=OPENSHELL_MANAGER_TOKEN > ../openshell-manager/config.json tokenFile
     workspace: "default"            # 网关工作区（须预先存在；manager 无建区接口，与引擎同源）
-    image: "dsh-pentest-sse:latest"  # 沙箱镜像（人类指令 2026-09-06: 任何项目不钉固定版本, 一律最新; 构建事实源 dsh-pentest-sse/deploy.sh, 版本溯源走镜像构建史/sbom）
+    image: "dsh-pentest-sse:latest"  # 沙箱镜像（任何项目不钉固定版本, 一律最新; 构建事实源 dsh-pentest-sse/deploy.sh, 版本溯源走镜像构建史/sbom）
     wait_ready_timeout_s: 300       # 07 §8 沙箱就绪等待上界
-    exec_timeout_s: 600             # 07 §8 OpenShell 沙箱执行 30m 的本地映射上界
-    dsh_max_tokens: 32768              # bridge DSH_MAX_TOKENS（人类指令 2026-09-04 统一 32768，与镜像 settings.yaml models[].maxTokens 对齐——两层同值不再有覆盖歧义；实测单步最大输出 ~10K，32K 预算充裕；provider 校验上限 [1,131072]）
+    # R76: manager/bridge HTTP 兜底超时（挂起保险，非业务时限；须大于 07 §8 会话 30m 上界，
+    # 缺省 2100s；env CODEAUDIT_DSH_HTTP_CLIENT_TIMEOUT_S 可覆盖）
+    http_client_timeout_s: 2100
+    dsh_max_tokens: 32768              # bridge DSH_MAX_TOKENS（统一 32768，与镜像 settings.yaml models[].maxTokens 对齐——两层同值不再有覆盖歧义；实测单步最大输出 ~10K，32K 预算充裕；provider 校验上限 [1,131072]）
     gateway_dial_addr: "gateway.internal:8080"  # 服务路由拨号（沙箱服务域无 DNS 通配，直拨网关+Host 头路由）；空=由 manager host 推导
     interaction_dir: "data/ai-interaction"   # AI 交互日志落盘根（ADR-168；最终交互日志留存）
 
@@ -148,3 +150,9 @@ auth:
   # 生产部署建议经 env CODEAUDIT_INVITE_CODES（逗号分隔）注入，不入库此文件。
   invite_codes: []
   # - CODEAUDIT-BOOTSTRAP-2026
+  # R72: 种子 admin（admin/admin, ROLE_ADMIN）默认关闭——生产不得有默认凭据。
+  # bootstrap 口径（R85 复审勘误）：invitation 注册产出的是 DEVELOPER（自注册不可
+  # 自封 admin），缺省配置下不产生任何 admin——首启需临时设 CODEAUDIT_SEED_ADMIN=true
+  # 完成初始管理面接管，随后关闭该变量重启（用户表为内存档，重启即空，该口径与
+  # 服务存储模型一致）；sim/联调经 env 显式开启。
+  seed_admin: false

@@ -482,7 +482,7 @@ func TestRetryFailedPatches_NoFailuresNoRound(t *testing.T) {
 	}
 }
 
-// ---- R34 回归锁（gw-d331089f 实证）：沙箱挂载视角路径容错 ----
+// ---- R34 回归锁（实证）：沙箱挂载视角路径容错 ----
 // 模型在沙箱内看到的项目根是 /sandbox/project，产出补丁把段路径写成挂载视角
 // （"project/x" / "sandbox/project/x"），校验端按工作区根解析 → 13/13 补丁全拒。
 // 容错=原路径不存在且剥挂载前缀后存在时改写段路径；产出补丁同步改写。
@@ -595,7 +595,7 @@ func TestNormalizeDiffPatch_BareSectionMarker(t *testing.T) {
 }
 
 // TestNormalizeDiffPatch_AnchorIndentTolerance — 首行（@@ 锚点）缩进漂移容错
-// （gw-8bcf75e1 实证回归锁）：模型补丁的 @@ 锚点丢了 4 空格缩进、其余行全部逐字
+// （实证回归锁）：模型补丁的 @@ 锚点丢了 4 空格缩进、其余行全部逐字
 //（similarity 0.97），此前被 fuzz=0 整补丁拒绝并触发一整轮再生成沙箱。
 // 修复后：锚点行按 trim+canonicalize 定位真实文件行锚定，@@ 行以工作区逐字行
 // 回写——产出补丁对消费端仍 fuzz=0，且规范化幂等。
@@ -683,13 +683,13 @@ def get_user(user_id):
 	}
 }
 
-// ---- R37 回归锁（gw-61200b8b/gw-5a7393ed 实证）：@@ 锚点对齐 Cline 摄入语义 ----
+// ---- R37 回归锁（实证）：@@ 锚点对齐 Cline 摄入语义 ----
 // Cline apply-patch-parser：@@ defStr 是寻位指令（canonTrim/trim 容错匹配文件行），
 // 不物化为 hunk 内容；锚定只依赖显式上下文/删除行。此前引擎把 defStr 物化为首条
 // 上下文行 + 1 空格去重，模型三种自然书写形态（丢缩进双写/夹新增双写/锚点幻觉）
 // 整补丁被拒。
 
-// r37ws — gw-61200b8b 真实工作区（7 行 app.py）。
+// r37ws — 真实工作区（7 行 app.py）。
 const r37ws = `import sqlite3
 def get_user(uid):
     conn = sqlite3.connect("app.db")
@@ -699,7 +699,7 @@ def get_user(uid):
 API_TOKEN = "hunter2-hardcoded-secret"  # 硬编码凭据
 `
 
-// 形态一（gw-61200b8b 实证 2/2）：锚点丢缩进 + 显式重复同一行。
+// 形态一（实证 2/2）：锚点丢缩进 + 显式重复同一行。
 func TestNormalizeDiffPatch_AnchorDoubleWriteUnindented(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte(r37ws), 0o644); err != nil {
@@ -722,7 +722,7 @@ func TestNormalizeDiffPatch_AnchorDoubleWriteUnindented(t *testing.T) {
 	}
 }
 
-// 形态一·EOF 档（gw-61200b8b 第 2 项）：同形态 + *** End of File。
+// 形态一·EOF 档（第 2 项）：同形态 + *** End of File。
 func TestNormalizeDiffPatch_AnchorDoubleWriteUnindentedEof(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte(r37ws), 0o644); err != nil {
@@ -741,7 +741,7 @@ func TestNormalizeDiffPatch_AnchorDoubleWriteUnindentedEof(t *testing.T) {
 	}
 }
 
-// 形态二（gw-5a7393ed 实证）：锚点 + 中间夹 +新增 + 显式重复（插入式双写）。
+// 形态二（实证）：锚点 + 中间夹 +新增 + 显式重复（插入式双写）。
 func TestNormalizeDiffPatch_AnchorDoubleWriteWithAddition(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte(r37ws), 0o644); err != nil {
@@ -804,7 +804,7 @@ func TestNormalizeDiffPatch_PureAdditionAnchoring(t *testing.T) {
 	}
 }
 
-// 形态四（gw-2ff81ebf 实证 2/4）：文件顶（idx==0）带删除行——@@ 即被删首行，
+// 形态四（实证 2/4）：文件顶（idx==0）带删除行——@@ 即被删首行，
 // 重建 @@ 承载首条变更行本身（消费端插件经全文回扫兜底层应用）。
 func TestNormalizeDiffPatch_AnchorAtFileTopDeletion(t *testing.T) {
 	dir := t.TempDir()

@@ -40,7 +40,7 @@ gateway 是**唯一外部入口**（纯 HTTP，无 gRPC 服务端；7 服务中�
   **TTL 现值**：access 1h / refresh 24h（`project-service/internal/service/user.go:19-21` 硬编码，
   `expires_in_s` 返回 3600）——与设计文档 03 §4（30min/7d）及 yaml 死键
   `gateway.jwt.access_ttl_min/refresh_ttl_day` **不一致**，见 §7 漂移表。
-- **限流**（`middleware/ratelimit.go`）：令牌桶 100 req/min（`gateway.rate_limit_per_min`，2026-09-10 人类指令 50→100）。
+- **限流**（`middleware/ratelimit.go`）：令牌桶 100 req/min（`gateway.rate_limit_per_min` 50→100）。
   键 = `user:<JWT sub>`（已认证）/ 客户端 IP（未认证）；XFF 仅 `trust_proxy=true` 时取**最右**
   值（ADR-212 防伪造）。超限 429 `{"error":"rate limit exceeded","retry_after":60}` + `Retry-After: 60`。
 - **响应 JSON 规则**（protojson `{EmitUnpopulated:true, UseProtoNames:true}`）：**snake_case 键、
@@ -73,7 +73,7 @@ gateway 是**唯一外部入口**（纯 HTTP，无 gRPC 服务端；7 服务中�
 | 其他（Internal 等） | 500 | 兜底 |
 
 网关自身状态码分布：400（body/multipart 非法、超 100MB、坏 query）· 401（JWT 层）·
-403（`admin role required`）· 404（未知路由/资源不存在/通知非本人）· 405（方法不符）·
+403（`admin role required` / `admin role or self required` / `resource owner or admin required` / `project write requires admin`）· 404（未知路由/资源不存在/通知非本人）· 405（方法不符）·
 409 · 413（source-file >5MiB）· 415（二进制源文件）· 429 · 500 ·
 **501（未映射 `/v1/<域>`，诚实降级）** · 502（storage 上传流失败/通知归属核验失败）·
 503（后端连接未配置）· 504。
@@ -93,44 +93,44 @@ gateway 是**唯一外部入口**（纯 HTTP，无 gRPC 服务端；7 服务中�
 | GET /v1/users/me | JWT | UserService/GetCurrentUser（Bearer 填入 access_token） |
 | GET /v1/users | JWT+admin | UserService/ListUsers |
 | POST /v1/users | JWT+admin | UserService/CreateUser |
-| GET /v1/users/{id} | JWT | UserService/GetUser |
-| PUT /v1/users/{id} | JWT | UserService/UpdateUser |
-| GET /v1/users/{id}/permissions | JWT | UserService/GetUserPermissions |
+| GET /v1/users/{id} | JWT（admin 或 self） | UserService/GetUser |
+| PUT /v1/users/{id} | JWT（admin 或 self；非 admin body 钉死路径身份且仅 email 可变） | UserService/UpdateUser |
+| GET /v1/users/{id}/permissions | JWT（admin 或 self） | UserService/GetUserPermissions |
 | POST /v1/users/{id}/password | JWT（user_id 强制 self） | UserService/ChangePassword |
 | POST /v1/users/{id}/password:reset | JWT+admin | UserService/ResetPassword |
-| POST /v1/projects | JWT | ProjectService/CreateProject |
-| GET /v1/projects | JWT | ProjectService/ListProjects |
-| GET /v1/projects/{id} | JWT | ProjectService/GetProject |
-| PUT /v1/projects/{id} | JWT | ProjectService/UpdateProject |
-| DELETE /v1/projects/{id} | JWT | ProjectService/DeleteProject |
-| GET /v1/projects/{id}/config | JWT | ProjectService/GetProjectConfig |
-| PUT /v1/projects/{id}/config | JWT | ProjectService/UpdateProjectConfig |
+| POST /v1/projects | JWT（创建者自动登记成员，ADR-231） | ProjectService/CreateProject |
+| GET /v1/projects | JWT+admin（裸列表，ADR-231） | ProjectService/ListProjects |
+| GET /v1/projects/{id} | JWT（成员或 admin） | ProjectService/GetProject |
+| PUT /v1/projects/{id} | JWT+admin（写面=管理面） | ProjectService/UpdateProject |
+| DELETE /v1/projects/{id} | JWT+admin（写面=管理面） | ProjectService/DeleteProject |
+| GET /v1/projects/{id}/config | JWT（成员或 admin） | ProjectService/GetProjectConfig |
+| PUT /v1/projects/{id}/config | JWT+admin（写面=管理面） | ProjectService/UpdateProjectConfig |
 | POST /v1/tasks | JWT（created_by 注入） | TaskService/CreateScanTask |
-| GET /v1/tasks | JWT | TaskService/ListScanTasks |
-| GET /v1/tasks/{id} | JWT | TaskService/GetScanTask |
-| GET /v1/tasks/{id}/progress | JWT | TaskService/GetTaskProgress |
-| GET /v1/tasks/{id}/logs | JWT | TaskService/GetTaskLogs |
-| GET /v1/tasks/{id}/snapshot | JWT | 本地聚合 4 路（task+progress+logs+ai-log） |
-| GET /v1/tasks/{id}/ws | JWT（?token= 特例） | 本地 WS（StreamTaskSnapshot/StreamAIInteractionLog 优先，回退轮询） |
-| GET /v1/tasks/{id}/ai-log | JWT | DSHRuntimeService/GetAIInteractionLog |
-| GET /v1/tasks/{id}/source-file | JWT | 本地源树读取（GetScanTask 校验 + GetProjectConfig 回退③） |
-| GET /v1/tasks/{id}/context | JWT | TaskService/GetTaskContext |
-| GET /v1/tasks/{id}/metrics | JWT | SASTFusionService/CalculateMetrics |
-| GET /v1/tasks/{id}/comparison-report | JWT | SASTFusionService/GenerateComparisonReport |
-| POST /v1/tasks/{id}/report | JWT | ReportService/GenerateReport（format 缺省 JSON） |
-| POST /v1/tasks/{id}/start | JWT | TaskService/StartTask |
-| POST /v1/tasks/{id}/cancel | JWT | TaskService/CancelScanTask |
-| POST /v1/tasks/{id}/retry | JWT | TaskService/RetryScanTask |
-| POST /v1/tasks/{id}/pause | JWT | TaskService/PauseTask |
-| POST /v1/tasks/{id}/resume | JWT | TaskService/ResumeTask |
-| POST /v1/tasks/{id}/complete | JWT | TaskService/CompleteTask |
-| GET /v1/findings | JWT | ResultService/ListFindings |
-| GET /v1/findings/{id} | JWT | ResultService/GetFinding |
-| PUT /v1/findings/{id}/verdict | JWT | ResultService/UpdateVerdict |
-| POST /v1/findings/verdict:batch | JWT | ResultService/BatchUpdateVerdict |
-| GET /v1/reports | JWT | ReportService/ListReports |
-| GET /v1/reports/{id} | JWT | ReportService/GetReport |
-| GET /v1/reports/{id}/download | JWT | 本地聚合 ReportService/DownloadReport 服务端流 |
+| GET /v1/tasks | JWT（裸列表暂无归属过滤，ADR-231 二期） | TaskService/ListScanTasks |
+| GET /v1/tasks/{id} | JWT（owner 或 admin） | TaskService/GetScanTask |
+| GET /v1/tasks/{id}/progress | JWT（owner 或 admin） | TaskService/GetTaskProgress |
+| GET /v1/tasks/{id}/logs | JWT（owner 或 admin） | TaskService/GetTaskLogs |
+| GET /v1/tasks/{id}/snapshot | JWT（owner 或 admin） | 本地聚合 4 路（task+progress+logs+ai-log） |
+| GET /v1/tasks/{id}/ws | JWT（?token= 特例；owner 或 admin） | 本地 WS（StreamTaskSnapshot/StreamAIInteractionLog 优先，回退轮询） |
+| GET /v1/tasks/{id}/ai-log | JWT（owner 或 admin） | DSHRuntimeService/GetAIInteractionLog |
+| GET /v1/tasks/{id}/source-file | JWT（owner 或 admin） | 本地源树读取（GetScanTask 校验 + GetProjectConfig 回退③） |
+| GET /v1/tasks/{id}/context | JWT（owner 或 admin） | TaskService/GetTaskContext |
+| GET /v1/tasks/{id}/metrics | JWT（owner 或 admin） | SASTFusionService/CalculateMetrics |
+| GET /v1/tasks/{id}/comparison-report | JWT（owner 或 admin） | SASTFusionService/GenerateComparisonReport |
+| POST /v1/tasks/{id}/report | JWT（owner 或 admin；body task_id 钉死路径） | ReportService/GenerateReport（format 缺省 JSON） |
+| POST /v1/tasks/{id}/start | JWT（owner 或 admin） | TaskService/StartTask |
+| POST /v1/tasks/{id}/cancel | JWT（owner 或 admin） | TaskService/CancelScanTask |
+| POST /v1/tasks/{id}/retry | JWT（owner 或 admin） | TaskService/RetryScanTask |
+| POST /v1/tasks/{id}/pause | JWT（owner 或 admin） | TaskService/PauseTask |
+| POST /v1/tasks/{id}/resume | JWT（owner 或 admin） | TaskService/ResumeTask |
+| POST /v1/tasks/{id}/complete | JWT（owner 或 admin） | TaskService/CompleteTask |
+| GET /v1/findings | JWT（带 task_id=owner 或 admin；裸列表 admin） | ResultService/ListFindings |
+| GET /v1/findings/{id} | JWT（finding→task 归属） | ResultService/GetFinding |
+| PUT /v1/findings/{id}/verdict | JWT（finding→task 归属） | ResultService/UpdateVerdict |
+| POST /v1/findings/verdict:batch | JWT（逐 finding→task 归属，去重查证） | ResultService/BatchUpdateVerdict |
+| GET /v1/reports | JWT（带 task_id=owner 或 admin；裸列表 admin） | ReportService/ListReports |
+| GET /v1/reports/{id} | JWT（report→task 归属） | ReportService/GetReport |
+| GET /v1/reports/{id}/download | JWT（report→task 归属） | 本地聚合 ReportService/DownloadReport 服务端流 |
 | GET /v1/tools | JWT | 本地组装（ListAvailableTools + 逐工具 ValidateToolConfig） |
 | GET /v1/notifications | JWT（user_id 强制 JWT） | NotificationService/ListNotifications |
 | POST /v1/notifications/{id}/read | JWT（归属核验前置） | NotificationService/MarkNotificationRead |
@@ -183,7 +183,11 @@ gateway 是**唯一外部入口**（纯 HTTP，无 gRPC 服务端；7 服务中�
 - **POST（建号，admin）**：body `{"username","email","password","role"}`；输出 User；
   幂等键网关生成，同键异体 409。
 - **GET/PUT {id}**：PUT body `{"user":{...}}`（路径 id 回填空 user_id）；输出 User；404。
-  UpdateUser 保全 role/must_change_password（proto3 bool 无 presence）。
+  **鉴权（R73/R85）**：GET/PUT {id} 与 GET {id}/permissions 一律 admin 或 self；
+  PUT 非 admin（自助）通道 body 钉死到路径身份，且仅 email 可变（role/state/username
+  由网关强制剥离，服务端对 UNSPECIFIED 的 role/state 与空 username 保全存量）——
+  UpdateUser 保全 role/state/must_change_password（proto3 bool 无 presence）。
+- **GET {id}/permissions**：输出 `{"user_id","permissions":[str]}`；admin 或 self。
 - **GET {id}/permissions**：输出 `{"user_id","permissions":[str]}`。
 - **POST {id}/password**：body `{"old_password","new_password"}`；**user_id 强制取自 JWT**，
   不收 body 指定（路径 {id} 被忽略）；输出 `{}`。
@@ -395,8 +399,8 @@ task-service 同卷——source-file 读的就是 task 解包/clone 的树）。
 
 | # | 漂移 | 事实（代码） | 影响 |
 |---|---|---|---|
-| D1 | `configs/codeaudit.yaml:48-50` `gateway.jwt.access_ttl_min(30)/refresh_ttl_day(7)` 无任何代码消费 | TTL 曾硬编码 access 1h / refresh 24h（user.go:19-21，注释引 03 §4 但值不符）；**2026-09-11 D2 裁决：改代码对齐契约 30min/7d（B5-2），死配置登记保留待接线** | 已裁决消解：实现=契约=30min/7d（`TestTokenTTL_MatchesContract` 锁定） |
-| D2 | `services/gateway-service/README.md` 路由表/端口/中间件序/TTL 多处过时（宣称 /v1/results、/v1/storage 域、task PUT/DELETE、50053/50054 端口、per-IP 限流） | 以本文 §2 为准 | 历史文档不再维护路由事实；新文档即 SSOT |
+| D1 | `configs/codeaudit.yaml:48-50` `gateway.jwt.access_ttl_min(30)/refresh_ttl_day(7)` 无任何代码消费 | TTL 曾硬编码 access 1h / refresh 24h（user.go:19-21，注释引 03 §4 但值不符）；**2026-09-11 D2 裁决：改代码对齐契约 30min/7d，死配置登记保留待接线** | 已裁决消解：实现=契约=30min/7d（`TestTokenTTL_MatchesContract` 锁定） |
+| D2 | gateway-service 历史文档（README/实现总结/构建说明）路由表/端口/中间件序/TTL 多处过时（宣称 /v1/results、/v1/storage 域、task PUT/DELETE、50053/50054 端口、per-IP 限流） | 以本文 §2 为准 | 历史文档已删除；本文即 SSOT |
 | D3 | `03_接口规范.md` §1.1 宣称 gateway "gRPC 直通"与 ValidatePermission 转发 | 网关无 gRPC 服务端、无 ValidatePermission 调用；实际暴露面远超该表 | 设计文档滞后，本文为准 |
 | D4 | transcode.go:550 注释宣称 snapshot 支持 `log_limit` | 代码固定 `Limit:500` 未读该参数 | 注释失真；参数未实现 |
 

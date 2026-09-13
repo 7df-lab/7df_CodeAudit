@@ -29,7 +29,7 @@ export default function TaskNewPage() {
   const [step, setStep] = useState(0);
   const [projectId, setProjectId] = useState<string>('');
   const [mode, setMode] = useState<string>('');
-  // 人类指令 2026-09-01：创建后默认自动执行（提交→批准→启动）；勾掉则走人工门
+  // 创建后默认自动执行（提交→批准→启动）；勾掉则走人工门
   const [autoStart, setAutoStart] = useState<boolean>(true);
   // ADR-154: 第2步 Form 在 setStep(3) 时卸载、字段注销，确认页 validateFields() 只能取到空对象
   // （GUI 实测 POST body 为 sast_tools:[]/config:{} → 任务必然失败）。参数在此暂存，确认页消费。

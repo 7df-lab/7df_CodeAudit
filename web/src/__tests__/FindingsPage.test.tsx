@@ -176,9 +176,9 @@ describe('FindingsPage 来源筛选（ADR-225 双视图）', () => {
   });
 });
 
-// ===== B3-1（审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询 =====
+// ===== （审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询 =====
 // 锁三点：翻页后前页保留 / has_next=false 停止 / 客户端筛选跨累计页生效且不重发请求。
-describe('FindingsPage 无限查询分页（B3-1）', () => {
+describe('FindingsPage 无限查询分页', () => {
   const f1 = {
     finding_id: 'f-p1', task_id: 't1', source_tool: 'bandit', source_rule_id: 'B105',
     cwe_id: 'CWE-798', title: '第一页发现', severity: 'SEVERITY_HIGH',
@@ -240,8 +240,8 @@ describe('FindingsPage 无限查询分页（B3-1）', () => {
   });
 });
 
-// B3-3（审计修复）：快捷 triage 此前失败静默——message.error 必须携带状态码
-describe('FindingsPage 快捷 triage 失败反馈（B3-3）', () => {
+// （审计修复）：快捷 triage 此前失败静默——message.error 必须携带状态码
+describe('FindingsPage 快捷 triage 失败反馈', () => {
   it('PUT verdict 409 → message.error 含 HTTP 409', async () => {
     routes['PUT /v1/findings/:findingId/verdict'] = () => httpError(409, { error: 'conflict' });
     renderPage();
@@ -251,11 +251,11 @@ describe('FindingsPage 快捷 triage 失败反馈（B3-3）', () => {
   });
 });
 
-// B4-3（审计修复）：快捷 triage 成功联动失效融合/审核视图缓存——两者读 ai_verdict
+// （审计修复）：快捷 triage 成功联动失效融合/审核视图缓存——两者读 ai_verdict
 // （FusionView 去重分区列 / ReviewView 结论列），不联动则任务详情内切 Tab 停留旧结论。
 // 探针：与真实视图相同的 queryKey（['fusion-findings', taskId] / ['review-findings', taskId]），
 // queryFn 计数（不打 HTTP——观测的是失效重拉行为本身）。
-describe('FindingsPage 快捷 triage 缓存联动（B4-3）', () => {
+describe('FindingsPage 快捷 triage 缓存联动', () => {
   it('裁决成功 → fusion-findings / review-findings 前缀失效并重拉', async () => {
     // 自愈路由（前序用例会改写 GET 处理器——游标路由/载荷轮换——不恢复到默认形态）
     setDefaultFindings();

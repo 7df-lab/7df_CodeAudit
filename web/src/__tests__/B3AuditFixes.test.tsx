@@ -1,10 +1,10 @@
 // 审计批次 B3 修复回归锁：
-//   B3-2 报告窗口 CSP 纵深防御——fix-plan-0911 §14 升级为 sandboxed iframe 通道：
+//   报告窗口 CSP 纵深防御——升级为 sandboxed iframe 通道：
 //     报告内容经 <iframe sandbox src=blob:> 渲染（sandbox 空 token 脚本全灭），
 //     CSP meta 仍前置于 blob 内容（双保险）；JSON 分支保持转义 <pre>
-//   B3-5 报告"重新生成"接线（D4 裁定）——点击即 POST report RPC，成功后列表失效重拉
-//   B3-3 mutation onError 补齐——项目删除/通知已读失败给出带状态码的即时反馈
-// （B3-1 无限查询分页用例在 FindingsPage/UsersPage 各自测试文件；B3-4 截断提示在 views.test）
+//   报告"重新生成"接线（D4 裁定）——点击即 POST report RPC，成功后列表失效重拉
+//   mutation onError 补齐——项目删除/通知已读失败给出带状态码的即时反馈
+// （无限查询分页用例在 FindingsPage/UsersPage 各自测试文件；截断提示在 views.test）
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -15,7 +15,7 @@ import ProjectDetailPage from '../pages/ProjectDetailPage';
 import NotificationsPage from '../pages/notifications/NotificationsPage';
 import { Blob as NodeBlob } from 'node:buffer';
 import { httpError, useFakeGateway, type HandlerCtx } from '../testsupport/fakeGateway';
-import { openReportWindow, REPORT_WINDOW_CSP_META } from '../api/client';
+import { openReportWindow, REPORT_WINDOW_CSP_META, withReportCspMeta } from '../api/client';
 
 // useSession 整文件级 mock（NotificationsPage 需要 user；ProjectDetailPage 不消费 session）
 vi.mock('../auth/session', () => ({
@@ -34,10 +34,10 @@ const routes: Record<string, unknown> = {
   // 报告中心列表（带 pagination）与任务详情内联摘要查询（不带）共用此路由
   'GET /v1/reports': (ctx: HandlerCtx) => {
     if (ctx.query.has('pagination')) {
-      return { reports: [{ report_id: 'r-1', task_id: 't-1', format: 2, url: '', generated_at: '2026-09-01T00:00:00Z' }],
+      return { reports: [{ report_id: 'r-1', task_id: 't-1', format: 'REPORT_FORMAT_HTML', url: '', generated_at: '2026-09-01T00:00:00Z' }],
         pagination: { next_cursor: '', has_next: false } };
     }
-    return { reports: [{ report_id: 'r-1', task_id: 't-1', format: 2, url: '', generated_at: null }] };
+    return { reports: [{ report_id: 'r-1', task_id: 't-1', format: 'REPORT_FORMAT_HTML', url: '', generated_at: null }] };
   },
   // 缺省=HTML blob（报告中心在线查看）；CSP 用例按需覆写
   // NodeBlob：jsdom 的 Blob 未实现 .text()（浏览器无此问题），handler 用 Node 实现供视图消费
@@ -74,7 +74,13 @@ function stubReportWindow() {
   openedWindows.length = 0;
   createdBlobs.length = 0;
   openSpy = vi.spyOn(window, 'open').mockImplementation(() => {
-    const w = { document: document.implementation.createHTMLDocument('report') } as unknown as Window;
+    // addEventListener：真实 Window 形状（B5 beforeunload revoke 依赖）；__listeners 供测试触发
+    const w = {
+      document: document.implementation.createHTMLDocument('report'),
+      addEventListener: (t: string, fn: (e: Event) => void) => {
+        ((w as unknown as { __listeners?: Record<string, (e: Event) => void> }).__listeners ??= {})[t] = fn;
+      },
+    } as unknown as Window;
     openedWindows.push(w);
     return w;
   });
@@ -149,7 +155,7 @@ async function expectSandboxedIframeWindow(): Promise<string> {
   return blobText(blob);
 }
 
-describe('B3-2 报告窗口 CSP 纵深防御（sandboxed iframe 通道）', () => {
+describe('报告窗口 CSP 纵深防御（sandboxed iframe 通道）', () => {
   it('openReportWindow 单元：about:blank 宿主窗 + sandbox 空 token iframe + blob 前置 CSP meta', async () => {
     stubReportWindow();
     const ret = openReportWindow('<p>direct-unit</p>', 'text/html');
@@ -174,7 +180,7 @@ describe('B3-2 报告窗口 CSP 纵深防御（sandboxed iframe 通道）', () =
       ai: { chunk: '', next_cursor: '0', complete: true, total_bytes: '0' },
     });
     qc.setQueryData(['task-reports', 't-1'], {
-      reports: [{ report_id: 'r-1', task_id: 't-1', format: 2, url: '', generated_at: null }],
+      reports: [{ report_id: 'r-1', task_id: 't-1', format: 'REPORT_FORMAT_HTML', url: '', generated_at: null }],
     });
     qc.setQueryData(['report-content', 'r-1'], {
       format: 'json',
@@ -209,7 +215,7 @@ describe('B3-2 报告窗口 CSP 纵深防御（sandboxed iframe 通道）', () =
       ai: { chunk: '', next_cursor: '0', complete: true, total_bytes: '0' },
     });
     qc.setQueryData(['task-reports', 't-1'], {
-      reports: [{ report_id: 'r-1', task_id: 't-1', format: 2, url: '', generated_at: null }],
+      reports: [{ report_id: 'r-1', task_id: 't-1', format: 'REPORT_FORMAT_HTML', url: '', generated_at: null }],
     });
     render(
       <QueryClientProvider client={qc}>
@@ -256,7 +262,7 @@ describe('B3-2 报告窗口 CSP 纵深防御（sandboxed iframe 通道）', () =
   });
 });
 
-describe('B3-5 报告"重新生成"接线（D4 裁定）', () => {
+describe('报告"重新生成"接线（D4 裁定）', () => {
   it('点击重新生成 → POST /v1/tasks/t-1/report；成功后 reports 列表失效重拉', async () => {
     withProviders(<ReportsPage />, '/reports');
     const btn = await screen.findByRole('button', { name: '重新生成' }, { timeout: 8000 });
@@ -273,7 +279,7 @@ describe('B3-5 报告"重新生成"接线（D4 裁定）', () => {
   });
 });
 
-describe('B3-3 mutation onError（失败反馈携带状态码）', () => {
+describe('mutation onError（失败反馈携带状态码）', () => {
   it('项目删除失败（403）→ message.error 含 HTTP 403', async () => {
     routes['DELETE /v1/projects/:projectId'] = () => httpError(403, { error: 'forbidden' });
     withProviders(
@@ -305,5 +311,78 @@ describe('B3-3 mutation onError（失败反馈携带状态码）', () => {
     await waitFor(() => expect(screen.getByText('通知一')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: '标记已读' }));
     expect(await screen.findByText(/标记已读失败（HTTP 500）/)).toBeTruthy();
+  });
+});
+
+describe('B5 报告窗残余加固', () => {
+  it('withReportCspMeta：doctype 内容 meta 插到 doctype 之后；无 doctype 维持前置', () => {
+    const doc = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"></head><body><table></table></body></html>';
+    const out = withReportCspMeta(doc);
+    expect(out.startsWith('<!DOCTYPE html>')).toBe(true);
+    expect(out.indexOf(REPORT_WINDOW_CSP_META)).toBeGreaterThan(0);
+    expect(out.indexOf(REPORT_WINDOW_CSP_META)).toBeLessThan(out.indexOf('<html'));
+    expect(withReportCspMeta('<table></table>').startsWith(REPORT_WINDOW_CSP_META)).toBe(true);
+  });
+
+  it('blob URL 在宿主窗卸载时 revoke（泄漏修复；窗口开着期间 blob 保持可取）', () => {
+    stubReportWindow();
+    const revokeSpy = vi.fn();
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, writable: true, value: revokeSpy });
+    try {
+      const w = openReportWindow('<html><body>x</body></html>', 'text/html');
+      expect(revokeSpy).not.toHaveBeenCalled();
+      // 桩窗捕获 beforeunload 监听并触发（真实场景=用户关闭报告窗，宿主 document 卸载）
+      const listeners = (w as unknown as { __listeners: Record<string, (e: Event) => void> }).__listeners;
+      expect(listeners.beforeunload).toBeTruthy();
+      listeners.beforeunload(new Event('beforeunload'));
+      expect(revokeSpy).toHaveBeenCalledWith('blob:mock-report-url');
+    } finally {
+      delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL;
+    }
+  });
+
+  // 复审 R：beforeunload 在未交互 about:blank 窗口触发语义跨浏览器不保证——opener 侧
+  // w.closed 1s 轮询兜底必须独立成立
+  it('blob URL 在 w.closed 轮询下 revoke（beforeunload 未触发的浏览器兜底）', async () => {
+    stubReportWindow();
+    const revokeSpy = vi.fn();
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, writable: true, value: revokeSpy });
+    try {
+      const w = openReportWindow('<html><body>x</body></html>', 'text/html');
+      let closed = false;
+      Object.defineProperty(w!, 'closed', { configurable: true, get: () => closed });
+      expect(revokeSpy).not.toHaveBeenCalled();
+      closed = true;
+      await new Promise((r) => setTimeout(r, 1300)); // 轮询粒度 1s
+      expect(revokeSpy).toHaveBeenCalledWith('blob:mock-report-url');
+    } finally {
+      delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL;
+    }
+  });
+
+  it('withReportCspMeta：doctype 前有 HTML 注释变体同样插到 doctype 之后（复审 R）', () => {
+    const doc = '<!-- generated -->\n<!doctype html><html><body>t</body></html>';
+    const out = withReportCspMeta(doc);
+    expect(out.indexOf('<!doctype html>')).toBeGreaterThan(0);
+    expect(out.indexOf(REPORT_WINDOW_CSP_META)).toBeGreaterThan(out.indexOf('<!doctype html>'));
+    expect(out.indexOf(REPORT_WINDOW_CSP_META)).toBeLessThan(out.indexOf('<html>'));
+  });
+
+  it('弹窗被拦（window.open→null）→ 返回 null（调用方据此提示）', () => {
+    const spy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    try {
+      expect(openReportWindow('<b></b>', 'text/html')).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('ReportsPage 弹窗被拦 → message.warning 显式提示（不再静默）', async () => {
+    vi.spyOn(window, 'open').mockImplementation(() => null);
+    withProviders(<ReportsPage />, '/reports');
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: '在线查看' }));
+      expect(screen.getAllByText(/弹出窗口被浏览器拦截/).length).toBeGreaterThan(0);
+    }, { timeout: 8000 });
   });
 });

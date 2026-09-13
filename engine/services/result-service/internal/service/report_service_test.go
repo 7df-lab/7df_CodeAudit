@@ -355,7 +355,7 @@ func TestHandleTaskCompleted_Redelivery_Idempotent(t *testing.T) {
 	}
 }
 
-// R42（2026-09-11 审计修复批次）: 代码片段列必须逐字段 htmlEsc——finding 的 code
+// R42（2026-09-11 修复批次）: 代码片段列必须逐字段 htmlEsc——finding 的 code
 // 字段来自被扫源码（攻击者可控），未转义直写 <pre> 即存储型 XSS（web 报告窗口渲染）。
 func TestRenderHTMLReport_SnippetEscaped(t *testing.T) {
 	items := []map[string]interface{}{{
@@ -376,7 +376,7 @@ func TestRenderHTMLReport_SnippetEscaped(t *testing.T) {
 	}
 }
 
-// R44（2026-09-11 审计修复批次）: 已归档报告的读路径必须返回真实归档 Url——
+// R44（2026-09-11 修复批次）: 已归档报告的读路径必须返回真实归档 Url——
 // 恒造 report:// 伪协议令客户端拿到不可取回的地址（归档信息被丢弃）。
 func TestGetReport_ReturnsArchivedUrl(t *testing.T) {
 	mockRepo := &MockReportRepository{

@@ -2229,7 +2229,7 @@ class ResultServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def SubmitFindingFeedback(self, request, context):
-        """误报反馈闭环（评审整合项）
+        """误报反馈闭环
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

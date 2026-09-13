@@ -8,6 +8,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	codeauditcfg "github.com/codeaudit/go-config"
@@ -29,6 +30,7 @@ type SASTFusionHandler struct {
 	// 幂等存储: request_id -> response
 	// 依据: 03 §2 幂等三态规则
 	idempotencyStore sync.Map
+	idemCount        atomic.Int64 // R81/R69: 缓存容量护栏（此前完全无上界，键为客户端可控 request_id）
 
 	// Finding存储 (in-memory for now)
 	findingStore sync.Map
@@ -148,6 +150,11 @@ func (h *SASTFusionHandler) FuseResults(ctx context.Context, req *pb.FuseResults
 
 	// 缓存响应用于幂等
 	h.idempotencyStore.Store(requestID, resp)
+	// R81/R69: 容量护栏（超限整体重置=重启遗忘语义，与 sast handler 同口径）
+	if h.idemCount.Add(1) > 10_000 {
+		h.idempotencyStore.Range(func(k, _ any) bool { h.idempotencyStore.Delete(k); return true })
+		h.idemCount.Store(0)
+	}
 
 	return resp, nil
 }

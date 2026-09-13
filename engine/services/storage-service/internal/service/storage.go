@@ -45,7 +45,7 @@ func (s *StorageSvc) SetPresigner(p repo.Presigner) { s.presigner = p }
 //
 // MinIO integration note (09 §1): in production, each chunk would be written to
 // the object directly via MinIO's PutObject streaming API.
-// maxAssembleBytes — 单对象组装内存上限（R62，2026-09-11 审计）：AssembleChunks 全量
+// maxAssembleBytes — 单对象组装内存上限（R62）：AssembleChunks 全量
 // 缓冲无上限是 OOM 向量（gateway 100MB 是唯一有闸入口；树 tar/gRPC 直连可更大）。
 // 超限 ResourceExhausted 拒绝，不吞内存。env：CODEAUDIT_STORAGE_MAX_OBJECT_BYTES。
 var maxAssembleBytes = envInt64Or("CODEAUDIT_STORAGE_MAX_OBJECT_BYTES", 512<<20)
@@ -152,7 +152,7 @@ func (s *StorageSvc) ListFiles(prefix string) []*v1.StoredFile {
 // MinIO 接入后: 调用 PresignedPutObject/PresignedGetObject（09 §1: reports, cpg, sast-raw）。
 func (s *StorageSvc) GetPresignedURL(filePath string, operation v1.GetPresignedUrlRequest_UrlOp, ttlSeconds int64) (string, *timestamppb.Timestamp, error) {
 	if s.presigner == nil {
-		// memory 档（07 §10）诚实语义: Unimplemented 而非编造必然 404 的假 URL（2026-08-27 编造审计）
+		// memory 档（07 §10）诚实语义: Unimplemented 而非编造必然 404 的假 URL
 		return "", nil, status.Error(codes.Unimplemented,
 			"presigned URL requires MinIO backend (09 §1); memory store mode has no presigner")
 	}

@@ -10,7 +10,7 @@ import (
 	pb "github.com/codeaudit/proto-gen"
 )
 
-// R54（2026-09-11 审计修复批次）: QueryCPG 只读 <project>/.codeaudit/cpg.json 形态——
+// R54（2026-09-11 修复批次）: QueryCPG 只读 <project>/.codeaudit/cpg.json 形态——
 // 其余路径一律拒绝（此前 os.ReadFile 任意请求路径=任意文件读取面）。
 func TestQueryCPG_RejectsNonCpgPaths(t *testing.T) {
 	s := newCodeAnalysisService()

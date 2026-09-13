@@ -29,7 +29,7 @@ const routes: Record<string, unknown> = {
     ],
     pagination: { total: 2 },
   },
-  // B4-1 用例：任务详情快照（t-a 带 AI 片段与日志，t-b 全新干净流）
+  // 用例：任务详情快照（t-a 带 AI 片段与日志，t-b 全新干净流）
   'GET /v1/tasks/:taskId/snapshot': (ctx: { params: Record<string, string> }) => {
     if (ctx.params.taskId === 't-a') {
       return {
@@ -108,10 +108,12 @@ describe('I-82 RequireAdmin + I-83 未读角标', () => {
     expect(await screen.findByText('权限不足')).toBeTruthy();
   });
 
-  it('未读角标 = notifications 未读计数（2 条未读 → 通知（2 未读），60s 兜底轮询的初始拉取）', async () => {
+  it('未读角标 = notifications 未读计数（2 条未读 → 导航 Badge 计数，60s 兜底轮询的初始拉取； 文本括号→Badge）', async () => {
     localStorage.setItem(TOKEN_KEY, 'ref-1');
     renderApp('/projects');
-    expect(await screen.findByText('通知（2 未读）')).toBeTruthy();
+    expect(await screen.findByText('通知')).toBeTruthy();
+    // antd Badge 计数挂 title 属性（0 时 Badge 不渲染）
+    await waitFor(() => expect(screen.getByTitle('2')).toBeTruthy());
   });
 });
 
@@ -129,11 +131,11 @@ function NavButton({ to }: { to: string }) {
   return <button onClick={() => navigate(to)}>{`goto-${to}`}</button>;
 }
 
-// B4-1（审计修复）：同路由 `/tasks/:id` 切换任务必须重建任务详情实例（TaskDetailWithParams
+// （审计修复）：同路由 `/tasks/:id` 切换任务必须重建任务详情实例（TaskDetailWithParams
 // key={id}）——此前 react-router 复用组件实例，旧任务的增量游标（logs_after/ai_cursor refs）
 // 与已吸收的日志/AI 正文残留进新任务：新任务快照带旧游标（服务端从旧位置起算，头部内容
 // 永久丢失）、面板残留旧任务 AI 正文片段。
-describe('I-A3 同路由切换任务清态（B4-1）', () => {
+describe('I-A3 同路由切换任务清态', () => {
   it('/tasks/t-a → /tasks/t-b：B 面板不含 A 的 AI 正文/日志；B 首个快照请求游标从零起', async () => {
     // WS 桩：不真连（jsdom 真 WebSocket 会打网络且异步错误偶发污染 Errors 计数）；
     // 永不 onopen → 页面自然回退快照轮询，数据路径与真实断线场景一致

@@ -71,8 +71,8 @@ describe('ReviewView（旧模式D，诚实降级）', () => {
   });
 });
 
-// B3-4（审计修复）：视图单页只拉 100 条——has_next=true 时必须渲染截断提示，不静默丢剩余
-describe('视图截断提示（B3-4）', () => {
+// （审计修复）：视图单页只拉 100 条——has_next=true 时必须渲染截断提示，不静默丢剩余
+describe('视图截断提示', () => {
   const truncatedFindings = (title: string) => {
     routes['GET /v1/findings'] = () => ({ findings: [
       { finding_id: 'f-t1', task_id: 't1', source_tool: 'semgrep', source_rule_id: 'R1', cwe_id: 'CWE-89',

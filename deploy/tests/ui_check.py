@@ -23,8 +23,8 @@ gui_streaming_check + ui_walkthrough_check 两脚本为一个文件两种模式�
 
 流式判据（v3，原 gui_streaming_check 内核，语义一字不改）：
   v2 双教训（2026-09-07 实证）：① 字节级比较假 FAIL——面板是人性化渲染文本，
-  后端 cursor 是原始字节，天然 ±几十字节漂移（gw-d0760857 ±33B 仍被误杀）；
-  ② 零产出空真 PASS——降级 RuleScan 时 0≥0 恒真（gw-024011e0 53s 假 PASS）。
+  后端 cursor 是原始字节，天然 ±几十字节漂移（±33B 仍被误杀）；
+  ② 零产出空真 PASS——降级 RuleScan 时 0≥0 恒真（53s 假 PASS）。
   v3 进度耦合：面板"变化"（增减都算活，兼容 400 条窗口截断汰旧换新）重置时钟；
   后端自上次变化以来实质产出 ≥64B 且超 8s 面板无变化 → FAIL；终态后收敛采样
   （连续 2 拍稳定或再等一个容忍窗）；全程零产出 → inconclusive。
@@ -488,7 +488,7 @@ def mode_walkthrough(args):
                 page.get_by_role("button", name="在线查看", exact=False).first.click()
             view = pop.value
             view.wait_for_load_state("domcontentloaded")
-            # 2026-09-12 报告窗口改 sandboxed iframe+blob 通道（B4 待办收尾）——正文不
+            # 2026-09-12 报告窗口改 sandboxed iframe+blob 通道——正文不
             # 再直写在宿主 body；断言升级：iframe 在位 + blob 正文真实含报告内容
             # （读 iframe.contentWindow 不受 sandbox 阻——同源 about:blank 宿主注入）。
             try:

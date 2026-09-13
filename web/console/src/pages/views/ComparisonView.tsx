@@ -33,7 +33,7 @@ export default function ComparisonView({ taskId }: { taskId: string }) {
         </Descriptions>
       </Card>
       <Card title="指标（ComparisonMetrics，proto L491-L501）">
-        {/* 数据直显（P4）；七个指标全部来自后端计算（ADR-133），页面零计算 */}
+        {/* 数据直显；七个指标全部来自后端计算（ADR-133），页面零计算 */}
         <Statistic title="SAST precision" value={m?.sast_precision ?? 0} precision={3} style={{ display: 'inline-block', marginRight: 24 }} />
         <Statistic title="SAST recall" value={m?.sast_recall ?? 0} precision={3} style={{ display: 'inline-block', marginRight: 24 }} />
         <Statistic title="SAST F1" value={m?.sast_f1 ?? 0} precision={3} style={{ display: 'inline-block', marginRight: 24 }} />

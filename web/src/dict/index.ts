@@ -10,11 +10,12 @@ export const AI_VERDICT: Record<string, string> = {
   AI_VERDICT_UNCERTAIN: '不确定',
 };
 
-// ScanMode 依据: proto ScanMode / ADR-186 五模式矩阵（人类决策 2026-09-03）
+// ScanMode 依据: proto ScanMode / ADR-186 五模式矩阵
 // A=纯SAST（多工具并行→去重合并） / B=纯AI / C=SAST+AI并行融合（默认推荐） /
 // D=AI增强SAST（扫描→同段去重→逐条沙箱验证→融合汇总） / E=SAST+AI并行对比（ADR-186 前称"模式D"）
 // 旧两值已弃用：仅历史数据兼容展示，新建入口不再提供（键序即展示序，弃用项置尾）
 export const SCAN_MODE: Record<string, string> = {
+  SCAN_MODE_UNSPECIFIED: '未指定', // B5: 零值枚举经 protojson EmitUnpopulated 会显式下发（存量/直调 API 可产生）
   SCAN_MODE_SAST_ONLY: '模式A 纯SAST',
   SCAN_MODE_AI_ONLY: '模式B 纯AI',
   SCAN_MODE_PARALLEL: '模式C SAST+AI融合（推荐）',
@@ -52,7 +53,7 @@ export const SEVERITY: Record<string, string> = {
   SEVERITY_INFO: '提示',
 };
 
-// 通用回退（B3-5：删除曾内嵌的 map.AI_VERDICT_UNSPECIFIED 特判——通用函数不携带具体
+// 通用回退（删除曾内嵌的 map.AI_VERDICT_UNSPECIFIED 特判——通用函数不携带具体
 // 枚举知识）。空值/未知键行为：空值→'未知'；未知非空键→原样回显（不隐藏数据，P4）。
 // 需要"未判定"语义的 AI_VERDICT 调用点显式归一 `v || 'AI_VERDICT_UNSPECIFIED'`（查表路径）。
 export function zh(map: Record<string, string>, key: string | undefined | null): string {
@@ -83,6 +84,7 @@ export const STAGE_TYPE: Record<string, string> = {
 
 // ReviewDepth 依据: proto ReviewConfig.ReviewDepth（经 config map 传递，R1）
 export const REVIEW_DEPTH: Record<string, string> = {
+  REVIEW_DEPTH_UNSPECIFIED: '未指定', // B5: 同 SCAN_MODE_UNSPECIFIED
   REVIEW_DEPTH_QUICK: '快速',
   REVIEW_DEPTH_STANDARD: '标准',
   REVIEW_DEPTH_THOROUGH: '彻底',
@@ -104,12 +106,24 @@ export const USER_STATE: Record<string, string> = {
   USER_STATE_LOCKED: '锁定',
 };
 
-// ReportFormat 依据: proto ReportFormat 枚举（protojson 数值直出；0=历史未记录）
-export const REPORT_FORMAT: Record<number, string> = { 1: 'PDF', 2: 'HTML', 3: 'JSON', 4: 'CSV' };
+// ReportFormat 依据: proto ReportFormat 枚举。B5-P1-1 实证：网关 protojson（EmitUnpopulated+
+// UseProtoNames，无 UseEnumNumbers）枚举以**枚举名字符串**直出（同 E-00c 全局约定）——
+// 旧数字键控 {1:'PDF',...} 是假契约，格式列恒 '—'、下载恒 .json。
+export const REPORT_FORMAT: Record<string, string> = {
+  REPORT_FORMAT_PDF: 'PDF',
+  REPORT_FORMAT_HTML: 'HTML',
+  REPORT_FORMAT_JSON: 'JSON',
+  REPORT_FORMAT_CSV: 'CSV',
+};
 
-// 报告下载文件扩展名（下载文件名此前恒为 <id>.bin，用户拿到无法关联格式的文件）。
-// 编排器当前只产 JSON（缺省）与 HTML；0/未知按 JSON 兜底。
-export function reportFileExt(format: number | undefined): string {
-  const ext: Record<number, string> = { 1: 'pdf', 2: 'html', 4: 'csv' };
-  return ext[format ?? 0] ?? 'json';
+// 报告下载文件扩展名（下载文件名此前恒为 <id>.bin，用户拿到无法关联格式的文件；
+// 修复后按枚举名给扩展名）。编排器当前只产 JSON（缺省）与 HTML；
+// UNSPECIFIED/未知按 JSON 兜底。
+export function reportFileExt(format: string | undefined): string {
+  const ext: Record<string, string> = {
+    REPORT_FORMAT_PDF: 'pdf',
+    REPORT_FORMAT_HTML: 'html',
+    REPORT_FORMAT_CSV: 'csv',
+  };
+  return (format && ext[format]) || 'json';
 }

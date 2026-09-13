@@ -9,7 +9,7 @@
 //   - 09 §2 通信矩阵: task→dsh-runtime / task→sast-adapter / task→result；
 //     findings 实体由 sast-adapter 与 dsh-runtime 各自落盘（行 sast-adapter→result、dsh-runtime→result），
 //     编排层只传 ID 引用（proto ToolScanResult 定版口径：ID引用，不内嵌）。
-//   - 步骤超时已全撤（ADR-191 补遗，人类指令"都撤掉"2026-09-03）：编排不再设任何
+//   - 步骤超时已全撤（ADR-191 补遗）：编排不再设任何
 //     外层步骤时限，各步骤 ctx 直通（取消仍可传播）
 package orchestrator
 
@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	pb "github.com/codeaudit/proto-gen"
 	"google.golang.org/grpc"
@@ -130,14 +131,14 @@ func (o *Orchestrator) Execute(ctx context.Context, r RunRequest) (map[string]in
 	// 失败=编排失败（缺继承行的完整视图是假完整，诚实失败走重试链）。
 	if r.Incremental != nil {
 		if ierr := o.runIncrementalInherit(ctx, r, stage); ierr != nil {
-			o.compensateFindings(r, collector.snapshot(), stage)
+			o.compensateFindings(ctx, r, collector.snapshot(), stage)
 			return summary, ierr
 		}
 	}
 
 	var err error
 	switch r.ScanMode {
-	// ADR-186 五模式矩阵（人类决策 2026-09-03）：A=纯SAST / B=纯AI / C=并行融合(默认推荐) /
+	// ADR-186 五模式矩阵：A=纯SAST / B=纯AI / C=并行融合(默认推荐) /
 	// D=AI增强SAST / E=并行对比（ADR-182 前称"模式D"）
 	case pb.ScanMode_SCAN_MODE_SAST_ONLY:
 		err = o.runModeSastOnly(ctx, r, stage, summary)
@@ -156,12 +157,12 @@ func (o *Orchestrator) Execute(ctx context.Context, r RunRequest) (map[string]in
 	}
 	if err != nil {
 		// 04 §2 S8 失败补偿：删除本任务已落盘的发现（真实 gRPC 回滚，ADR-131）
-		o.compensateFindings(r, collector.snapshot(), stage)
+		o.compensateFindings(ctx, r, collector.snapshot(), stage)
 		return summary, err
 	}
 
 	// 收尾统计：以 result-service 权威口径核对落盘数量（09 §2 / proto L1242 ResultStats）
-	if stats, serr := o.resultStats(r.TaskID); serr == nil {
+	if stats, serr := o.resultStats(ctx, r.TaskID); serr == nil {
 		summary["by_verdict"] = stats.GetByVerdict()
 		summary["by_severity"] = stats.GetBySeverity()
 		summary["by_cwe"] = stats.GetByCwe()
@@ -176,7 +177,7 @@ func (o *Orchestrator) Execute(ctx context.Context, r RunRequest) (map[string]in
 
 // compensateFindings — 04 §2 S8 补偿：删除已存储结果。
 // DeleteFinding 逐条幂等回滚；NotFound 视为已清理。S6/S9/S10 补偿缺 proto 支持（ADR-131）。
-func (o *Orchestrator) compensateFindings(r RunRequest, ids []string, stage StageRecorder) {
+func (o *Orchestrator) compensateFindings(ctx context.Context, r RunRequest, ids []string, stage StageRecorder) {
 	if len(ids) == 0 {
 		return
 	}
@@ -187,10 +188,14 @@ func (o *Orchestrator) compensateFindings(r RunRequest, ids []string, stage Stag
 	}
 	defer closeFn()
 	client := pb.NewResultServiceClient(conn)
+	// R78/R85（复审修正）: 补偿须"防悬挂但不可被取消"——取消任务引发的失败补偿
+	// 恰恰发生在 ctx 已 Done 时，带着取消去补偿=删除零成功=已落盘 findings 泄漏。
+	// WithoutCancel(Go1.22) 保留 values、摘 Done；30s 单定时器防悬挂（原
+	// Background 版本的问题是无超时而非可取消——两者都要防）。
+	dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer dCancel()
 	deleted, missed := 0, 0
 	for _, id := range ids {
-		dCtx, dCancel := context.Background(), context.CancelFunc(func() {})
-		defer dCancel()
 		if _, err := client.DeleteFinding(dCtx,
 			&pb.DeleteFindingRequest{FindingId: id}); err != nil {
 			if status.Code(err) == codes.NotFound { // R51: 直写枚举（原字符串比较绕）
@@ -592,8 +597,8 @@ func (o *Orchestrator) runAIAnalysis(ctx context.Context, r RunRequest, extraIDs
 	defer closeFn()
 
 	client := pb.NewDSHRuntimeServiceClient(conn)
-	// ADR-191（人类指令"撤掉超时安全网"）：AI 审计回合不再设外层时限——深度分析
-	// （批量行号核验/补丁撰写）实测 30m 仍健康流式（gw-9b602266 实证：模型已在
+	// ADR-191：AI 审计回合不再设外层时限——深度分析
+	// （批量行号核验/补丁撰写）实测 30m 仍健康流式（实证：模型已在
 	// "assembling and submitting findings"一步被 30m 网掐死→fail→auto-retry 从头
 	// 重跑，30 分钟分析全毁）。回合结束只认 DSH 沙箱流式显式信号
 	// （session.status=idle / turn/end / runtime.exit）；断流自愈=SSE streamErr→
@@ -837,14 +842,13 @@ func (o *Orchestrator) generateReport(ctx context.Context, r RunRequest, stageNa
 }
 
 // resultStats — 编排收尾从 result-service 反查权威统计（E2E 断言锚点）
-func (o *Orchestrator) resultStats(taskID string) (*pb.ResultStats, error) {
+func (o *Orchestrator) resultStats(ctx context.Context, taskID string) (*pb.ResultStats, error) {
 	conn, closeFn, err := dial(o.cfg.ResultAddr)
 	if err != nil {
 		return nil, err
 	}
 	defer closeFn()
 	client := pb.NewResultServiceClient(conn)
-	sCtx, sCancel := context.Background(), context.CancelFunc(func() {})
-	defer sCancel()
-	return client.GetTaskResultStats(sCtx, &pb.GetTaskResultStatsRequest{TaskId: taskID})
+	// R78: 成功收尾统计同样走编排 ctx（原 Background 旁路取消链）
+	return client.GetTaskResultStats(ctx, &pb.GetTaskResultStatsRequest{TaskId: taskID})
 }

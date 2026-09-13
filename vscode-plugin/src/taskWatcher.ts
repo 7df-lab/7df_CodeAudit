@@ -137,7 +137,7 @@ export class TaskWatcher extends EventEmitter {
     }
     try {
       const snap = await this.opts.client.taskSnapshot(this.opts.taskId, this.opts.cursors?.());
-      // await 后复查（B5-1）：请求在途期间 watcher 可能已被 close（终态自关 / watchTask
+      // await 后复查：请求在途期间 watcher 可能已被 close（终态自关 / watchTask
       // 换新任务替换 / bindTask 切绑收口）——关闭后到达的快照不得再进 settle
       if (this.closed) return;
       this.settle(snap);
@@ -146,7 +146,7 @@ export class TaskWatcher extends EventEmitter {
       // 快照 404 "not found"：任务已被平台删除/归档，轮询无意义——终止（WS 路径 onclose 同口径）
       const msg = e instanceof Error ? e.message : String(e);
       if (/404/.test(msg) && /not found/i.test(msg)) {
-        // 在途 404 复查（B5-1）：await 期间 watcher 已被关闭（最常见=换任务替换）时，
+        // 在途 404 复查：await 期间 watcher 已被关闭（最常见=换任务替换）时，
         // 这个 404 属于旧任务——不得触发 onTaskGone（上层会把新任务 progress 标 DEAD）
         if (this.closed) return;
         // 统一走 close() 收束（关 socket + 清定时器）：只置标志会留活连接与挂起重连

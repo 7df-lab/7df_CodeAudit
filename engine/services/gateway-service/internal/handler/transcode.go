@@ -137,17 +137,9 @@ func grpcToHTTP(err error) int {
 }
 
 func (t *Transcoder) call(w http.ResponseWriter, conn *grpc.ClientConn, name string, invoke func(ctx context.Context) (proto.Message, error)) {
-	if conn == nil {
-		writeError(w, http.StatusServiceUnavailable, "backend connection not configured")
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), t.callTimeout)
-	defer cancel()
-	resp, err := invoke(ctx)
+	resp, err := t.invoke(w, conn, name, invoke)
 	if err != nil {
-		log.Printf("[transcoder] %s: %v", name, err)
-		writeError(w, grpcToHTTP(err), status.Code(err).String()+": "+status.Convert(err).Message())
-		return
+		return // 错误响应已写
 	}
 	// UseProtoNames: JSON 键与 proto 字段名一致（snake_case），对 API 消费者可预测
 	b, merr := protojson.MarshalOptions{EmitUnpopulated: true, UseProtoNames: true}.Marshal(resp)
@@ -156,6 +148,24 @@ func (t *Transcoder) call(w http.ResponseWriter, conn *grpc.ClientConn, name str
 		return
 	}
 	writeJSON(w, http.StatusOK, b)
+}
+
+// invoke — R91: call 的前半段（RPC+错误写响应），返回响应供需要后处理的路由使用
+// （项目创建：创建者成员登记需拿到 project_id 后再写响应）。
+func (t *Transcoder) invoke(w http.ResponseWriter, conn *grpc.ClientConn, name string, invoke func(ctx context.Context) (proto.Message, error)) (proto.Message, error) {
+	if conn == nil {
+		writeError(w, http.StatusServiceUnavailable, "backend connection not configured")
+		return nil, status.Error(codes.Internal, "backend connection not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), t.callTimeout)
+	defer cancel()
+	resp, err := invoke(ctx)
+	if err != nil {
+		log.Printf("[transcoder] %s: %v", name, err)
+		writeError(w, grpcToHTTP(err), status.Code(err).String()+": "+status.Convert(err).Message())
+		return nil, err
+	}
+	return resp, nil
 }
 
 // decodeBody — 把 REST 请求体 JSON 解码进 pb 请求消息。
@@ -190,6 +200,10 @@ func (t *Transcoder) Handler() http.Handler {
 }
 
 func (t *Transcoder) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	// R84: JSON 转码口请求体上限 1MiB——decodeBody 无界 ReadAll，认证用户一条大 body
+	// 即可 OOM 网关（gRPC 4MB 上限在下游，拦不住网关自身）。上传口走独立 mux 条目
+	// 自带 100MB MaxBytesReader（upload.go），不受影响。
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	segs := splitPath(r.URL.Path)
 	// segs 形如 [v1 auth login] / [v1 projects {id}] / [v1 tasks {id} submit]
 	// 14号 §7: /v1/tools、/v1/notifications 等两段路由合法（域下无子路径）
@@ -295,6 +309,11 @@ func (t *Transcoder) logout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// R88: 网关本地即时撤销（服务端纪元 R87 另管 refresh 侧）——此前登出后 access
+	// 在全部业务路由仍可用 30min。
+	if tok := req.GetAccessToken(); tok != "" {
+		middleware.RevokeAccess(tok)
+	}
 	client := pb.NewUserServiceClient(t.projectConn)
 	t.call(w, t.projectConn, "UserService/Logout", func(ctx context.Context) (proto.Message, error) {
 		return client.Logout(ctx, req)
@@ -314,10 +333,37 @@ func (t *Transcoder) projects(w http.ResponseWriter, r *http.Request, rest []str
 			return
 		}
 		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
-		t.call(w, t.projectConn, "ProjectService/CreateProject", func(ctx context.Context) (proto.Message, error) {
+		// R91: 创建者自动登记为项目成员（成员制授权的准入面；无身份则无从登记）。
+		// 成员登记失败不回滚创建（幂等键已消耗），留日志 admin 可补。
+		resp, cerr := t.invoke(w, t.projectConn, "ProjectService/CreateProject", func(ctx context.Context) (proto.Message, error) {
 			return client.CreateProject(ctx, req)
 		})
+		if cerr != nil {
+			return
+		}
+		if uid := callerID(r); uid != "" && resp != nil {
+			mctx, mcancel := context.WithTimeout(context.Background(), t.callTimeout)
+			defer mcancel()
+			project := resp.(*pb.Project)
+			if _, merr := client.AddProjectMember(mctx, &pb.AddProjectMemberRequest{
+				Metadata: &pb.RequestMetadata{RequestId: newRequestID()},
+				Member:   &pb.ProjectMember{ProjectId: project.GetProjectId(), UserId: uid, Role: "developer"},
+			}); merr != nil {
+				log.Printf("[authz] creator member registration failed project=%s user=%s: %v", project.GetProjectId(), uid, merr)
+			}
+		}
+		b, merr := protojson.MarshalOptions{EmitUnpopulated: true, UseProtoNames: true}.Marshal(resp)
+		if merr != nil {
+			writeError(w, http.StatusInternalServerError, "response marshal: "+merr.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, b)
 	case len(rest) == 0 && r.Method == http.MethodGet:
+		// R91: 无 ID 全量列表=管理面（owner 经成员制访问；服务端 owner 过滤立项后可放宽）
+		if !isAdmin(r) {
+			denyAuthz(w, r, "projects (unscoped list)")
+			return
+		}
 		req := &pb.ListProjectsRequest{}
 		if err := decodeQuery(r, req, "pagination", "filter"); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -327,33 +373,55 @@ func (t *Transcoder) projects(w http.ResponseWriter, r *http.Request, rest []str
 			return client.ListProjects(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodGet:
+		// R91: 项目读取=成员或 admin
+		if !t.canAccessProject(w, r, rest[0], false) {
+			return
+		}
 		req := &pb.GetProjectRequest{ProjectId: rest[0]}
 		t.call(w, t.projectConn, "ProjectService/GetProject", func(ctx context.Context) (proto.Message, error) {
 			return client.GetProject(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodPut:
+		// R91: 项目写面=管理面（此前任意认证用户可改/删任意项目）
+		if !t.canAccessProject(w, r, rest[0], true) {
+			return
+		}
 		req := &pb.UpdateProjectRequest{}
 		if err := decodeBody(r, req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if req.GetProject() != nil && req.GetProject().GetProjectId() == "" {
+		// R91: body 钉死路径身份（服务端按 body project_id 落改——URL 与 body 错位
+		// 即绕过门禁，R73 同型教训）
+		if req.GetProject() != nil {
 			req.Project.ProjectId = rest[0]
 		}
 		t.call(w, t.projectConn, "ProjectService/UpdateProject", func(ctx context.Context) (proto.Message, error) {
 			return client.UpdateProject(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodDelete:
+		// R91: 写面=管理面
+		if !t.canAccessProject(w, r, rest[0], true) {
+			return
+		}
 		req := &pb.DeleteProjectRequest{ProjectId: rest[0]}
 		t.call(w, t.projectConn, "ProjectService/DeleteProject", func(ctx context.Context) (proto.Message, error) {
 			return client.DeleteProject(ctx, req)
 		})
 	case len(rest) == 2 && rest[1] == "config" && r.Method == http.MethodGet:
+		// R91: 项目读取=成员或 admin
+		if !t.canAccessProject(w, r, rest[0], false) {
+			return
+		}
 		req := &pb.GetProjectConfigRequest{ProjectId: rest[0]}
 		t.call(w, t.projectConn, "ProjectService/GetProjectConfig", func(ctx context.Context) (proto.Message, error) {
 			return client.GetProjectConfig(ctx, req)
 		})
 	case len(rest) == 2 && rest[1] == "config" && r.Method == http.MethodPut:
+		// R91: 写面=管理面
+		if !t.canAccessProject(w, r, rest[0], true) {
+			return
+		}
 		req := &pb.UpdateProjectConfigRequest{}
 		if err := decodeBody(r, req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -431,17 +499,26 @@ func (t *Transcoder) tasks(w http.ResponseWriter, r *http.Request, rest []string
 			return client.ListScanTasks(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodGet:
+		if !t.canAccessTask(w, r, rest[0]) {
+			return
+		}
 		req := &pb.GetScanTaskRequest{TaskId: rest[0]}
 		t.call(w, t.taskConn, "TaskService/GetScanTask", func(ctx context.Context) (proto.Message, error) {
 			return client.GetScanTask(ctx, req)
 		})
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "progress":
+		if !t.canAccessTask(w, r, rest[0]) {
+			return
+		}
 		req := &pb.GetTaskProgressRequest{TaskId: rest[0]}
 		t.call(w, t.taskConn, "TaskService/GetTaskProgress", func(ctx context.Context) (proto.Message, error) {
 			return client.GetTaskProgress(ctx, req)
 		})
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "logs":
 		// ADR-167: 执行日志（增量游标 after_log_id + limit 经 query 透传）
+		if !t.canAccessTask(w, r, rest[0]) {
+			return
+		}
 		req := &pb.GetTaskLogsRequest{TaskId: rest[0]}
 		if v := r.URL.Query().Get("after_log_id"); v != "" {
 			req.AfterLogId = v
@@ -457,13 +534,22 @@ func (t *Transcoder) tasks(w http.ResponseWriter, r *http.Request, rest []string
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "snapshot":
 		// ADR-170: 详情页聚合快照——task+progress+logs+ai-log 单口轮询（3s=20/min），
 		// 替代此前 4 个独立轮询器 ~90/min，会吃满 07 §7 单用户限流预算（429 页面冻结）
+		if !t.canAccessTask(w, r, rest[0]) {
+			return
+		}
 		t.taskSnapshot(w, r, rest[0])
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "ws":
-		// ADR-172: WebSocket 秒级推送（人类指令 2026-09-01）——升级后服务端 1s 聚合推帧，
+		// ADR-172: WebSocket 秒级推送——升级后服务端 1s 聚合推帧，
 		// 帧结构与 snapshot 同构；前端断线自动回退 snapshot 轮询
+		if !t.canAccessTask(w, r, rest[0]) {
+			return
+		}
 		t.taskWatch(w, r, rest[0])
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "ai-log":
 		// ADR-168: AI 交互日志（沙箱 bridge SSE 原始帧；字节游标增量，任务终态后即最终日志）
+		if !t.canAccessTask(w, r, rest[0]) {
+			return
+		}
 		req := &pb.GetAIInteractionLogRequest{TaskId: rest[0]}
 		if v := r.URL.Query().Get("cursor"); v != "" {
 			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
@@ -481,27 +567,42 @@ func (t *Transcoder) tasks(w http.ResponseWriter, r *http.Request, rest []string
 		})
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "source-file":
 		// ADR-195: 任务源码全文读取（发现详情代码上下文全文复核；gateway 本地源树）
+		if !t.canAccessTask(w, r, rest[0]) {
+			return
+		}
 		t.sourceFile(w, r, rest[0])
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "context":
 		// 14号 §7: GetTaskContext（融合/审核视图数据源）
+		if !t.canAccessTask(w, r, rest[0]) {
+			return
+		}
 		req := &pb.GetTaskContextRequest{TaskId: rest[0]}
 		t.call(w, t.taskConn, "TaskService/GetTaskContext", func(ctx context.Context) (proto.Message, error) {
 			return client.GetTaskContext(ctx, req)
 		})
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "metrics":
 		// 14号 §7: CalculateMetrics（对比视图；task 维度聚合，ADR-133 口径）
+		if !t.canAccessTask(w, r, rest[0]) {
+			return
+		}
 		fclient := pb.NewSASTFusionServiceClient(t.adapterConn)
 		t.call(w, t.adapterConn, "SASTFusionService/CalculateMetrics", func(ctx context.Context) (proto.Message, error) {
 			return fclient.CalculateMetrics(ctx, &pb.CalculateMetricsRequest{TaskId: rest[0]})
 		})
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "comparison-report":
 		// 14号 §7: GenerateComparisonReport（模式C 对比报告）
+		if !t.canAccessTask(w, r, rest[0]) {
+			return
+		}
 		fclient := pb.NewSASTFusionServiceClient(t.adapterConn)
 		t.call(w, t.adapterConn, "SASTFusionService/GenerateComparisonReport", func(ctx context.Context) (proto.Message, error) {
 			return fclient.GenerateComparisonReport(ctx, &pb.GenerateComparisonReportRequest{TaskId: rest[0]})
 		})
 	case len(rest) == 2 && r.Method == http.MethodPost && rest[1] == "report":
 		// 14号 §7: GenerateReport（10 §3.2 口径）；幂等键网关生成
+		if !t.canAccessTask(w, r, rest[0]) {
+			return
+		}
 		rclient := pb.NewReportServiceClient(t.resultConn)
 		req := &pb.GenerateReportRequest{}
 		if err := decodeBody(r, req); err != nil {
@@ -509,9 +610,8 @@ func (t *Transcoder) tasks(w http.ResponseWriter, r *http.Request, rest []string
 			return
 		}
 		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
-		if req.GetTaskId() == "" {
-			req.TaskId = rest[0]
-		}
+		// R89: body 钉死路径身份（R73 同型教训——防 body task_id 指向他人任务）
+		req.TaskId = rest[0]
 		if req.GetFormat() == pb.ReportFormat_REPORT_FORMAT_UNSPECIFIED {
 			req.Format = pb.ReportFormat_REPORT_FORMAT_JSON // 缺省 JSON（body 可显式传 HTML）
 		}
@@ -545,6 +645,10 @@ func (t *Transcoder) tasks(w http.ResponseWriter, r *http.Request, rest []string
 		fn, ok := callByName[rest[1]]
 		if !ok {
 			writeError(w, http.StatusNotFound, "unknown task action "+rest[1])
+			return
+		}
+		// R89: 动作归属门禁（路由合法性先行，授权在后——未知动作保持 404 语义）
+		if !t.canAccessTask(w, r, rest[0]) {
 			return
 		}
 		t.call(w, t.taskConn, "TaskService/"+rest[1], fn)
@@ -652,16 +756,28 @@ func (t *Transcoder) findings(w http.ResponseWriter, r *http.Request, rest []str
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		// R90: 带 task_id → 任务归属；裸列表（无 ID 全量枚举）→ admin
+		if !t.gateTaskScopedList(w, r, req.GetTaskId()) {
+			return
+		}
 		t.call(w, t.resultConn, "ResultService/ListFindings", func(ctx context.Context) (proto.Message, error) {
 			return client.ListFindings(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodGet:
+		// R90: finding 按 ID → 解析 task → 任务归属
+		if !t.canAccessTaskViaFinding(w, r, rest[0]) {
+			return
+		}
 		req := &pb.GetFindingRequest{FindingId: rest[0]}
 		t.call(w, t.resultConn, "ResultService/GetFinding", func(ctx context.Context) (proto.Message, error) {
 			return client.GetFinding(ctx, req)
 		})
 	case len(rest) == 2 && rest[1] == "verdict" && r.Method == http.MethodPut:
 		// 14号 §7 / 10 §3.2: 人工 triage 回写（proto L1240 UpdateVerdict）
+		// R90: verdict 回写=写面，finding → task 归属先行
+		if !t.canAccessTaskViaFinding(w, r, rest[0]) {
+			return
+		}
 		req := &pb.UpdateVerdictRequest{FindingId: rest[0]}
 		if err := decodeBody(r, req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -687,19 +803,43 @@ func (t *Transcoder) verdictBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
+	// R90: 批量与单条 verdict 同口径——单条收口批量直通即门禁旁路
+	if !t.canBatchVerdict(w, r, req.GetFindingIds()) {
+		return
+	}
 	t.call(w, t.resultConn, "ResultService/BatchUpdateVerdict", func(ctx context.Context) (proto.Message, error) {
 		return client.BatchUpdateVerdict(ctx, req)
 	})
+}
+
+// isAdmin — JWT role claim 是否 ROLE_ADMIN（用户面门禁的共用判定核心）。
+func isAdmin(r *http.Request) bool {
+	role, _ := r.Context().Value(middleware.UserRoleKey).(string)
+	return role == "ROLE_ADMIN"
 }
 
 // requireAdmin — 管理端路由门禁（V2.1 ADR-205）：JWT role claim 必须 ROLE_ADMIN。
 // 旧令牌（A6 前 sign、无 role claim）一律 403，重新登录即获得新 claim；
 // 服务端强制（gRPC metadata 贯通 caller 身份）为 V2.2 候选，当前网关是唯一管理入口。
 func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	if role, _ := r.Context().Value(middleware.UserRoleKey).(string); role == "ROLE_ADMIN" {
+	if isAdmin(r) {
 		return true
 	}
 	writeError(w, http.StatusForbidden, "admin role required")
+	return false
+}
+
+// adminOrSelf — R73：用户资料读改门禁（admin 全权；非 admin 仅 self）。
+// /v1/users/{id} 此前裸奔：PUT 显式传 role=ROLE_ADMIN 即可自封管理员（无服务端
+// caller 身份，网关是唯一管理入口，V2.1 ADR-205），GET 可枚举任意用户资料。
+func adminOrSelf(w http.ResponseWriter, r *http.Request, userID string) bool {
+	if isAdmin(r) {
+		return true
+	}
+	if uid, _ := r.Context().Value(middleware.UserIDKey).(string); uid != "" && uid == userID {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "admin role or self required")
 	return false
 }
 
@@ -714,6 +854,11 @@ func (t *Transcoder) users(w http.ResponseWriter, r *http.Request, rest []string
 			return client.GetCurrentUser(ctx, req)
 		})
 	case len(rest) == 2 && rest[1] == "permissions" && r.Method == http.MethodGet:
+		// R85（复审）: 权限矩阵是资料的超集敏感面（可枚举任意用户的角色能力），
+		// 与资料读取同门禁——admin 或 self。
+		if !adminOrSelf(w, r, rest[0]) {
+			return
+		}
 		req := &pb.GetUserPermissionsRequest{UserId: rest[0]}
 		t.call(w, t.projectConn, "UserService/GetUserPermissions", func(ctx context.Context) (proto.Message, error) {
 			return client.GetUserPermissions(ctx, req)
@@ -767,17 +912,35 @@ func (t *Transcoder) users(w http.ResponseWriter, r *http.Request, rest []string
 			return client.CreateUser(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodGet:
+		// R73: 资料读取 admin 或 self（此前任意认证用户可枚举任意用户）
+		if !adminOrSelf(w, r, rest[0]) {
+			return
+		}
 		req := &pb.GetUserRequest{UserId: rest[0]}
 		t.call(w, t.projectConn, "UserService/GetUser", func(ctx context.Context) (proto.Message, error) {
 			return client.GetUser(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodPut:
+		// R73: 资料更新 admin 或 self；非 admin 的 self 强制剥离 role 变更
+		// （服务端 UpdateUser 对 UNSPECIFIED 保全存量 role——剥离即阻断自封 admin）
+		if !adminOrSelf(w, r, rest[0]) {
+			return
+		}
 		req := &pb.UpdateUserRequest{}
 		if err := decodeBody(r, req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if req.GetUser() != nil && req.GetUser().GetUserId() == "" {
+		// R85（复审 P1 旁路收口）: 服务端按 body 的 user_id 落改——门禁却只看 URL 段，
+		// body 携带他人 user_id 即跨用户改写。非 admin 一律把 body 钉死到 URL 身份，
+		// 且自助可变面收窄到 email（role/state/username 强制剥离：state 依赖服务端
+		// UNSPECIFIED 保全，username 空=服务端保全，防被停用者自复活/改名撞占 admin）。
+		if !isAdmin(r) && req.GetUser() != nil {
+			req.User.UserId = rest[0]
+			req.User.Role = pb.Role_ROLE_UNSPECIFIED
+			req.User.Username = ""
+			req.User.State = pb.User_USER_STATE_UNSPECIFIED
+		} else if req.GetUser() != nil && req.GetUser().GetUserId() == "" {
 			req.User.UserId = rest[0]
 		}
 		t.call(w, t.projectConn, "UserService/UpdateUser", func(ctx context.Context) (proto.Message, error) {
@@ -809,15 +972,27 @@ func (t *Transcoder) reports(w http.ResponseWriter, r *http.Request, rest []stri
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		// R90: 带 task_id → 任务归属；裸列表 → admin
+		if !t.gateTaskScopedList(w, r, req.GetTaskId()) {
+			return
+		}
 		t.call(w, t.resultConn, "ReportService/ListReports", func(ctx context.Context) (proto.Message, error) {
 			return client.ListReports(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodGet:
+		// R90: 报告按 ID → 解析 task → 任务归属
+		if !t.canAccessTaskViaReport(w, r, rest[0]) {
+			return
+		}
 		req := &pb.GetReportRequest{ReportId: rest[0]}
 		t.call(w, t.resultConn, "ReportService/GetReport", func(ctx context.Context) (proto.Message, error) {
 			return client.GetReport(ctx, req)
 		})
 	case len(rest) == 2 && rest[1] == "download" && r.Method == http.MethodGet:
+		// R90: 下载同报告归属
+		if !t.canAccessTaskViaReport(w, r, rest[0]) {
+			return
+		}
 		// 14号 §7 / §3.4: 下载=网关聚合 DownloadReport 服务端流（proto L1270-L1271）
 		t.downloadReport(w, rest[0])
 	default:

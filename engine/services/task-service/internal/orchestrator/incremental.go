@@ -74,7 +74,7 @@ func (o *Orchestrator) runIncrementalInherit(ctx context.Context, r RunRequest, 
 	if err != nil {
 		return fmt.Errorf("InheritFindings: %w", err)
 	}
-	// R60（2026-09-11 审计）：部分失败必须失败——FailedCount 被吞没时缺继承行的任务
+	// R60部分失败必须失败——FailedCount 被吞没时缺继承行的任务
 	// 照常 COMPLETED，"完整视图"是假完整；走既有 FAILED→QUEUED 重试链（幂等重放
 	// 跳过已继承行，重试只补缺）。
 	if n := resp.GetFailedCount(); n > 0 {

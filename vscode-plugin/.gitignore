@@ -4,7 +4,7 @@ out-test/
 *.vsix
 .vscode/
 
-# 人类指令 2026-09-08: .agent 过程文档目录预防性禁入 git(禁上传 GitLab)
+# .agent/ 会话工作区不入库
 .agent/
 tsconfig.tsbuildinfo
 \\tmp\\*

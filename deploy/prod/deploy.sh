@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # 仓根必须在 cd 进本目录之前用 $0 定位一次——下方第 13 行会先切目录，
-# 之后相对 $0 的二次定位会叠加路径而失败（相对路径调用必炸的潜伏缺陷，ADR-208 批次③实测暴露）
+# 之后相对 $0 的二次定位会叠加路径而失败
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$(dirname "$0")"
 
@@ -118,8 +118,16 @@ case "$cmd" in
     deploy)
         sync_all
         compose up -d --build
-        pg_ready || { echo "waiting for postgres ..."; }
-        until pg_ready; do sleep 3; done
+        pg_deadline=$(( $(date +%s) + ${PG_TIMEOUT:-300} ))
+        pg_note=0
+        until pg_ready; do
+            [ "$(date +%s)" -lt "$pg_deadline" ] || {
+                echo "ERROR: postgres 未在 ${PG_TIMEOUT:-300}s 内 healthy; try: $0 logs 100 codeaudit-postgres" >&2
+                exit 1
+            }
+            [ "$pg_note" = "0" ] && { echo "waiting for postgres ..."; pg_note=1; }
+            sleep 3
+        done
         init_dbs
         compose ps
         wait_health

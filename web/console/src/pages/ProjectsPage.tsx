@@ -92,7 +92,7 @@ export default function ProjectsPage() {
           finishModal();
           qc.invalidateQueries({ queryKey: ['tasks-infinite'] });
           navigate(`/tasks/${taskId}`);
-          // 人类指令 2026-09-01"创建项目后任务应自动执行"：链式 提交→批准→启动
+          // 链式 提交→批准→启动
           autoRunTask(taskId).then(() => {
             message.success('扫描任务已自动启动');
             qc.invalidateQueries({ queryKey: ['tasks-infinite'] });

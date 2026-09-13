@@ -19,7 +19,7 @@ export const ALLOWED_ACTIONS: Record<string, TaskAction[]> = {
   TASK_STATUS_CANCELLED: [],
 };
 
-// autoRunTask — 创建后直达启动（人类指令 2026-09-01：审批流废除+任务应自动执行）。
+// autoRunTask — 创建后直达启动（审批流废除+任务应自动执行）。
 // 失败即上抛，状态如实停在 CREATED，可在任务页人工点启动续走。
 export async function autoRunTask(taskId: string): Promise<void> {
   await api.post(`/v1/tasks/${taskId}/start`); // 审批流废除（2026-09-01）：创建→启动直达
@@ -36,14 +36,9 @@ export function isTerminal(status: string | undefined): boolean {
   );
 }
 
-// 进度轮询间隔（14号 §3.3 ②：3s，终态自停）。独立纯函数便于回归。
-export const PROGRESS_POLL_MS = 3000;
-// ADR-156: QUEUED 也轮询——此前仅 RUNNING 轮询，排队阶段进度恒"…"，用户感知为卡死。
-// 非终态（CREATED/PENDING/QUEUED/RUNNING/FAILED 重试中）均保持轮询，终态自停。
-export function progressRefetchInterval(status: string | undefined): number | false {
-  if (isTerminal(status)) return false;
-  return PROGRESS_POLL_MS;
-}
+// 历史：此处曾导出 progressRefetchInterval/PROGRESS_POLL_MS（3s 口径）——生产路径自
+// TaskDetailPage 内联 pollIntervalMs(10_000)（429 退避接线）后即成
+// 死导出（唯一消费者是自己的测试，I-42 把它文档为活契约属漂移），B5 删除。
 
 export function actionLabel(a: TaskAction): string {
   const labels: Record<TaskAction, string> = {
@@ -56,24 +51,9 @@ export function actionLabel(a: TaskAction): string {
   return labels[a];
 }
 
+// TaskAction 值与端点路径段 1:1（start/cancel/retry/pause/resume），类型收窄保证只发白名单动作
 export async function dispatchAction(task: ScanTask, a: TaskAction): Promise<string> {
   const id = task.task_id;
-  switch (a) {
-    case 'start':
-      await api.post(`/v1/tasks/${id}/start`);
-      break;
-    case 'cancel':
-      await api.post(`/v1/tasks/${id}/cancel`);
-      break;
-    case 'retry':
-      await api.post(`/v1/tasks/${id}/retry`);
-      break;
-    case 'pause':
-      await api.post(`/v1/tasks/${id}/pause`);
-      break;
-    case 'resume':
-      await api.post(`/v1/tasks/${id}/resume`);
-      break;
-  }
+  await api.post(`/v1/tasks/${id}/${a}`);
   return id;
 }

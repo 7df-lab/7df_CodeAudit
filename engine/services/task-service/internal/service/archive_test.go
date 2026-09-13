@@ -1,7 +1,7 @@
 package service
 
 // ADR-200 回归锁：上传件从 storage 拉回并解包（archive.go）。
-// R33（gw-e295b637 实证）：落盘名用 filepath.Ext 取扩展名——.tar.gz 是双段后缀
+// R33（实证）：落盘名用 filepath.Ext 取扩展名——.tar.gz 是双段后缀
 // 只取到 .gz，自产的 archive-<ts>.gz 不满足自家解包 switch → .tar.gz 上传任务
 // prepare 必挂；.zip/.tgz 单段后缀幸存，故 ADR-200 起 E2E（zip 实测）未暴露。
 
@@ -118,13 +118,13 @@ func mustZip(t *testing.T, files map[string]string) []byte {
 
 // TestFetchUploadArchive_TarGzFullChain — R33 锁：.tar.gz 上传件全链（元数据→
 // 落盘名→解包 switch）必须以完整双段后缀贯通。变异面 M29：archiveExt 退回
-// filepath.Ext 即红（复现 gw-e295b637 "不支持的格式: archive-<ts>.gz"）。
+// filepath.Ext 即红（复现 "不支持的格式: archive-<ts>.gz"）。
 func TestFetchUploadArchive_TarGzFullChain(t *testing.T) {
 	files := map[string]string{"repo/main.py": "import os\n"}
 	addr := newFetchTarget(t, &fakeStorageFetch{filePath: "uploads/repo.tar.gz", content: mustTarGz(t, files)})
 	root, err := FetchUploadArchive(context.Background(), addr, "file-1", t.TempDir())
 	if err != nil {
-		t.Fatalf(".tar.gz 上传件 prepare 必须可解包（gw-e295b637 回归）: %v", err)
+		t.Fatalf(".tar.gz 上传件 prepare 必须可解包（回归）: %v", err)
 	}
 	if !strings.HasSuffix(root, "repo") {
 		t.Fatalf("解包根应剥壳降入 repo/，got %q", root)

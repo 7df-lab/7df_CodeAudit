@@ -3,7 +3,7 @@
 E2E 五模式垂直贯通测试（tests/e2e/test_e2e_four_modes.py；文件名保留 four_modes 兼容既有引用）
 
 设计依据:
-  - ADR-186 五模式矩阵（2026-09-03 人类决策；ADR-182 四模式矩阵的扩展）:
+  - ADR-186 五模式矩阵（2026-09-03 ；ADR-182 四模式矩阵的扩展）:
       A=SCAN_MODE_SAST_ONLY 纯SAST多工具并行→去重合并
       B=SCAN_MODE_AI_ONLY 纯AI
       C=SCAN_MODE_PARALLEL SAST+AI并行→融合去重（默认推荐）

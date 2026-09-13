@@ -205,7 +205,7 @@
 #### F20 增量元数据展示（§5.2）
 **验收**
 - A20.1 完成提示显示"变更 N · 删除 D · 继承 M · 新发现 K"（数值取平台 snapshot，不做本地推算）；
-  **实现口径**："结果树标题"——树视图经 `registerTreeDataProvider` 注册、无动态 title 通道（需迁移 `createTreeView`），V1 以完成 toast 承担该信息，树标题动态化列为后续增强；
+  **实现口径** "结果树标题"按文首纪律正式修订：树视图经 `registerTreeDataProvider` 注册、无动态 title 通道（需迁移 `createTreeView`），V1 以完成 toast 承担该信息，树标题动态化列为后续增强；
 - A20.2 继承项在树视图 description 带「继承」角标（inherited_from_task_id 非空者）；
 - A20.3 任务标题/详情显示锚点短 hash（有锚点时）。
   **实现口径** 同 A20.1：锚点短 hash（`@abc1234`）现于完成 toast 呈现，任务标题/详情侧随树标题动态化列为后续增强。

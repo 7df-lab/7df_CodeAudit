@@ -47,12 +47,24 @@ func mustMaxAutoRetries() int {
 	return n
 }
 
+// cancelEntry — R85: 取消器注册条目。defer 注销按 entry 指针身份比对——
+// 编排协程在锁内落 DEAD 后、defer 拿锁前，RetryScanTask+StartTask 可完成重注册，
+// 身份盲删会把新协程的取消器误删（R75 同型缺陷经重注册窗口回潮）。
+type cancelEntry struct{ cancel context.CancelFunc }
+
+// orchExecutor — R75: 编排执行最小接口（*orchestrator.Orchestrator 天然实现）。
+// 测试经 s.orch 注入可阻塞桩，真验证"取消打断在途 Execute"——原取消测试用不可达
+// 下游的快速失败循环，无论传播是否生效都绿（伪绿，REGRESSIONS R75）。
+type orchExecutor interface {
+	Execute(ctx context.Context, r orchestrator.RunRequest) (map[string]interface{}, error)
+}
+
 // TaskServiceImpl implements the TaskService gRPC service.
 type TaskServiceImpl struct {
 	pb.UnimplementedTaskServiceServer
 	events *TaskEventProducer // ADR-199: Kafka 事件发布器（nil=禁用档）
 	resultAddr string          // R64/D5: finding.created 收尾拉取 findings 用
-	cancels    map[string]context.CancelFunc // R67: 取消传播——taskID→编排协程 ctx 取消器
+	cancels    map[string]*cancelEntry // R67/R85: taskID→取消器条目（entry 指针身份防重注册窗口跨代误删）
 	mu     sync.RWMutex
 	tasks  map[string]*pb.ScanTask // task_id -> ScanTask
 	idem   map[string]*idemRecord  // request_id -> 幂等记录（03 §2 三态）
@@ -66,7 +78,7 @@ type TaskServiceImpl struct {
 	logIdem      map[string]string             // request_id → log_id（AppendTaskLog 幂等，R4）
 	logSeq       int64                         // 日志全局单调序（跨任务分配 log_id）
 	sm           *statemachine.StateMachine
-	orch         *orchestrator.Orchestrator
+	orch         orchExecutor // R75: 编排执行 seam（生产=*orchestrator.Orchestrator）
 	hub          *taskWatchHub // ADR-189 任务变更通知（StreamTaskSnapshot 推流源）
 	pgStore      *pgTaskStore  // 任务实体 PG 写穿镜像（nil=内存档；R-31 持久化）
 	projectAddr  string        // project-service 地址（project_path 兜底查询，ADR-148）
@@ -105,7 +117,7 @@ func NewTaskService() *TaskServiceImpl {
 	sastAddr := must(cfg.Str("addresses.sast_adapter", "CODEAUDIT_SAST_ADAPTER_ADDR"))
 	dshAddr := must(cfg.Str("addresses.dsh_runtime", "CODEAUDIT_DSH_RUNTIME_ADDR"))
 	resultAddr := must(cfg.Str("addresses.result", "CODEAUDIT_RESULT_ADDR"))
-	// step_timeouts_s 已整体撤销（ADR-191 补遗，人类指令"都撤掉"）：编排步骤无外层时限。
+	// step_timeouts_s 已整体撤销（ADR-191 补遗）：编排步骤无外层时限。
 	reposDir := must(cfg.Str("task.repos_dir", "CODEAUDIT_TASK_REPOS_DIR"))               // ADR-163
 	cloneTimeout := time.Duration(mustInt(cfg.Int("task.clone_timeout_s"))) * time.Second // ADR-163
 	// ADR-225 D6: 卷缓存回收器配置（桶为 SSOT 前提下的可丢弃缓存；键见 yaml task.repo_cache_*）
@@ -122,7 +134,7 @@ func NewTaskService() *TaskServiceImpl {
 	gcMax := int64(mustInt(cfg.Int("task.repo_cache_max_bytes", "CODEAUDIT_TASK_REPO_CACHE_MAX_BYTES")))
 	s := &TaskServiceImpl{
 		tasks:          make(map[string]*pb.ScanTask),
-	cancels:        make(map[string]context.CancelFunc),
+	cancels:        make(map[string]*cancelEntry),
 		idem:           make(map[string]*idemRecord),
 		stgIdm:         make(map[string]string),
 		projectPaths:   make(map[string]string),
@@ -368,7 +380,7 @@ func (s *TaskServiceImpl) StartTask(ctx context.Context, req *pb.StartTaskReques
 		ScanMode:    task.GetScanMode(),
 		SastTools:   append([]string(nil), task.GetSastTools()...),
 	}
-	// ADR-200: storage 上传件通道（人类指令：原始压缩包经 gateway 直传 storage 不落盘，
+	// ADR-200: storage 上传件通道（原始压缩包经 gateway 直传 storage 不落盘，
 	// task 从 storage 拉回解包扫描；解压失败抛压缩包错误）。config.upload_file_id 优先。
 	if r.ProjectPath == "" {
 		// ADR-209: 读 proto 快照 task.Config（CreateScanTask L209 已写入，GetTask 外露、
@@ -515,10 +527,11 @@ func (s *TaskServiceImpl) StartTask(ctx context.Context, req *pb.StartTaskReques
 	// R67（2026-09-12 待办收尾）：取消传播——编排协程用可取消 ctx（原恒 Background，
 	// CancelScanTask 只改状态不通知在途编排，阻塞 RPC/重试循环继续跑完）
 	orchCtx, orchCancel := context.WithCancel(context.Background())
-	s.cancels[task.GetTaskId()] = orchCancel
+	entry := &cancelEntry{cancel: orchCancel}
+	s.cancels[task.GetTaskId()] = entry
 	s.mu.Unlock()
 
-	go s.runOrchestration(orchCtx, orch, r, recorder)
+	go s.runOrchestration(orchCtx, entry, orch, r, recorder)
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -541,7 +554,7 @@ func (s *TaskServiceImpl) emitIncrementalScopeNotice(taskID string, inc *orchest
 
 // runOrchestration — 执行编排并处理终态与自动重试。
 // 依据: 04 §1 RUNNING→FAILED→QUEUED 自动重试≤2→耗尽 DEAD（proto L174/L177）
-func (s *TaskServiceImpl) runOrchestration(orchCtx context.Context, orch *orchestrator.Orchestrator, r orchestrator.RunRequest, recorder orchestrator.StageRecorder) {
+func (s *TaskServiceImpl) runOrchestration(orchCtx context.Context, entry *cancelEntry, orch orchExecutor, r orchestrator.RunRequest, recorder orchestrator.StageRecorder) {
 	// ADR-181 修复：Recorder 此前创建了却从未挂到 RunRequest——阶段事件从未到达
 	// 阶段看板（时间线全程静止，终态靠 finalize 盖章；人类反馈"没有中间态"的根因）。
 	r.Recorder = recorder
@@ -549,12 +562,14 @@ func (s *TaskServiceImpl) runOrchestration(orchCtx context.Context, orch *orches
 	// 返回失败尝试的缓存结果（其发现已被补偿删除），产出空报告的"假成功"。
 	baseID := r.RequestID
 	attempt := 0
-	s.mu.Lock()
-	delete(s.cancels, r.TaskID) // R67: 编排退出即注销取消器（防泄漏）
-	s.mu.Unlock()
+	// R75: 原入口处 delete(s.cancels, ...) 已删——它注销的正是 StartTask 刚注册的本次
+	// 取消器（注册→协程首步删除），此后 CancelScanTask 恒 miss、orchCtx 永不取消，
+	// R67 传播链死代码。退出注销由下方 defer 承担；R85 起 defer 按 entry 身份比对——
+	// 本协程锁内落 DEAD 后、defer 拿锁前，Retry→StartTask 可重注册新条目，身份盲删
+	// 会误删新协程的取消器（重注册窗口 TOCTOU，复审发现）。
 	defer func() {
 		s.mu.Lock()
-		if s.cancels[r.TaskID] != nil {
+		if s.cancels[r.TaskID] == entry {
 			delete(s.cancels, r.TaskID)
 		}
 		s.mu.Unlock()
@@ -889,9 +904,9 @@ func (s *TaskServiceImpl) CancelScanTask(ctx context.Context, req *pb.CancelScan
 	if err := s.transitionLocked(task, pb.TaskStatus_TASK_STATUS_CANCELLED, "cancel"); err != nil {
 		return nil, err
 	}
-	if cancel, ok := s.cancels[req.GetTaskId()]; ok { // R67: 取消传播到在途编排
+	if e, ok := s.cancels[req.GetTaskId()]; ok { // R67/R85: 取消传播到在途编排
 		delete(s.cancels, req.GetTaskId())
-		cancel()
+		e.cancel()
 	}
 	return cloneLocked(task), nil
 }
@@ -1357,7 +1372,7 @@ func sortedKeys(m map[string]string) string {
 }
 
 
-// publishHighSeverityFindings — R64/D5（2026-09-11 跨仓审计）：finding.created 此前
+// publishHighSeverityFindings — R64/D5finding.created 此前
 // 只有消费端零生产者（高危发现站内通知永远不触发）。任务成功收尾时拉取本任务
 // findings，HIGH/CRITICAL 者补发 finding.created（收件人=任务创建者）。失败非致命
 // （通知缺失不阻任务终态），翻页拉全。

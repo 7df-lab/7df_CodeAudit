@@ -1,5 +1,5 @@
 // AI 交互日志面板（ADR-168 补遗②；ADR-170 受控展示组件；ADR-173 时间线风格；ADR-181 交互重做；
-// ADR-188 人类指令 2026-09-03：内联时间线为主视图，占据任务详情页左侧一半——不再默认折叠）。
+// ADR-188：内联时间线为主视图，占据任务详情页左侧一半——不再默认折叠）。
 // 沙箱内 DSH↔模型 bridge 交互的人性化渲染。后端按 ADR-181 过滤机器噪音（模型路由/
 // 审批策略/系统上下文/用量/tool-call 静默）并按 sessionId 分流（主会话流式渲染、
 // 子任务只出骨架行），前端把标记行解析为时间线条目；解析纯前端，磁盘日志格式不变。
@@ -12,6 +12,8 @@
 import { EyeOutlined } from '@ant-design/icons';
 import { Button, Card, Modal, Tag, Tooltip, Typography } from 'antd';
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { MONO_FONT } from '../dict/tokens';
+import { EVIDENCE } from '../theme/evidence';
 
 // 2026-09-12 用户指令：面板内所有字体统一调大 2px（正文 12→14、卡片标题 16→18），
 // 行高按 1.5 比例同步（18→21）；范围=左侧 AI 交互日志面板全部文字（含标签/按钮/空态）。
@@ -28,12 +30,12 @@ interface TimelineEntry {
 }
 
 const KIND_STYLE: Record<EntryKind, { border: string; label: string; labelColor: string; bodyColor: string }> = {
-  turn: { border: '#58a6ff', label: '回合', labelColor: '#58a6ff', bodyColor: '#c9d1d9' },
-  meta: { border: '#30363d', label: '事件', labelColor: '#8b949e', bodyColor: '#8b949e' },
-  reasoning: { border: '#a371f7', label: '模型思考', labelColor: '#a371f7', bodyColor: '#8b949e' },
-  assistant: { border: '#7ee787', label: '模型回复', labelColor: '#7ee787', bodyColor: '#c9d1d9' },
-  task: { border: '#39c5cf', label: '任务', labelColor: '#39c5cf', bodyColor: '#c9d1d9' },
-  agent: { border: '#ffa657', label: '子任务', labelColor: '#ffa657', bodyColor: '#c9d1d9' },
+  turn: { border: EVIDENCE.link, label: '回合', labelColor: EVIDENCE.link, bodyColor: EVIDENCE.text },
+  meta: { border: EVIDENCE.border, label: '事件', labelColor: EVIDENCE.textMuted, bodyColor: EVIDENCE.textMuted },
+  reasoning: { border: EVIDENCE.ai, label: '模型思考', labelColor: EVIDENCE.ai, bodyColor: EVIDENCE.textMuted },
+  assistant: { border: EVIDENCE.ok, label: '模型回复', labelColor: EVIDENCE.ok, bodyColor: EVIDENCE.text },
+  task: { border: EVIDENCE.system, label: '任务', labelColor: EVIDENCE.system, bodyColor: EVIDENCE.text },
+  agent: { border: EVIDENCE.accent, label: '子任务', labelColor: EVIDENCE.accent, bodyColor: EVIDENCE.text },
 };
 
 const WINDOW_STEP = 400; // 大日志渐进回看步长（ADR-181：提供继续显示方式，不只靠下载）
@@ -98,7 +100,7 @@ function ReasoningBody({ entry, archived }: { entry: TimelineEntry; archived: bo
   // ADR-181：执行未收束前思考流式展开（不折叠）；归档后才允许折叠长思考
   if (!archived) {
     return (
-      <pre style={{ margin: '2px 0 0', fontFamily: 'inherit', fontSize: FONT, lineHeight: LINE_HEIGHT,
+      <pre style={{ margin: '2px 0 0', fontFamily: MONO_FONT, fontSize: FONT, lineHeight: LINE_HEIGHT,
         whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: st.bodyColor }}>
         {entry.body}
       </pre>
@@ -107,7 +109,7 @@ function ReasoningBody({ entry, archived }: { entry: TimelineEntry; archived: bo
   return (
     <details>
       <summary style={{ cursor: 'pointer', fontSize: FONT, color: st.labelColor }}>💭 模型思考（已归档，点击展开）</summary>
-      <pre style={{ margin: '2px 0 0', fontFamily: 'inherit', fontSize: FONT, lineHeight: LINE_HEIGHT,
+      <pre style={{ margin: '2px 0 0', fontFamily: MONO_FONT, fontSize: FONT, lineHeight: LINE_HEIGHT,
         whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: st.bodyColor }}>
         {entry.body}
       </pre>
@@ -127,9 +129,9 @@ function FoldableBody({ entry }: { entry: TimelineEntry }) {
     <details>
       <summary style={{ cursor: 'pointer', fontSize: FONT, color: st.labelColor, fontWeight: 600 }}>
         {icon} {entry.label}
-        {preview && <span style={{ color: '#8b949e', fontWeight: 400 }}>{` · ${preview}`}</span>}
+        {preview && <span style={{ color: EVIDENCE.textMuted, fontWeight: 400 }}>{` · ${preview}`}</span>}
       </summary>
-      <pre style={{ margin: '2px 0 0', fontFamily: 'inherit', fontSize: FONT, lineHeight: LINE_HEIGHT,
+      <pre style={{ margin: '2px 0 0', fontFamily: MONO_FONT, fontSize: FONT, lineHeight: LINE_HEIGHT,
         whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: st.bodyColor }}>
         {entry.body}
       </pre>
@@ -185,7 +187,7 @@ export default function AIInteractionLogPanel(
       ref={boxRef}
       onScroll={onScroll}
       style={{
-        background: '#0d1117',
+        background: EVIDENCE.bg,
         padding: '12px 16px',
         overflowY: 'auto',
         borderRadius: 4,
@@ -194,7 +196,7 @@ export default function AIInteractionLogPanel(
       data-testid={boxId}
     >
       {text.length === 0 ? (
-        <span style={{ fontSize: FONT, color: '#8b949e' }}>
+        <span style={{ fontSize: FONT, color: EVIDENCE.textMuted }}>
           {/* 降级空态（2026-09-11 用户报障）：degraded 由任务详情页按发现级痕迹判定后经
               props 传入（组件内不重复请求）——空日志如实归因，不再误导用户等待 AI 输出 */}
           {degraded
@@ -204,7 +206,7 @@ export default function AIInteractionLogPanel(
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {hidden > 0 && (
-            <div style={{ fontSize: FONT, color: '#8b949e', display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div style={{ fontSize: FONT, color: EVIDENCE.textMuted, display: 'flex', gap: 12, alignItems: 'center' }}>
               <span>前面还有 {hidden} 条未显示</span>
               <Button size="small" style={{ fontSize: FONT }} onClick={() => setWindow((w) => w + WINDOW_STEP)}>
                 加载更早 {Math.min(WINDOW_STEP, hidden)} 条
@@ -239,7 +241,7 @@ export default function AIInteractionLogPanel(
                       <pre
                         style={{
                           margin: 0,
-                          fontFamily: 'inherit',
+                          fontFamily: MONO_FONT,
                           fontSize: FONT,
                           lineHeight: LINE_HEIGHT,
                           whiteSpace: 'pre-wrap',

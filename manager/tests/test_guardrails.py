@@ -143,6 +143,24 @@ def test_vendored_sdk_tree_present():
     assert (pkg / "_proto").is_dir(), "SDK proto modules missing (dict→proto boundary)"
 
 
+def test_root_dockerfile_discipline():
+    """根 Dockerfile（离线 2.0.0 叠加路径）
+    纪律——①最终阶段必须非 root 运行（曾切 root 装依赖后漏切回，产物
+    root 运行；对齐 deploy/Dockerfile.manager 的 65534 纪律）；②必须自带
+    "产物携带基础镜像 .token、禁止外发"警示与 build/wheels 的 pip download
+    重建指引（REGRESSIONS「已知未覆盖缺口」预告的静态断言落地）。"""
+    src = (SERVICE_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    user_lines = [ln.strip() for ln in src.splitlines()
+                  if ln.strip().upper().startswith("USER ")]
+    assert user_lines, "Dockerfile must declare its runtime USER"
+    assert user_lines[-1].upper() == "USER 65534:65534", \
+        f"final USER must be non-root 65534:65534, got: {user_lines[-1]!r}"
+    assert ".token" in src and "禁止" in src, \
+        "Dockerfile must warn the product carries the base image .token (never publish)"
+    assert "pip download" in src, \
+        "Dockerfile must document the build/wheels rebuild command (fresh-clone discipline)"
+
+
 def test_regressions_index_points_at_real_tests():
     """REGRESSIONS.md 引用的 `test_*` 必须真实存在于 tests/ —— 档案不腐烂，
     删除/改名锁定测试必须同 commit 更新档案。"""

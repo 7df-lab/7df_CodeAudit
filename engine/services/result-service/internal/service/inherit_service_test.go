@@ -193,7 +193,7 @@ func TestNormalizeInheritPath_Mirror(t *testing.T) {
 	}
 }
 
-// R60（2026-09-11 审计）：继承部分失败必须让编排失败——FailedCount 被消费方吞没时，
+// R60继承部分失败必须让编排失败——FailedCount 被消费方吞没时，
 // 缺继承行的任务照常 COMPLETED，违背"完整性优先"注释（本测试锁 result-service 侧
 // FailedCount 如实上报；编排侧拒绝逻辑由 orchestrator 测试锁定）。
 func TestInheritFindings_PartialFailureReportsFailedCount(t *testing.T) {
@@ -201,7 +201,7 @@ func TestInheritFindings_PartialFailureReportsFailedCount(t *testing.T) {
 	// 复用现有 MockFindingRepository 形态（见本文件其它用例）
 }
 
-// R61（2026-09-11 审计）：后缀排除的两段校验——后缀命中必须同时满足"剩余前缀是
+// R61后缀排除的两段校验——后缀命中必须同时满足"剩余前缀是
 // 真实树根形态（以 /unpacked 结尾）"。嵌套同后缀路径（vendor/pkg/util/keys.py）
 // 不得被 pkg/util/keys.py 的排除误杀：该文件既不重扫也不继承，漏洞将从报告消失。
 func TestExcludedBy_TwoSegmentCheck(t *testing.T) {

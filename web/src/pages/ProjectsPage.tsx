@@ -5,7 +5,7 @@
 // 职责边界：项目=源码归属（上传包/仓库地址二选一），任务=扫描执行（config 留空，
 // 源码来源由项目解析；任务级 config.upload_file_id 保留为单次覆盖档，见 ADR-200/202）。
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button, Form, Input, Modal, Select, Space, Table, Typography, Upload, message, type UploadFile } from 'antd';
+import { Button, Card, Form, Input, Modal, Select, Space, Table, Typography, Upload, message, type UploadFile } from 'antd';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { InboxOutlined } from '@ant-design/icons';
@@ -20,16 +20,11 @@ import {
 } from '../api/client';
 import { autoRunTask } from '../tasks/stateMachine';
 import { DEPRECATED_SCAN_MODES, SCAN_MODE, zh } from '../dict';
+import PageHeader from '../components/PageHeader';
+import { EmptyState, ListSkeleton } from '../components/states';
+import { MODE_SPECS } from './tasks/TaskNewPage';
 import type { Project } from '../api/types';
-
-// ADR-182: 需要 SAST 工具的扫描模式（模式B 纯AI 无工具；含弃用模式自动任务兼容）
-const NEEDS_TOOLS = new Set([
-  'SCAN_MODE_SAST_ONLY',
-  'SCAN_MODE_PARALLEL',
-  'SCAN_MODE_COMPARE',
-  'SCAN_MODE_TRADITIONAL_FIRST',
-  'SCAN_MODE_SAST_REVIEW',
-]);
+import { usePageTitle } from '../hooks/usePageTitle';
 
 // 仓库列的上传件名单元格（2026-09-09 用户指令"项目页应显示上传压缩包的名称"）：
 // 原始文件名不进 storage 对象键（uploads/<id><ext>，网关只拿它判扩展名），落项目
@@ -49,6 +44,7 @@ function UploadNameCell({ projectId }: { projectId: string }) {
 }
 
 export default function ProjectsPage() {
+  usePageTitle('项目');
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -69,8 +65,9 @@ export default function ProjectsPage() {
     queryFn: () => getProjects({ page_size: PAGE_SIZE, cursor: String((page - 1) * PAGE_SIZE) }),
   });
   const total = data?.pagination?.total ?? 0;
+  const rows = data?.projects ?? [];
 
-  // B4-2（审计修复）：弹窗收尾清空（确定/取消共用）——此前 onCancel 只 setOpen(false)，
+  // （审计修复）：弹窗收尾清空（确定/取消共用）——此前 onCancel 只 setOpen(false)，
   // 上传态残留：取消后再开弹窗新建项目，旧 file_id 会随 config 写入新项目（源码指向错包）。
   // 取消不触发 invalidate（无服务端变更，列表无需重拉）。
   const resetModalState = () => {
@@ -119,7 +116,7 @@ export default function ProjectsPage() {
           const t = await createTask({
             project_id: pid,
             scan_mode: mode,
-            sast_tools: NEEDS_TOOLS.has(mode) ? ['opengrep'] : [],
+            sast_tools: MODE_SPECS[mode]?.needsSastTools ? ['opengrep'] : [], // B5-P1-3：单一事实源=MODE_SPECS（旧 NEEDS_TOOLS 集合漏模式D→任务必 FAILED）
             config: {},
           });
           message.success(uploadFileId ? '已自动创建扫描任务（启动时从存储拉回代码包），正在自动启动…' : '已自动创建扫描任务（启动时自动拉取仓库），正在自动启动…');
@@ -128,7 +125,7 @@ export default function ProjectsPage() {
           qc.invalidateQueries({ queryKey: ['tasks-page'] });
           qc.invalidateQueries({ queryKey: ['project-tasks'] });
           navigate(`/tasks/${t.task_id}`);
-          // 人类指令 2026-09-01"创建项目后任务应自动执行"：创建→启动直达
+          // 创建→启动直达
           autoRunTask(t.task_id).then(() => {
             message.success('扫描任务已自动启动');
             qc.invalidateQueries({ queryKey: ['tasks-page'] });
@@ -156,27 +153,28 @@ export default function ProjectsPage() {
 
   return (
     <div>
-      {/* ADR-164: 工具栏布局与任务页一致（标题左/新建右） */}
-      <Space style={{ marginBottom: 16, justifyContent: 'space-between', width: '100%' }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>项目</Typography.Title>
-        <Button type="primary" onClick={() => setOpen(true)}>新建项目</Button>
-      </Space>
-      <Table
-        rowKey="project_id"
-        loading={isLoading}
-        dataSource={data?.projects ?? []}
-        columns={columns}
-        // ADR-164: 服务端翻页（此前 ADR-161 曾关闭隐式分页——现改为显式游标翻页,
-        // DESC 排序保证新项目始终在第一页顶部）
-        pagination={{
-          current: page,
-          pageSize: PAGE_SIZE,
-          total,
-          onChange: (p) => setPage(p),
-          showSizeChanger: false,
-        }}
-        locale={{ emptyText: error ? '加载失败（服务不可用）' : '暂无项目，点击右上角创建' }}
-      />
+      {/* ADR-164: 工具栏布局与任务页一致（标题左/新建右）； PageHeader 统一 */}
+      <PageHeader title="项目" extra={<Button type="primary" onClick={() => setOpen(true)}>新建项目</Button>} />
+      {isLoading && rows.length === 0 ? (
+        <Card><ListSkeleton /></Card>
+      ) : (
+        <Table
+          rowKey="project_id"
+          loading={isLoading}
+          dataSource={rows}
+          columns={columns}
+          // ADR-164: 服务端翻页（此前 ADR-161 曾关闭隐式分页——现改为显式游标翻页,
+          // DESC 排序保证新项目始终在第一页顶部）
+          pagination={{
+            current: page,
+            pageSize: PAGE_SIZE,
+            total,
+            onChange: (p) => setPage(p),
+            showSizeChanger: false,
+          }}
+          locale={{ emptyText: <EmptyState description={error ? '项目列表加载失败（服务不可用）' : '暂无项目，点击右上角"新建项目"创建'} /> }}
+        />
+      )}
       <Modal
         title="新建项目"
         open={open}
@@ -204,9 +202,11 @@ export default function ProjectsPage() {
               fileList={fileList}
               disabled={uploading}
               beforeUpload={async (file) => {
-                if (file.size > MAX_ARCHIVE_UPLOAD_BYTES) {
+                // (P3-i)：扩展名预检——accept 只约束文件选择器，拖拽可绕过；服务端 400 详情
+                // 此前也不透出（uploadArchive 未提取 {error}），前端拦截给出即时归因
+                if (!/\.(zip|tgz|tar\.gz)$/i.test(file.name) || file.size > MAX_ARCHIVE_UPLOAD_BYTES) {
                   message.error('上传失败（仅支持 zip/tar.gz，≤100MB）');
-                  return Upload.LIST_IGNORE; // 100MB 本地预检：超限不发起请求（nginx 413 兜底）
+                  return Upload.LIST_IGNORE; // 含 100MB 本地预检：超限不发起请求（nginx 413 兜底）
                 }
                 setUploading(true);
                 try {
@@ -239,7 +239,7 @@ export default function ProjectsPage() {
           <Form.Item name="default_scan_mode" label="默认扫描模式" initialValue="SCAN_MODE_PARALLEL">
             <Select
               options={Object.entries(SCAN_MODE)
-                .filter(([value]) => !DEPRECATED_SCAN_MODES.has(value)) // ADR-182: 弃用模式不进新建入口
+                .filter(([value]) => !DEPRECATED_SCAN_MODES.has(value) && value !== 'SCAN_MODE_UNSPECIFIED') // ADR-182 弃用 + R: UNSPECIFIED 不进新建入口
                 .map(([value, label]) => ({ value, label }))}
             />
           </Form.Item>

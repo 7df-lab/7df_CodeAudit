@@ -56,14 +56,14 @@ llm-pi-ai anthropic-messages 适配器打 L7 `inference.local/v1/messages` 原�
 
 ## 1. 访问入口
 
-- 控制台:http://localhost:18088(生产 8090 网关同理,console 由 CD 单独发布)
+- 控制台:http://localhost:18088(生产 8090 网关同理;生产 console 经伞仓部署链 `web/deploy.sh` 发布——CD 已于 2026-09-05 退役)
 - 网关 API:http://localhost:18080(/v1/*,JWT Bearer)
 - 登录:`admin` / `admin`
 
 ## 2. GUI 全流程(约 3 分钟 + AI 审计 ~2 分钟)
 
 1. **登录** → 项目页。
-2. **新建项目**:填名称 → 上传 zip/tar.gz 代码包(≤25MB;可用 engine `tests/samples/python_flask`
+2. **新建项目**:填名称 → 上传 zip/tar.gz 代码包(≤100MB;可用 engine `tests/samples/python_flask`
    打包,内含注毒样例必出发现)→ toast 三连(项目已创建/已关联代码目录/已自动创建扫描任务)。
 3. **任务 → 新建任务**:选项目 → 选模式(**模式A 纯AI** 或 **模式B SAST→AI 增强**——两者的
    4a/4b 现均走沙箱审查,都有 AI 交互日志)→ 勾选"创建后立即启动" → 创建。

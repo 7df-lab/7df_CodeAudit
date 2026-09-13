@@ -17,7 +17,7 @@ add() { # <源文件> <锚字符串(恰好1次)> <变异体> <目标测试文件
   M_FILE+=("$1"); M_ANCHOR+=("$2"); M_MUTANT+=("$3"); M_TARGET+=("$4"); M_DESC+=("$5")
 }
 
-# ── 变异清单（与 docs/regression-guard.md §3 档案行一一对应）──
+# ── 变异清单（与 docs/regression-guard.md §3 档案行对应；例外：M11 锚 E-44 契约而非 P-xx 行——B5 头注修正，原'一一对应'表述不实）──
 add src/api/client.ts \
   "typeof value === 'object' ? JSON.stringify(value) : String(value)" \
   "String(value)" \
@@ -55,10 +55,10 @@ add src/pages/findings/FindingsPage.tsx \
   "M6 P-07 结论筛选死链路（onChange 恒清空，2026-09-06 修复）"
 
 add src/dict/index.ts \
-  "return ext[format ?? 0] ?? 'json';" \
+  "return (format && ext[format]) || 'json';" \
   "return 'json';" \
   src/__tests__/dict.test.ts \
-  "M7 P-13 下载扩展名恒 json（.bin 回归）"
+  "M7 P-13 下载扩展名恒 json（.bin 回归；B5-P1-1 后锚定枚举名实现）"
 
 add src/components/AIInteractionLogPanel.tsx \
   "const box = modalOpen ? modalBoxRef.current : inlineBoxRef.current;" \
@@ -79,22 +79,64 @@ add src/auth/session.tsx \
   "M10 P-14 register 空邀请码误传（不剔除）"
 
 add src/api/client.ts \
-  "if (status === 503 && cfg && (cfg._retry503 ?? 0) < 3) {" \
-  "if (false && cfg && (cfg._retry503 ?? 0) < 3) {" \
+  "&& (cfg._retry503 ?? 0) < 3) {" \
+  "&& false && (cfg._retry503 ?? 0) < 3) {" \
   src/__tests__/clientInterceptors.test.ts \
-  "M11 E-44 503 自动重试被移除"
+  "M11 E-44 503 自动重试被移除（GET 侧退避链失效即红；B5-P2-5 后锚定新守卫行）"
 
 add src/pages/tasks/TaskDetailPage.tsx \
   "void qc.refetchQueries({ queryKey: ['task-snapshot', taskId] });" \
   ";" \
   src/__tests__/TaskDetailPage.test.tsx \
-  "M12 P-20 WS 非收束断线不立即补拉快照（116af13 修复，gw-f6a3523 实证）"
+  "M12 P-20 WS 非收束断线不立即补拉快照（116af13 修复，实证）"
 
 add src/auth/session.tsx \
   "for (const delayMs of [1000, 2000, 4000]) {" \
   "for (const delayMs of []) {" \
   src/__tests__/session.test.tsx \
   "M13 P-22 boot 续签后 me 瞬时失败重试被移除（首败即甩登录页，429 风暴实证）"
+
+add src/dict/index.ts \
+  "REPORT_FORMAT_JSON: 'JSON'," \
+  "REPORT_FORMAT_JSO: 'JSON'," \
+  src/__tests__/pages2.test.tsx \
+  "M14 P-24 报告 format 枚举名键控退回假形状（格式列恒'—'/下载恒 .json，web-audit-2026-09-12）"
+
+add src/pages/tasks/TasksPage.tsx \
+  "(page - 1) * PAGE_SIZE + rows.length" \
+  "0" \
+  src/__tests__/TasksPage.test.tsx \
+  "M15 P-25 末页 pagination=null 的 total 兜底推导被移除（末页塌空表，web-audit-2026-09-12）"
+
+add src/pages/ProjectsPage.tsx \
+  "MODE_SPECS[mode]?.needsSastTools" \
+  "MODE_SPECS[mode]?.needsSastTools === false" \
+  src/__tests__/ProjectsPage.test.tsx \
+  "M16 P-26 模式→工具映射漂移（模式D 自动任务 sast_tools=[] 必 FAILED，web-audit-2026-09-12）"
+
+add src/api/client.ts \
+  "if (st === 400 || st === 401 || st === 403) return true;" \
+  "if (false) return true;" \
+  src/__tests__/client.test.ts \
+  "M17 P-27 刷新失败分类被移除（refresh 5xx 也清 7 天会话踢登录页，web-audit-2026-09-12）"
+
+add src/api/client.ts \
+  "(cfg?.method ?? 'get').toLowerCase() === 'get' && cfg" \
+  "cfg" \
+  src/__tests__/clientInterceptors.test.ts \
+  "M18 P-28 503 自动重试放开到非幂等 POST（重复建任务/盲重放 100MB 上传，web-audit-2026-09-12）"
+
+add src/auth/session.tsx \
+  "queryClient.clear();" \
+  "void 0;" \
+  src/__tests__/session.test.tsx \
+  "M19 P-29 登出不清 TanStack 缓存（软登出后跨账号数据残留，web-audit-2026-09-12）"
+
+add src/api/client.ts \
+  "if (!resp.pagination?.has_next || !resp.pagination.next_cursor) break;" \
+  "break;" \
+  src/__tests__/clientContract.test.ts \
+  "M20 P-30 listAllProjects 循环翻页退化单页（下拉只拿 20 条旧项目不可达，web-audit-2026-09-12）"
 
 # ── 执行 ──
 total=${#M_FILE[@]}

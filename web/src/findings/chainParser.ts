@@ -35,7 +35,7 @@ const LINE_PAREN = /[\w.\-）（\u4e00-\u9fff]+[（(]\s*(\d{1,5})(?:\s*[-–—~
 
 // 噪声过滤：散文缩写（"e.g." 等）形似文件名
 const STOP_FILES = new Set(['e.g', 'i.e', 'etc', 'vs', 'approx', 'nov', 'dec']);
-// 代码片段噪声（gw-0fb9857 实例归纳）：`Foo.Builder`（大写扩展=类引用）、
+// 代码片段噪声（实例归纳）：`Foo.Builder`（大写扩展=类引用）、
 // `httpRouter.filter(`（紧跟左括号=方法调用形）不是文件路径
 function isFileToken(tok: string, followedBy: string): boolean {
   if (STOP_FILES.has(tok.toLowerCase())) return false;

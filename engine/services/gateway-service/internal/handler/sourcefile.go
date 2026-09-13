@@ -52,7 +52,7 @@ func resolveProjectRoot(dir string) string {
 // resolveTaskRoot — 任务源根解析（ADR-195 顺序 + ADR-225 ⑤流）：
 // ①repos_dir/<task_id>（仓库拉取流）①b uploads-<task_id>/unpacked（ADR-200 storage
 // 拉包流：task-service FetchUploadArchive 的落点布局，2026-09-06 起含剥壳——
-// gw-f6a3523 实证：布局迁移后旧四流对上传流任务全部落空 → 源码全文 404）
+// 实证：布局迁移后旧四流对上传流任务全部落空 → 源码全文 404）
 // ②上传目录链接文件 ③project config project_path（ADR-148 上传流）
 // ④唯一内容回退（按 seedPath 在全部上传目录查包含者；唯一命中即用，多命中取
 // mtime 最新——覆盖 ADR-195 之前创建的无链接存量任务）

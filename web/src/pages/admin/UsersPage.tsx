@@ -3,11 +3,14 @@
 // + 启用/停用（PUT /v1/users/{id}，复用既有更新通道）+ 重置密码（POST password:reset）。
 // 非 admin 由 App 路由守卫与本页双重拦截（后端网关 requireAdmin 是最终防线）。
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button, Card, Descriptions, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Button, Card, Descriptions, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { useState } from 'react';
 import { api } from '../../api/client';
 import { useSession } from '../../auth/session';
 import { ROLE, USER_STATE } from '../../dict';
+import { usePageTitle } from '../../hooks/usePageTitle';
+import PageHeader from '../../components/PageHeader';
+import { EmptyState } from '../../components/states';
 
 interface User {
   user_id: string;
@@ -25,6 +28,7 @@ interface ListResp {
 }
 
 export default function UsersPage() {
+  usePageTitle('用户管理');
   const qc = useQueryClient();
   const { user: me } = useSession();
   const isAdmin = me?.role === 'ROLE_ADMIN';
@@ -32,8 +36,8 @@ export default function UsersPage() {
   const [usernameContains, setUsernameContains] = useState('');
   const [stateFilter, setStateFilter] = useState<string | undefined>();
 
-  // B3-1（审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询（前页保留，不整表替换）。
-  // 服务端过滤条件 username_contains/state 必须在 queryKey（审计 B3-1）——筛选变化=新查询，
+  // （审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询（前页保留，不整表替换）。
+  // 服务端过滤条件 username_contains/state 必须在 queryKey——筛选变化=新查询，
   // 分页自动重置回首页，旧游标不会在新筛选下错位（游标改由 pageParam 驱动）。
   const listKey = ['users', usernameContains, stateFilter ?? ''] as const;
   const {
@@ -76,7 +80,11 @@ export default function UsersPage() {
       createForm.resetFields();
       qc.invalidateQueries({ queryKey: ['users'] });
     },
-    onError: (e) => message.error(`创建失败：${(e as Error).message}`),
+    onError: (e) => {
+      // (P3-d)：优先透出网关 {error} 详情（如密码策略描述），无则回落通用文案
+      const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      message.error(`创建失败：${detail || (e as Error).message}`);
+    },
   });
 
   // 启用/停用（PUT 全量 user，Q2a 既有契约）
@@ -153,52 +161,67 @@ export default function UsersPage() {
       key: 'actions',
       render: (_: unknown, u: User) => (
         <Space>
-          <Button
-            size="small"
-            onClick={() => toggleState.mutate(u)}
-            disabled={u.user_id === me?.user_id}
-            title={u.user_id === me?.user_id ? '不能停用自己' : undefined}
+          {/*  停用/重置密码补二次确认——与删项目/删 Provider 同口径；
+              停用属破坏性动作着 danger */}
+          <Popconfirm
+            title={`确认${u.state === 'USER_STATE_ACTIVE' ? '停用' : '启用'}账号 ${u.username}？`}
+            onConfirm={() => toggleState.mutate(u)}
           >
-            {u.state === 'USER_STATE_ACTIVE' ? '停用' : '启用'}
-          </Button>
-          <Button size="small" onClick={() => resetPw.mutate(u)}>
-            重置密码
-          </Button>
+            <Button
+              size="small"
+              danger={u.state === 'USER_STATE_ACTIVE'}
+              disabled={u.user_id === me?.user_id}
+              title={u.user_id === me?.user_id ? '不能停用自己' : undefined}
+            >
+              {u.state === 'USER_STATE_ACTIVE' ? '停用' : '启用'}
+            </Button>
+          </Popconfirm>
+          <Popconfirm
+            title={`确认为 ${u.username} 重置密码？`}
+            description="当前密码将立即失效，新临时密码仅显示一次。"
+            onConfirm={() => resetPw.mutate(u)}
+          >
+            <Button size="small" danger>
+              重置密码
+            </Button>
+          </Popconfirm>
         </Space>
       ),
     },
   ];
 
   return (
-    <Card
-      title="用户管理"
-      extra={
-        <Space>
-          <Input.Search
-            placeholder="按用户名搜索"
-            allowClear
-            style={{ width: 200 }}
-            onSearch={(v) => {
-              setUsernameContains(v); // queryKey 变化即重置分页回首页（B3-1，无需手动清游标）
-            }}
-            onChange={(e) => setSearch(e.target.value)}
-            value={search}
-          />
-          <Select
-            allowClear
-            placeholder="全部状态"
-            style={{ width: 120 }}
-            options={Object.entries(USER_STATE).map(([value, label]) => ({ value, label }))}
-            onChange={(v) => {
-              setStateFilter(v); // 同上：筛选进 queryKey，分页自动重置
-            }}
-          />
-          <Button type="primary" onClick={() => setCreateOpen(true)}>
-            新建用户
-          </Button>
-        </Space>
-      }
-    >
+    <div>
+      {/*  列表容器统一（页面卡→PageHeader+裸表，与项目/任务页同构） */}
+      <PageHeader
+        title="用户管理"
+        extra={(
+          <Space wrap>
+            <Input.Search
+              placeholder="按用户名搜索"
+              allowClear
+              style={{ width: 200 }}
+              onSearch={(v) => {
+                setUsernameContains(v); // queryKey 变化即重置分页回首页（无需手动清游标）
+              }}
+              onChange={(e) => setSearch(e.target.value)}
+              value={search}
+            />
+            <Select
+              allowClear
+              placeholder="全部状态"
+              style={{ width: 120 }}
+              options={Object.entries(USER_STATE).map(([value, label]) => ({ value, label }))}
+              onChange={(v) => {
+                setStateFilter(v); // 同上：筛选进 queryKey，分页自动重置
+              }}
+            />
+            <Button type="primary" onClick={() => setCreateOpen(true)}>
+              新建用户
+            </Button>
+          </Space>
+        )}
+      />
       {isError && <Typography.Text type="danger">加载失败：{(error as Error).message}</Typography.Text>}
       <Table
         rowKey="user_id"
@@ -207,6 +230,7 @@ export default function UsersPage() {
         dataSource={rows}
         columns={columns}
         pagination={false}
+        locale={{ emptyText: <EmptyState description="暂无用户" /> }}
         footer={() =>
           hasNextPage ? (
             <Button
@@ -251,10 +275,16 @@ export default function UsersPage() {
           <Form.Item
             name="password"
             label="初始密码"
-            extra="一次性临时密码语义：用户首登须改密"
+            extra="至少 8 位，须同时包含字母与数字（与服务端 validatePasswordStrength 同源）；一次性临时密码语义：用户首登须改密"
             rules={[
               { required: true, message: '请输入初始密码' },
               { min: 8, message: '至少 8 位' },
+              // (P3-d)：服务端还要求字母+数字（user_lifecycle.go validatePasswordStrength）——
+              // 旧 min:8 放行 "12345678" 被服务端 400 拒且通用文案无法指导修正
+              { validator: (_, value: string) =>
+                  !value || (/[a-zA-Z]/.test(value) && /\d/.test(value))
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('须同时包含字母与数字')) },
             ]}
           >
             <Input.Password autoComplete="new-password" />
@@ -287,6 +317,6 @@ export default function UsersPage() {
           仅此一次显示，关闭后无法再次查看。用户下次登录须使用该密码并强制设置新密码。
         </Typography.Paragraph>
       </Modal>
-    </Card>
+    </div>
   );
 }

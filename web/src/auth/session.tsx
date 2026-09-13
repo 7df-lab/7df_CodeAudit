@@ -4,6 +4,7 @@
 // CurrentUser 带 role（菜单/路由门禁）与 must_change_password（首登强改密）。
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, bootRefresh, clearSession, getAccessToken, readRefreshToken, saveRefreshToken, setAccessToken } from '../api/client';
+import { queryClient } from '../api/queryClient';
 
 export interface CurrentUser {
   user_id: string;
@@ -77,7 +78,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const { access_token, refresh_token } = resp.data;
     setAccessToken(access_token);
     // Q3 裁决：refresh_token 存 localStorage（XSS 下可被读取，风险显式接受）。
-    // 纵深缓解（B4-3 修正口径，原注释"严格 CSP"名不副实——此前无任何响应头落地）：
+    // 纵深缓解（修正口径，原注释"严格 CSP"名不副实——此前无任何响应头落地）：
     // nginx 已下发最小安全响应头（nosniff / frame-ancestors 'none' / object-src 'none'，
     // 见 nginx/default.conf.template）；CSP 未覆盖脚本/样式源（SPA 内联依赖），收紧待真机验证。
     saveRefreshToken(refresh_token);
@@ -105,6 +106,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } finally {
       clearSession();
       setUser(null);
+      // B5-P2-6: 清 TanStack 缓存——软登出（SPA 跳 /login）后跨账号数据不残留
+      queryClient.clear();
     }
   }, [getAccessToken]);
 

@@ -70,9 +70,11 @@ func (t *Transcoder) rehydrateFromTreeTar(taskID, fileID string) (string, string
 	dctx, cancel := context.WithTimeout(context.Background(), rehydrateDialTimeout)
 	defer cancel()
 	// R70（2026-09-12 待办收尾）：并发 miss 双下载互拆——解包先入临时目录，成功后
-	// rename 原子就位；失败只清自己的临时目录（原实现双方都往 unpacked 写+互删半成品）。
-	tmpDir := taskDir + ".tmp"
-	_ = os.RemoveAll(tmpDir)
+	// rename 原子就位。R79: 临时目录加唯一后缀——共享 `<id>.tmp` 在并发 miss 下，
+	// 入口/收尾的 RemoveAll 会互拆对方目录，可产出"缺文件但 stat 存在"的投毒缓存树
+	// （R70 tmp-rename 原子化的并发盲区）；唯一命名后"只清自己的 tmp"才真正成立。
+	tmpDir := taskDir + ".tmp-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.sweepStaleRehydrateTmp(taskID, taskDir) // R86: 孤儿清扫须先确认任务已终态，防止清掉在途业务残留
 	if err := downloadAndUnpackTree(dctx, t.storageConn, fileID, filepath.Join(tmpDir, "unpacked")); err != nil {
 		_ = os.RemoveAll(tmpDir) // 半成品不留（只清自己的 tmp）
 		return "", "", err
@@ -86,6 +88,62 @@ func (t *Transcoder) rehydrateFromTreeTar(taskID, fileID string) (string, string
 	log.Printf("[source-file] %s 从树 tar 重物化（file_id=%s）", taskID, fileID)
 	t.enforceRehydrateLRU()
 	return resolveProjectRoot(unpacked), "tree_tar_rehydrated", nil
+}
+
+
+// rehydrateTmpStaleThreshold — R85: 崩溃孤儿 .tmp-* 清扫阈值（复审定值：远大于正常
+// 解包时长、远小于 LRU 容量污染周期；无 07 基线，取舍见 ADR-230）。
+const rehydrateTmpStaleThreshold = time.Hour
+
+// rehydrateTmpStatusTimeout — R86: 孤儿清扫前任务状态查证的超时（清扫是 miss 路径
+// 的顺手清理，不得显著加路；定值无 07 基线，取舍见 ADR-230）。
+const rehydrateTmpStatusTimeout = 2 * time.Second
+
+// sweepStaleRehydrateTmp — R85 引入、R86收紧守卫：清扫同任务超阈值未动的
+// .tmp-* 孤儿须同时满足——①任务已终态（GetScanTask 查证；在途任务的残留可能属
+// 正常业务，且查不到状态/服务不可达时一律保守跳过）②目录 mtime 超阈值（终态任务
+// 仍可能恰有在途 miss 的新鲜 tmp，时长 guard 防误删并发在途目录）。
+// best-effort，错误忽略。此前共享 .tmp 的入口 RemoveAll 曾顺带自愈崩溃残留，唯一
+// 命名后孤儿计入 LRU 容量且 mtime 恒最新（永排驱逐队尾），故仍需显式扫。
+func (t *Transcoder) sweepStaleRehydrateTmp(taskID, taskDir string) {
+	sctx, cancel := context.WithTimeout(context.Background(), rehydrateTmpStatusTimeout)
+	defer cancel()
+	resp, err := pb.NewTaskServiceClient(t.taskConn).GetScanTask(sctx, &pb.GetScanTaskRequest{TaskId: taskID})
+	if err != nil || !isTerminalTaskStatus(resp.GetStatus()) {
+		return // 查不到/未终态：保守不扫
+	}
+	for _, m := range staleRehydrateTmpDirs(taskDir) {
+		_ = os.RemoveAll(m)
+	}
+}
+
+// isTerminalTaskStatus — R86: 终态判定（gateway 侧最小副本；口径与 task-service
+// isTerminalStatus 一致：COMPLETED/FAILED/CANCELLED/TIMEOUT/DEAD，两侧不可漂移）。
+func isTerminalTaskStatus(st pb.TaskStatus) bool {
+	switch st {
+	case pb.TaskStatus_TASK_STATUS_COMPLETED,
+		pb.TaskStatus_TASK_STATUS_FAILED,
+		pb.TaskStatus_TASK_STATUS_CANCELLED,
+		pb.TaskStatus_TASK_STATUS_TIMEOUT,
+		pb.TaskStatus_TASK_STATUS_DEAD:
+		return true
+	}
+	return false
+}
+
+// staleRehydrateTmpDirs — R85/R86: 同任务 .tmp-* 残留中 mtime 超阈值的绝对路径。
+func staleRehydrateTmpDirs(taskDir string) []string {
+	matches, err := filepath.Glob(taskDir + ".tmp-*")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, m := range matches {
+		if fi, err := os.Stat(m); err == nil && time.Since(fi.ModTime()) > rehydrateTmpStaleThreshold {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // downloadAndUnpackTree — DownloadFile 流 → scratch tar.gz → 解包到 dest

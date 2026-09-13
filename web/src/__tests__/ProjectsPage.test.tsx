@@ -108,6 +108,30 @@ describe('ProjectsPage', () => {
     );
   });
 
+  // 复审修正（R）：dict 补 SCAN_MODE_UNSPECIFIED 展示键后，新建入口过滤谓词没同步——
+  // 可选"未指定"→ MODE_SPECS 缺项 → sast_tools:[] → P-26 同型任务必 FAILED 复活
+  it('R: 新建项目模式下拉不含"未指定"（UNSPECIFIED 不进新建入口）', async () => {
+    renderWith();
+    await waitFor(() => expect(screen.getByText('Demo')).toBeTruthy());
+    await openModal();
+    fireEvent.mouseDown(document.querySelector('.ant-modal .ant-select-selector')!);
+    await waitFor(() => expect(document.body.querySelector('.ant-select-item-option')).toBeTruthy());
+    const titles = [...document.body.querySelectorAll('.ant-select-item-option')].map((el) => el.getAttribute('title'));
+    expect(titles).not.toContain('未指定');
+    expect(titles).toContain('模式D AI增强SAST'); // 正常模式不受牵连
+  });
+
+  // (P3-i)：accept 只约束文件选择器，拖拽可绕过——非压缩包扩展名本地拦截不发请求
+  it('B5: 扩展名预检——非 zip/tar.gz 不发起上传请求', async () => {
+    renderWith();
+    await waitFor(() => expect(screen.getByText('Demo')).toBeTruthy());
+    await openModal();
+    const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    fireEvent.change(fileInput, { target: { files: [new File(['x'], 'evil.exe', { type: 'application/octet-stream' })] } });
+    await screen.findByText(/仅支持 zip\/tar\.gz/);
+    expect(gateway.requests.some((r) => r.url === '/v1/uploads/archive')).toBe(false);
+  });
+
   it('100MB 本地预检：超限文件不发起上传请求（2026-09-08 限额批次）', async () => {
     renderWith();
     await waitFor(() => expect(screen.getByText('Demo')).toBeTruthy());
@@ -116,8 +140,36 @@ describe('ProjectsPage', () => {
     const big = new File(['zip'], 'big.zip', { type: 'application/zip' });
     Object.defineProperty(big, 'size', { value: 101 * 1024 * 1024 }); // jsdom 免真分配 100MB
     fireEvent.change(fileInput, { target: { files: [big] } });
-    await screen.findByText(/仅支持 zip\/tar\.gz，≤100MB/);
+    // B5 扩展名预检用例先行且共用 antd message 单例——此处 findAll（锁意不变：提示在）
+    expect((await screen.findAllByText(/仅支持 zip\/tar\.gz，≤100MB/)).length).toBeGreaterThan(0);
     expect(gateway.requests.some((r) => r.url === '/v1/uploads/archive')).toBe(false);
+  });
+
+  // B5-P1-3（web-audit-2026-09-12）：模式D（AI_ENHANCED_SAST）需要 SAST 工具——
+  // 旧 NEEDS_TOOLS 集合漏了它，自动任务 sast_tools:[] 被 sast-adapter RunMultipleScans
+  // 以 "tool_ids is required" 400 拒绝→runModeDEnhanced 判全失败→任务必 FAILED。
+  // 修复后与 TaskNewPage MODE_SPECS.needsSastTools 单一事实源对齐。
+  it('B5-P1-3: 模式D 自动建任务带 SAST 工具（NEEDS_TOOLS 漏 SCAN_MODE_AI_ENHANCED_SAST 回归锁）', async () => {
+    renderWith();
+    await waitFor(() => expect(screen.getByText('Demo')).toBeTruthy());
+    await openModal();
+    // 弹窗内唯一下拉=默认扫描模式；antd Select 以 mouseDown 展开选项层（ReportsTasksPaging 同法，
+    // 须落在 .ant-select-selector 上——rc-select 监听在该元素，事件不下传）
+    fireEvent.mouseDown(document.querySelector('.ant-modal .ant-select-selector')!);
+    const opt = await waitFor(() => {
+      const el = document.body.querySelector<HTMLElement>('.ant-select-item-option[title="模式D AI增强SAST"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    fireEvent.click(opt);
+    fireEvent.change(screen.getByPlaceholderText('https://git.example.com/team/repo.git'),
+      { target: { value: 'https://git.example.com/team/repo4.git' } });
+    await submitModal();
+    const taskPost = gateway.requests.find((r) => r.url === '/v1/tasks' && r.method === 'POST');
+    expect(taskPost?.body).toMatchObject({
+      scan_mode: 'SCAN_MODE_AI_ENHANCED_SAST',
+      sast_tools: ['opengrep'],
+    });
   });
 
   it('ADR-203: 仓库通道回归——不传包时 repo_url 可独立建项目（自动 clone）', async () => {
@@ -144,7 +196,7 @@ describe('ProjectsPage', () => {
     expect(gateway.requests.some((r) => r.url === '/v1/projects' && r.method === 'POST')).toBe(false);
   });
 
-  // B4-2（审计修复）：上传→取消→再建项目——取消必须清空上传态。此前 onCancel 只关弹窗，
+  // （审计修复）：上传→取消→再建项目——取消必须清空上传态。此前 onCancel 只关弹窗，
   // 旧 file_id 残留：再建项目时 config 被写入上一个已取消项目的上传件（新项目源码指向错包）。
   it('B4-2: 上传→取消→再建项目——取消清空上传态，新建链路 payload 无 upload_file_id', async () => {
     renderWith();

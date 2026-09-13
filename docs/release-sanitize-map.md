@@ -12,7 +12,7 @@
 
 | 类 | 内容 | 处置原则 |
 |----|------|----------|
-| **A. git 元数据** | 全部 8 仓 remote=`https://gitlab.local/codeaudit/*`(伞仓 `.gitmodules` 同);提交作者 `RoyTse <roytse@auditmind.local>` / `<user@example.com>` 遍布历史;engine/.agent/ 账本含 LXC 107/SSH 探测路径/内网拓扑全量叙述(2026-09-08 已按人类指令退订 git+ignore,增量断供;**历史提交仍含全量叙述**) | **文件层面怎么清都没用**——必须 fresh orphan 分支或 `git filter-repo` + 重写 `.gitmodules` 指向公开托管 + 中性化作者身份 |
+| **A. git 元数据** | 全部 8 仓 remote=`https://gitlab.local/codeaudit/*`(伞仓 `.gitmodules` 同);提交作者 `RoyTse <roytse@auditmind.local>` / `<user@example.com>` 遍布历史;engine/.agent/ 账本含 LXC 107/SSH 探测路径/内网拓扑全量叙述(2026-09-08 已退订 git+ignore,增量断供;**历史提交仍含全量叙述**) | **文件层面怎么清都没用**——必须 fresh orphan 分支或 `git filter-repo` + 重写 `.gitmodules` 指向公开托管 + 中性化作者身份 |
 | **B. 运行时配置内网地址** | engine yaml/compose 的 `gateway.internal`×3;manager 代码级缺省 `gateway.internal:8080`;openshell-gateway `server_sans *.openshell.internal` + 5 条 xwpt extra_hosts;dsh-pentest-sse deploy.sh `MANAGER_BASE` 缺省内网 IP;伞仓 sim overlay/env.sim.example 同 | 全部 env 化或改中性缺省(§3 逐仓、§5 旋钮) |
 | **C. 国内镜像源假设** | `goproxy.cn`(engine 9 文件)、`pypi.tuna.tsinghua.edu.cn`(engine 2 + sse 1)、`registry.npmmirror.com`(sse Dockerfile ENV + fetch-agent-tools.sh) | ARG/ENV 化 + 公共源缺省,镜像源退化为可选加速项 |
 | **D. 弱密钥/缺省凭据** | `CODEAUDIT_JWT_SECRET:-changeme`(engine compose×2);project-service **代码级** JWT fallback `codeaudit-dev-secret-change-in-production`(user.go:47-53);postgres/postgres、minioadmin/minioadmin、admin/admin 种子;manager 现役 token 值在本机 `.token`/`deploy/env`(gitignored,但 tar 型发布会带出) | 堵缺省改必填;manager token 出网即视为泄漏须轮换 |
@@ -36,7 +36,7 @@
 | `docker-compose.yml:177-179` | `CODEAUDIT_MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY` | **死键**(代码读 `CODEAUDIT_S3_*`,base 里这组从不生效) | 删除(生产档正确命名在 prod overlay 已有) |
 | `docker-compose.yml:146-150` | `CODEAUDIT_DB_*` | **死键**(project-service 是内存存储,无代码读) | 删除,防误导 |
 | `services/project-service/internal/service/user.go:47-53` | 代码级 JWT fallback `codeaudit-dev-secret-change-in-production` | **运行时**(env 未设时以此签名) | 删 fallback 改 fail-fast(与网关对齐) |
-| `services/project-service/internal/repo/memory.go:80-96` | 种子 `admin/admin` ROLE_ADMIN | **运行时演示凭据** | 保留则文档醒目+首登强改密,或 `CODEAUDIT_SEED_DEMO_ADMIN` 门控 |
+| `services/project-service/internal/repo/memory.go:80-96` | 种子 `admin/admin` ROLE_ADMIN | **运行时演示凭据** | **已消解(2026-09-13 R72)**:种子开关化缺省 false,门控键名定为 `CODEAUDIT_SEED_ADMIN`(非本行旧拟名)——生产缺省无种子账号 |
 | `services/{7 服务}/Dockerfile`(各:7-15 行)+`Dockerfile.test`+`Makefile:18,28`+`.agent/verify.sh:123` 等 | `ENV GOPROXY=https://goproxy.cn,direct`;pip `pypi.tuna...` | **构建时** | 改 `ARG GOPROXY=https://proxy.golang.org,direct` / `ARG PIP_INDEX_URL=https://pypi.org/simple` |
 | `.gitlab-ci.yml`(整文件) | 内网 GitLab API+`oauth2:$TOKEN@gitlab.local/admins/codeaudit.git`、runner 122、内部镜像 `codeaudit-test:latest`、`GIT_SSL_NO_VERIFY`×13 | CI 运行时 | **整文件不随发布**或重写为公共 CI |
 | `.agent/{status,decisions}.md` 及 archives/roadmap/research 等 | LXC 107/`pct exec`/双 IP/`/root/os-deploy`/SSH 探测路径 | 文档(~~git 跟踪~~→2026-09-08 已退订为本机文件,各仓 `.agent/*` ignore 仅豁免 `*.sh`) | 增量已断供;历史提交仍随 A 类 git 重写一并剔除 |
@@ -155,8 +155,8 @@ bridge.mjs/settings.yaml/codeaudit-submit 插件干净:无密钥、无端点(插
 
 `production-deploy.sh` 现读 16 键(密钥 2 + 地址 2 + 端口 9 + Kafka 1 + 网段 1 + 追加的 console upstream)。以下为**链路上仍硬编码、脚本给不出旋钮**的缺口,按优先级。
 **2026-09-07 交互化落地**(deploy/production-deploy.sh 重构):①deploy/configure 终端运行时交互确认访问 IP/端口冲突(给空闲建议,避开本栈计划口)/网段重叠(给跳位建议),汇总确认才开工,`--yes`/非 TTY 跳过;②**联动键自动重算回写**——`OPENSHELL_GATEWAY_ENDPOINT`/`CODEAUDIT_GATEWAY_DIAL_ADDR` 随 `OPENSHELL_PORT`、`CODEAUDIT_GATEWAY_UPSTREAM` 随 `CODEAUDIT_HOST_GATEWAY`,旋钮 1 的伞仓侧全部闭环(含生成档 config.json 中性化,manager 子仓 `config.py:29` 代码缺省仍待清);③模板曝光 `DSH_IMAGE`。**沙箱素材免下载**(2026-09-08):`ensure_sandbox_artifacts` 先 `fetch*.sh --verify` 离线复核(sbom sha256 逐项),在位即零下载,缺失/漂移才全量拉取;`check` 只报在位性。状态标注:✅=已闭环,⚠️=部分,空=未动。
-**xwpt 三仓清源落地**(2026-09-08,人类指令"xwpt 不具通用性"):配置面全零——gateway compose 5 条 lab 域 extra_hosts 删(server_sans→`*.sandbox.codeaudit.internal`)、manager compose extra_host+三处缺省删/中性化、sse 冒烟断言参数化;`openshell.internal` 剩余命中仅叙述性文档(gateway/manager/sse README+docs、sse tool-sbom 注记),随发布分支剔除。
-**内外面分离定案**(2026-09-08,人类指令点破):manager 是内部面非交互面——`OPENSHELL_MANAGER_URL` 恒为内部常量 `http://host.docker.internal:18800`(hosts 别名,零 DNS 零用户输入,带 scheme——引擎 REST 基址),不再随访问 IP;用户确认的访问入口只存 `CODEAUDIT_ACCESS_IP` 供横幅/汇总**显示**,不参与任何接线。暴露给用户的只有 web(IP+口)与 engine 网关(IP+口);其余服务宿主口均为运维/内部消费面,生产档可考虑 loopback 化(见 §4 施工表外延)。Windows 部署经 `deploy/windows/bootstrap.ps1` 复用同一 bash 入口(双壳:Git Bash 优先,WSL2 兜底;bash 入口带 MSYS 回退 ss→netstat、ip/hostname→ipconfig、python3→python)。
+**xwpt 三仓清源落地**(2026-09-08,):配置面全零——gateway compose 5 条 lab 域 extra_hosts 删(server_sans→`*.sandbox.codeaudit.internal`)、manager compose extra_host+三处缺省删/中性化、sse 冒烟断言参数化;`openshell.internal` 剩余命中仅叙述性文档(gateway/manager/sse README+docs、sse tool-sbom 注记),随发布分支剔除。
+**内外面分离定案**(2026-09-08,点破):manager 是内部面非交互面——`OPENSHELL_MANAGER_URL` 恒为内部常量 `http://host.docker.internal:18800`(hosts 别名,零 DNS 零用户输入,带 scheme——引擎 REST 基址),不再随访问 IP;用户确认的访问入口只存 `CODEAUDIT_ACCESS_IP` 供横幅/汇总**显示**,不参与任何接线。暴露给用户的只有 web(IP+口)与 engine 网关(IP+口);其余服务宿主口均为运维/内部消费面,生产档可考虑 loopback 化(见 §4 施工表外延)。Windows 部署经 `deploy/windows/bootstrap.ps1` 复用同一 bash 入口(双壳:Git Bash 优先,WSL2 兜底;bash 入口带 MSYS 回退 ss→netstat、ip/hostname→ipconfig、python3→python)。
 **零 DNS 依赖不变量**(2026-09-08 代码实证,清源相关推论):同网服务名走 docker 内嵌 DNS、跨栈走 hosts 别名/裸 IP、**沙箱路由域(现 `*.openshell.internal`)仅作 Host 头路由键从不被解析**(dsh-runtime routeReq 拨 `CODEAUDIT_GATEWAY_DIAL_ADDR`、svcURL 仅进 req.Host;bridge.mjs 零出站;dsh-runtime 零 net.LookupHost)。推论:①路由域是纯字符串键,旋钮 2(`ROUTING_DOMAIN`)只影响证书 SAN 与 URL 观感,不影响可达性;②gateway/manager compose 里的 xwpt extra_hosts 条目本身就是"零 DNS 机制"的实现载体(hosts 别名),清洗时改为中性别名即可、不可简单删除;③本机 /etc/hosts 的 xwpt 条目**不进入容器**(内嵌 DNS 不转发宿主 hosts),历史 e2e 绿不依赖它。
 
 | # | 建议旋钮(production.env 新键) | 现状硬编码点 | 期望行为 |
@@ -172,7 +172,7 @@ bridge.mjs/settings.yaml/codeaudit-submit 插件干净:无密钥、无端点(插
 | 9 | `MANAGER_SUBNET` | manager compose:50 钉 `10.10.109.0/24`(production.env 注释自认钉死) | `${MANAGER_SUBNET:-10.10.109.0/24}` 或去钉 |
 | 10 | `CODEAUDIT_MIMO_API_KEY/ENDPOINT` | deploy/prod/env.template 有、production.env.template 无、**engine 代码未发现消费点(疑似遗留)** | 发布前核实:接通进模板或从内网链删除 |
 | 11 | (文档项)插件 serverUrl | vscode-plugin 缺省 `localhost:8080`,与一键主机上 openshell-gateway 的 8080 冲突 | 对外部署文档写明应填 `http://<宿主>:8090` |
-| 12 | (文档项)admin/admin | engine 种子账号 | 部署完成横幅已提示改密;建议首登强改密或门控种子 |
+| 12 | (文档项)admin/admin | engine 种子账号 | **已消解(2026-09-13 R72)**:缺省无种子,首启临时 CODEAUDIT_SEED_ADMIN=true;部署横幅已同步新口径 |
 
 > 落实施注意:①③④⑤属 engine 仓改动(B 模式,须 claim+verify.sh);①manager 侧、②gateway/sse 侧同理;6 跨 engine+sse。全部完成后伞仓 e2e(`deploy/tests/run.sh`)+`production-deploy.sh check` 收口,U7 同步 dev-prod-map。
 

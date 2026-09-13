@@ -2,8 +2,8 @@
 # release_clean.sh — 发布专业化清理：开发态遗留物删除 + 设计文档过程性备注清除
 #
 # 用法:
-#   bash release_clean.sh artifacts   # 删除开发态遗留（.agent/ archive/ 任务标记/CI/开发文档）
-#   bash release_clean.sh remarks     # 清除 01-14 设计文档里的过程性备注（迁移史/评估报告编号等）
+#   bash release_clean.sh artifacts   # 删除开发态遗留（.agent/ archive/ 任务标记/CI/开发文档/子仓 .github）
+#   bash release_clean.sh remarks     # 清除过程性备注（迁移史/评估报告编号/决策出处/审计工单号/构建证据哈希）
 #   bash release_clean.sh check      # 门禁：遗留物=硬违例(退出码1)；备注残留=人工确认清单
 #   bash release_clean.sh all        # artifacts + remarks
 #   bash release_clean.sh -n artifacts  # dry-run：只列出将删除的文件
@@ -26,6 +26,9 @@ MODE="${1:-}"
 #    - AGENTS.md 只删子仓根部（深度2）的宪法；深层嵌套的（如 dsh-runtime
 #      packages 文档、snapshots/ 测试夹具）是内容数据，不删
 #    - 深度2 的 .git（子仓 git 指针文件，随 GitLab 同步反复回来；根 ./.git 是本仓，不删）
+#    - 深度2 的 .github（子仓 CI 工作流：在 GitHub 伞仓里不生效——GitHub 只认根
+#      .github/workflows，且其内容引用本地 .agent/verify.sh 门禁；经验(2026-09-13)）
+#    - fix-plan-*.md（审计修复计划工作稿，与 fix-log 同族；经验(2026-09-13)）
 # ============================================================
 # 目录名精确匹配（-name），避免 find Emacs 正则的管道符转义坑
 ARTIFACT_DIR_NAMES='.agent .agents .zcode .claude .cursor .aider .trae archive'
@@ -35,6 +38,7 @@ scan_artifacts() {
   for d in $ARTIFACT_DIR_NAMES; do dir_tests+=" -name $d -o"; done
   dir_tests="${dir_tests% -o}"
     { find . -mindepth 2 -maxdepth 2 -name ".git" -print 2>/dev/null;
+    find . -mindepth 2 -maxdepth 2 -type d -name ".github" -print 2>/dev/null;
     find . -mindepth 1 -maxdepth 2 \
       \( -name .git -o -name node_modules -o -name .toolchain -o -name .githooks \) -prune -o \
       -type d \( $dir_tests \) -print 2>/dev/null;
@@ -42,7 +46,7 @@ scan_artifacts() {
       \( -name .git -o -name node_modules -o -name .toolchain -o -name .githooks \) -prune -o \
       -type f \( -name "*_COMPLETE.md" -o -name "*.gitlab-ci.yml" -o -name "BUILD_INSTRUCTIONS.md" \
            -o -name "IMPLEMENTATION_SUMMARY.md" -o -name "MANUAL_TEST_GUIDE.md" \
-           -o -name "fix-log-*.md" \) -print 2>/dev/null;
+           -o -name "fix-log-*.md" -o -name "fix-plan-*.md" \) -print 2>/dev/null;
     find . -mindepth 2 -maxdepth 2 -name AGENTS.md -not -path "./.git/*" 2>/dev/null; } | sort -u
 }
 
@@ -136,9 +140,9 @@ RULES = [
     (r'（均为 V1\.x 真实发生过的事故）', ''),
     (r'（V1\.x §7\.1 的 page 字段作废）', ''),
     # --- 评估报告编号与矛盾/闭环标记 ---
-    (r'（[RNXBC][0-9]{1,2}(/[A-Z][0-9a-z]*)* 收敛：', '（'),
-    (r'（[RNXBC][0-9]{1,2}(/[A-Z][0-9a-z]*)* 收敛，', '（'),
-    (r'（[RNXBC][0-9]{1,2}(/[A-Z][0-9a-z]*)* 收敛）', ''),
+    (r'（[ANRNXBC][0-9]{1,2}(/[A-Z][0-9a-z]*)* 收敛：', '（'),
+    (r'（[ANRNXBC][0-9]{1,2}(/[A-Z][0-9a-z]*)* 收敛，', '（'),
+    (r'（[ANRNXBC][0-9]{1,2}(/[A-Z][0-9a-z]*)* 收敛）', ''),
     (r'（修复 [^）]*）', ''),
     (r'——README 不再自行记录版本与整合状态（[^）]*）。', '。'),
     (r'迁移整改建立：收敛 [^|]* 全部数值冲突', '建立非功能数值基线'),
@@ -194,7 +198,7 @@ if not changed:
 # 经验(2026-09-13)：docs/designs/ 设计工作稿被代码头注释与 e2e 用例按路径引用，
 # 文件必须保留（不可入 artifacts 删除清单），但其 .agent 引用同样要修补——纳入本阶段。
 REF_TARGETS = sorted(glob.glob("docs/*.md") + glob.glob("docs/designs/*.md") +
-                     glob.glob("*/REGRESSIONS.md") +
+                     glob.glob("*/REGRESSIONS.md") + glob.glob("*/README.md") +
                      glob.glob("deploy/*.md") + glob.glob("deploy/*/*.md"))
 REF_RULES = [
     (r'`bash \.agent/verify\.sh`', '`make verify`'),
@@ -202,6 +206,7 @@ REF_RULES = [
     (r'bash \.agent/verify\.sh', 'make verify'),
     (r'、`\.agent/test-gates\.md`', ''),
     (r'、`\.agent/[^`*]+`', ''),
+    (r'（\.agent/[^）]*）', ''),          # 括注死引用，如「ADR 账本（.agent/decisions.md）」
     (r'pct exec 107', 'pct exec <CTID>'),
 ]
 ref_changed = []
@@ -290,6 +295,186 @@ if design_changed:
     print('[remarks] 设计稿叙事清除 %s %d 个:' % ('将改动' if dry else '了', len(design_changed)))
     for p in design_changed:
         print('       ' + p)
+
+# ---- 第四阶段(2026-09-13 经验沉淀): 决策出处与审计过程标识剥离 ----
+# 经验(2026-09-13, 全量 grep 沉淀): 代码注释/配置/子仓文档里藏着三类"决策出处"
+# 叙事, 一键脚本前三个阶段都够不到——技术理由保留, 过程出处剥离:
+#   a) 人类指令/人类决策/人类批准 + 日期（±引号指令原文）的各种句式
+#   b) 审计工单号 B1-x/B3-x/C2-x/P4/fix-plan-日期（编号无外部语义, 理由文字保留）
+#   c) gw-XXXXXXX 实证（内部网关构建号, 外部无法查证; git 短哈希与 ADR-/R- 档案编号保留）
+# 范围: 全部代码/配置 + 子仓 md。豁免: 伞仓 docs/、AGENTS.md、LESSONS.md（刻意公开的
+# 内部工作区文档, 其中"人类指令"是治理词汇）, dsh-runtime/（上游内容）, 本脚本自身。
+# .gitignore 另有旧政策行清理（!.agent/*.sh 豁免已废——.agent 整目录任何层级不入库）。
+import os
+prov_files = []
+for root, dirs, files in os.walk('.'):
+    dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules', '.toolchain', 'dsh-runtime')]
+    if root == './docs' or root.startswith('./docs/'):
+        dirs[:] = []
+        continue
+    for f in files:
+        if f in ('release_clean.sh', 'sanitize.sh', 'AGENTS.md', 'LESSONS.md'):
+            continue
+        if f.startswith('11a_'):        # 评估报告本体, 与第一/三阶段同口径排除
+            continue
+        ext = os.path.splitext(f)[1]
+        if ext in ('.go', '.py', '.ts', '.tsx', '.js', '.mjs', '.yaml', '.yml', '.proto',
+                   '.sh', '.toml', '.ps1', '.ini', '.json', '.md') \
+                or f == '.gitignore' or f.startswith('Dockerfile') or f == 'Makefile':
+            prov_files.append(os.path.join(root, f).replace('\\', '/'))
+prov_files.sort()
+
+# gitignore 专用规则（旧 .agent 豁免政策 → 整目录不入库; 过程备注中性化）
+GITIGNORE_RULES = [
+    (r'^# 防御性忽略——手工重建后不得入库（\d{4}-\d{2}-\d{2} 审计）$',
+     '# 防御性忽略——手工重建后不得入库'),
+    (r'^# 人类指令 \d{4}-\d{2}-\d{2}: \.agent 过程文档\(账本/证据/会话锁\)禁上传 GitLab——仅工具脚本随仓$',
+     '# .agent/ 会话工作区（账本/证据/会话锁）不入库'),
+    (r'^# 人类指令 \d{4}-\d{2}-\d{2}: \.agent 过程文档目录预防性禁入 git\(禁上传 GitLab\)$',
+     '# .agent/ 会话工作区不入库'),
+    (r'^# 人类指令 \d{4}-\d{2}-\d{2}: \.agent 过程文档\(账本/证据等\)禁上传 GitLab——仅 \*\.sh 工具脚本随仓$',
+     '# .agent/ 会话工作区（账本/证据）不入库'),
+    (r'^# 会话证据与智能体工作目录：人类决定 \d{4}-\d{2}-\d{2} 只归档本机不入 gitlab（ADR-169 补遗）；$',
+     '# 会话证据与智能体工作目录（.agent/）只归档本机，不入库（ADR-169 补遗）；'),
+    (r'^# R5 的"归档 \.agent/evidence/"仍在本机磁盘执行$', ''),
+    (r'^# 人类指令 \d{4}-\d{2}-\d{2}（ADR-218）：.*$', ''),
+    (r'^# 协议/门禁清单）禁上传 GitLab.*$', ''),
+    (r'^# ZCode 会话过程文件\(plans 等\),U8 同口径禁入 git$',
+     '# ZCode 会话过程文件（plans 等）不入库'),
+    (r'^\.agent/\*$', '.agent/'),
+    (r'^!\.agent/session\.sh$', ''),
+    (r'^!\.agent/\*\.sh$', ''),
+]
+
+PROV_RULES = [
+    # a1) 引号指令块
+    (r'（\d{4}-\d{2}-\d{2} 人类指令[“"][^”"]*[”"]）', ''),
+    (r'（人类指令[“"][^”"]*[”"]，\d{4}-\d{2}-\d{2}）', ''),
+    (r'（人类指令[“"][^”"]*[”"]）', ''),
+    (r'，?人类指令[“"][^”"]*[”"](\d{4}-\d{2}-\d{2})?，?', ''),
+    (r'人类指令 \d{4}-\d{2}-\d{2}[“"][^”"]*[”"]，?', ''),
+    # a2) 「」指令保留技术内容
+    (r'人类指令「([^」]*)」', r'\1'),
+    # a3) 日期在前
+    (r'（\d{4}-\d{2}-\d{2} 人类指令）', ''),
+    (r'（(\d{4}-\d{2}-\d{2})，人类指令）', r'（\1）'),
+    (r'（\d{4}-\d{2}-\d{2} 人类指令，', '（'),
+    (r'（\d{4}-\d{2}-\d{2} 人类指令：', '（'),
+    (r'（\d{4}-\d{2}-\d{2} 人类指令 [^）；()]*）', ''),
+    (r'（人类指令 \d{4}-\d{2}-\d{2}；', '（'),
+    (r'（人类指令 \d{4}-\d{2}-\d{2}）', ''),
+    (r'是 \d{4}-\d{2}-\d{2}(?:/\d{2}-\d{2})? 人类指令钉死值?', '已定版'),
+    (r'\d{4}-\d{2}-\d{2} 布局改版（人类指令）：', '布局改版：'),
+    (r'随 \d{4}-\d{2}-\d{2} 人类指令退役', '已退役'),
+    (r'\d{4}-\d{2}-\d{2} 人类指令起', ''),
+    (r'\d{4}-\d{2}-\d{2} 人类指令[：:]\s*', ''),
+    (r'\d{4}-\d{2}-\d{2} 人类指令 \S+；', ''),
+    (r'\d{4}-\d{2}-\d{2} 人类指令\+', ''),
+    (r'，\d{4}-\d{2}-\d{2} 人类指令', ''),
+    (r'\d{4}-\d{2}-\d{2} 人类指令', ''),          # 日期在前兜底
+    # a4) 人类指令在前/中性句式
+    (r'([A-Z]{2,3}-\d+[a-z]?) 人类指令 \d{4}-\d{2}-\d{2}：', r'\1：'),
+    (r'，?人类指令 \d{4}-\d{2}-\d{2} 再放宽', ''),
+    (r'，?人类指令 \d{4}-\d{2}-\d{2}[:：]?\s*', ''),
+    (r'（人类指令[：:]\s*', '（'),
+    (r' 人类指令[：:]', '：'),
+    (r'人类指令口径：', '传输口径：'),
+    (r'人类指令实例', '真实实例'),
+    (r'人类指令窗口', '人工授权窗口'),
+    (r'按人类指令', ''),
+    (r'人类指令', ''),                            # 兜底
+    # a5) 人类决策 / 人类批准
+    (r'（人类决策 \d{4}-\d{2}-\d{2}）', ''),
+    (r'，人类决策 \d{4}-\d{2}-\d{2}', ''),
+    (r'按人类决策重排', '重排'),
+    (r'按人类决策撤销', '撤销'),
+    (r'，人类批准，', '，'),
+    (r'人类决策 ', ''),
+    (r'人类决策|人类批准', ''),
+    # b) 审计工单号（编号剥离, 理由文字保留; B2-3c=带字母后缀, B5-2/D2=斜杠组合）
+    (r'（\d{4}-\d{2}-\d{2} bootstrap\.ps1 审计 [^）]*）：', '：'),
+    (r'（fix-plan[ -]\d{4}(?:-\d{2}){0,2}[a-z-]* §[0-9]+[^）]*）', ''),
+    (r'fix-plan[ -]\d{4}(?:-\d{2}){0,2}[a-z-]* ?(§[0-9]+[a-z]?)? ?', ''),
+    (r'（[ABC][0-9]+-[0-9]+[a-z]? 审计[^）]*）', ''),
+    (r'（[ABC][0-9]+-[0-9]+[a-z]?）', ''),
+    (r'（[ABC][0-9]+-[0-9]+[a-z]?[：:；;，]', '（'),
+    (r'（[ABC][0-9]+-[0-9]+[a-z]?/', '（'),
+    (r'/[ABC][0-9]+-[0-9]+[a-z]?(?=[ ，);；）])', ''),
+    (r'（审计 [ABC][0-9]+-[0-9]+[a-z]?[：:，;；]?', '（'),
+    (r'\d{4}-\d{2}-\d{2} 首轮审计 P[0-9]，?', ''),
+    (r'——[ABC][0-9]+ 补录', ''),
+    (r'（[ABC][0-9]+-[0-9]+[a-z]? ', '（'),
+    (r'（[ABC][0-9]+(-[0-9]+[a-z]?)?[ \t]*$', '（'),
+    (r'(?<![\w./-])[ABC][0-9]+(-[0-9]+[a-z]?)?(?=[（(])', ''),
+    (r'(?<![\w./-])[ABC][0-9]+-[0-9]+[a-z]? ', ''),
+    (r'^([#]+ ?)[ABC][0-9]+ ', r'\1'),
+    (r'审计修复批', '修复批'),
+    (r'审计 纵深防御', '纵深防御'),
+    (r'，?设计整改 P[0-9][，:：]?', ''),
+    (r'（P[0-9]）', ''),
+    (r'P[0-9] 修订[：:]\s*', ''),
+    (r'[一二三四五六七八九十]+轮定稿的', ''),
+    (r'^([ 	]*(?:#+|//+)[ 	]*)[ABC][0-9]+(-[0-9]+[a-z]?)?[：:] ?', r'\1'),
+    (r'，[ABC][0-9]+(-[0-9]+[a-z]?)?）', '）'),
+    (r'（[ABC][0-9]+ 待办[^）]*）', ''),
+    (r'（相对 V1\.x，见《[^》]*》[^）]*）', '（相对 V1.x）'),
+    (r'^([ \t]*//[ \t]*)\[[A-Z0-9.]+\] ', r'\1'),
+    (r'（工作流文档旧版 [^）]*）', ''),
+    (r'（兑现[^）]*）', ''),
+    (r'（N[0-9]{1,2}）', ''),
+    (r'（评审缺口补齐）|（评审整合项）|（评审）', ''),
+    (r'；V1\.x 中接口文档内嵌的冲突定义全部作废', ''),
+    # c) 内部构建证据哈希（gw-*=内部网关构建号; git 短哈希保留）
+    (r'gw-[0-9a-f]{6,10}(?:/gw-[0-9a-f]{6,10})* ', ''),
+    (r'gw-[0-9a-f]{6,10}(?=（)', ''),
+    (r'依 实证', '依实证'),
+    (r'（，', '（'),
+    (r'\d{4}-\d{2}-\d{2} 审计修，', ''),
+    (r'（\d{4}-\d{2}-\d{2} 审计批[^）]*）', ''),
+    (r'(?<![\w./-])C[0-9] 审计批', '修复批'),
+    (r'（[^（）]*实测暴露）', ''),
+    (r'（\d{4}-\d{2}-\d{2} 审计）：?'  , ''),
+    (r'（\d{4}-\d{2}-\d{2} 编造审计）：?', ''),
+    (r'，\d{4}-\d{2}-\d{2} 审计）', '）'),
+    (r'（\d{4}-\d{2}-\d{2} 跨仓审计）：?', ''),
+    # d) 剥离产生的空壳清理
+    (r'（[ \t]*）', ''),
+    (r'——）', '）'),
+    (r'，）', '）'),
+    (r'"""[：:]', '"""'),
+    (r'^([ \t]*(?:#+|//+|\*+|<!--)[ \t]*)[：:]', r'\1'),
+]
+prov_changed = []
+for path in prov_files:
+    is_gitignore = os.path.basename(path) == '.gitignore'
+    try:
+        raw = open(path, 'rb').read().decode('utf-8').replace('\r\n', '\n')
+    except (UnicodeDecodeError, FileNotFoundError, PermissionError):
+        continue
+    text = raw
+    if is_gitignore:
+        for pat, rep in GITIGNORE_RULES:
+            text = re.sub(pat, rep, text, flags=re.M)
+    else:
+        # 规则链有顺序依赖（后段规则可能产出前段规则可清的形态）——循环到稳定
+        for _ in range(3):
+            prev = text
+            for pat, rep in PROV_RULES:
+                text = re.sub(pat, rep, text, flags=re.M)
+            if text == prev:
+                break
+        # 仅 md 收尾清理（代码文件不动空白, 控制diff噪声）
+        if path.endswith('.md'):
+            text = re.sub(r'\n{3,}', '\n\n', text)
+            text = re.sub(r'[ \t]+$', '', text, flags=re.M)
+    if text != raw:
+        prov_changed.append(path)
+        if not dry:
+            open(path, 'wb').write(text.encode('utf-8'))
+if prov_changed:
+    print('[remarks] 决策出处/工单号剥离 %s %d 个:' % ('将改动' if dry else '了', len(prov_changed)))
+    for p in prov_changed:
+        print('       ' + p)
 PYEOF
 }
 
@@ -310,10 +495,14 @@ mode_check() {
   fi
   echo "== 过程性备注残留（人工确认；命中不阻断）=="
   local resid
-  resid=$(grep -rnIE "迁移整改|V1\.x 教训|（[RNXBC][0-9]{1,2}）|矛盾[①-⑯]|修复⑪|评估报告 R[0-9]|旧文档|（V1\.[0-9] 定版）|落地 V1\.x|兑现 V1\.x" \
-      --include="*.md" --exclude-dir=.git --exclude-dir=archive \
-      --exclude-dir=.agent --exclude-dir=.agents --exclude-dir=.zcode . 2>/dev/null \
-    | grep -vE "^\./README\.md:.*(LESSONS|playbooks|AGENTS)" || true)
+  resid=$(grep -rnIE "迁移整改|V1\.x 教训|（[RNXBC][0-9]{1,2}）|矛盾[①-⑯]|修复⑪|评估报告 R[0-9]|旧文档|（V1\.[0-9] 定版）|落地 V1\.x|兑现 V1\.x|人类指令|人类决策|人类批准|fix-plan-[0-9-]+|gw-[0-9a-f]{8} 实证|审计 [A-Z]?P?[0-9]" \
+      --include="*.md" --include="*.go" --include="*.py" --include="*.ts" --include="*.tsx" \
+      --include="*.sh" --include="*.yaml" --include="*.yml" \
+      --exclude-dir=.git --exclude-dir=archive --exclude-dir=dsh-runtime \
+      --exclude-dir=.agent --exclude-dir=.agents --exclude-dir=.zcode \
+      --exclude="release_clean.sh" --exclude="sanitize.sh" . 2>/dev/null \
+    | grep -vE "^\./README\.md:.*(LESSONS|playbooks|AGENTS)" \
+    | grep -vE "^\./(docs/|AGENTS\.md|LESSONS\.md)" || true)
   if [ -n "$resid" ]; then
     printf '%s\n' "$resid" | head -30 | sed 's/^/   ? /'
   else

@@ -1,6 +1,6 @@
 // Package handler — 代码压缩包上传（ADR-200 重构）。
 //
-// 人类指令口径：原始压缩包**经 gateway 直传 storage（MinIO），gateway 不落盘**。
+// 传输口径：原始压缩包**经 gateway 直传 storage（MinIO），gateway 不落盘**。
 // 此前形态（ADR-145）gateway 解包落本地盘、以目录路径为引用——单机权宜，已废弃；
 // 扫描时的拉取与解包移至 task-service（archive.go，解压失败抛压缩包错误）。
 // 安全: 登录后可用（JWT 链）；扩展名白名单；100MB 上限（MaxBytesReader+计数双保险）。

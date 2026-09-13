@@ -65,7 +65,7 @@ describe('UsersPage（V2.1 列表）', () => {
     });
   });
 
-  it('停用即 PUT 全量 user（USER_STATE_INACTIVE）', async () => {
+  it('停用即 PUT 全量 user（USER_STATE_INACTIVE）——经 Popconfirm 二次确认', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('admin')).toBeTruthy());
     // antd 两字按钮自动插空格（停用→停 用），用正则匹配
@@ -73,16 +73,25 @@ describe('UsersPage（V2.1 列表）', () => {
     // u-1 是自己 → 按钮禁用；u-2 可停用
     const active = buttons.find((b) => !(b as HTMLButtonElement).disabled)!;
     fireEvent.click(active);
+    // Popconfirm 弹确认层，点确定才发请求（测试态无 zh_CN，按钮按 footer 主按钮取——同 E-17 模式）
+    const ok = await waitFor(() =>
+      document.body.querySelector<HTMLElement>('.ant-popconfirm-buttons .ant-btn-primary'),
+    );
+    fireEvent.click(ok!);
     await waitFor(() => expect(gateway.requests.some((r) => r.method === 'PUT')).toBe(true));
     const put = gateway.requests.find((r) => r.method === 'PUT')!;
     expect(put.url).toBe('/v1/users/u-2');
     expect((put.body as { user: { state: string } }).user.state).toBe('USER_STATE_INACTIVE');
   });
 
-  it('重置密码弹一次性临时密码窗（仅一次显示）', async () => {
+  it('重置密码弹一次性临时密码窗（仅一次显示）——经 Popconfirm 二次确认', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('admin')).toBeTruthy());
     fireEvent.click(screen.getAllByRole('button', { name: '重置密码' })[0]);
+    const ok = await waitFor(() =>
+      document.body.querySelector<HTMLElement>('.ant-popconfirm-buttons .ant-btn-primary'),
+    );
+    fireEvent.click(ok!);
     await waitFor(() => expect(screen.getByText('temp-ab12CD34')).toBeTruthy());
     expect(screen.getByText(/仅此一次显示/)).toBeTruthy();
     const req = gateway.requests.find((r) => r.url.includes('password:reset'))!;
@@ -102,6 +111,21 @@ describe('UsersPage（V2.1 列表）', () => {
     await waitFor(() => expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/users')).toBe(true));
     const post = gateway.requests.find((r) => r.method === 'POST' && r.url === '/v1/users')!;
     expect((post.body as { role?: string }).role).toBe('ROLE_DEVELOPER');
+  });
+
+  // (P3-d)：管理员建号密码规则与服务端 validatePasswordStrength 同源——纯数字 8 位
+  // 此前被前端放行、服务端 400（须字母+数字）且通用文案无法指导修正
+  it('B5: 建号密码纯数字被前端校验拦截（字母+数字同源规则），不发创建请求', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('admin')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '新建用户' }));
+    await waitFor(() => expect(document.querySelector('.ant-modal-footer .ant-btn-primary')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('用户名'), { target: { value: 'bob' } });
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'bob@x.io' } });
+    fireEvent.change(screen.getByLabelText('初始密码'), { target: { value: '12345678' } });
+    fireEvent.click(document.querySelector('.ant-modal-footer .ant-btn-primary') as HTMLButtonElement);
+    expect(await screen.findByText(/须同时包含字母与数字/)).toBeTruthy();
+    expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/users')).toBe(false);
   });
 
   it('非 ROLE_ADMIN 渲染 403 文案且不拉列表', async () => {
@@ -128,8 +152,8 @@ describe('UsersPage（V2.1 列表）', () => {
   });
 });
 
-// ===== B3-1（审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询 =====
-describe('UsersPage 无限查询分页（B3-1）', () => {
+// ===== （审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询 =====
+describe('UsersPage 无限查询分页', () => {
   const u1 = { user_id: 'u-1', username: 'admin', email: 'a@x', state: 'USER_STATE_ACTIVE', role: 'ROLE_ADMIN', must_change_password: false, created_at: null };
   const u2 = { user_id: 'u-9', username: 'second-page-user', email: 's@x', state: 'USER_STATE_ACTIVE', role: 'ROLE_DEVELOPER', must_change_password: false, created_at: null };
 

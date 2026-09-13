@@ -93,10 +93,14 @@ api.interceptors.response.use(
         refreshInFlight = null;
         cfg.headers.Authorization = `Bearer ${newAccess}`;
         return api.request(cfg);
-      } catch {
+      } catch (refreshErr) {
         refreshInFlight = null;
-        clearSession();
-        if (typeof window !== 'undefined') window.location.assign('/login');
+        // B5-P2-4: 刷新失败分类——仅凭据确死才清会话跳登录；5xx/429/网络异常保会话
+        // 仅 reject（下轮请求自然重试刷新）。
+        if (refreshAuthDead(refreshErr)) {
+          clearSession();
+          if (typeof window !== 'undefined') window.location.assign('/login');
+        }
         return Promise.reject(error);
       }
     }
@@ -104,8 +108,11 @@ api.interceptors.response.use(
       const retryAfter = Number((error.response?.data as { retry_after?: number } | undefined)?.retry_after);
       noteRateLimit(Number.isFinite(retryAfter) ? retryAfter : undefined);
     }
-    // 503 自动重试 3 次退避（1s/2s/4s）；耗尽后 reject + 横幅
-    if (status === 503 && cfg && (cfg._retry503 ?? 0) < 3) {
+    // 503 自动重试 3 次退避（1s/2s/4s）；耗尽后 reject + 横幅。
+    // B5-P2-5: 仅幂等 GET 自动重放——POST 盲重放且网关每次现生成新幂等键，重复建任务/
+    // 重复写风险（100MB 上传最坏盲重放 300MB）；非 GET 直接走下方降级横幅。
+    if (status === 503 && (cfg?.method ?? 'get').toLowerCase() === 'get' && cfg
+        && (cfg._retry503 ?? 0) < 3) {
       cfg._retry503 = (cfg._retry503 ?? 0) + 1;
       await new Promise((r) => setTimeout(r, 1000 * 2 ** ((cfg._retry503 ?? 1) - 1)));
       return api.request(cfg);
@@ -128,14 +135,28 @@ async function requestRefresh(): Promise<string> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refresh_token: refresh }),
   });
-  if (!resp.ok) throw new Error(`refresh failed: ${resp.status}`);
+  if (!resp.ok) {
+    const err = new Error(`refresh failed: ${resp.status}`) as Error & { status?: number };
+    err.status = resp.status; // B5-P2-4: 带状态供拦截器分类（凭据死 vs 后端抖动）
+    throw err;
+  }
   const data = (await resp.json()) as LoginResponse;
   accessToken = data.access_token;
   if (data.refresh_token) saveRefreshToken(data.refresh_token);
   return data.access_token;
 }
 
-// axios 错误 → HTTP 状态码（审计 B3-3：mutation onError 文案统一携带状态码；
+// B5-P2-4: 刷新失败分类谓词——只有凭据确死（400/401/403/无令牌）才应终止会话。
+// 5xx/429/网络异常 = 后端抖动：保住仍有效的 7 天 refresh_token 等下轮自愈。
+// access 30min 过期后周期性刷新必经此路，恰逢抖动即踢线是过度误杀（P-22 同族第二通道；
+// 网关 /v1/auth/* 按 IP 限流，共享出口 IP 团队可全员中招）。
+function refreshAuthDead(err: unknown): boolean {
+  const st = (err as { status?: number }).status;
+  if (st === 400 || st === 401 || st === 403) return true;
+  return err instanceof Error && err.message.includes('no refresh token');
+}
+
+// axios 错误 → HTTP 状态码（mutation onError 文案统一携带状态码；
 // 403/503 等另有全局事件总线横幅，此处只补页面级即时反馈）
 export function errStatus(e: unknown): number | undefined {
   return (e as { response?: { status?: number } } | undefined)?.response?.status;
@@ -160,7 +181,7 @@ export async function uploadArchive(file: File): Promise<UploadArchiveResponse> 
   fd.append('file', file);
   const resp = await api.post('/v1/uploads/archive', fd, {
     headers: { 'Content-Type': 'multipart/form-data' },
-    // B4-3：120s→300s——大包（接近 100MB 上限）在慢速上行链路（家庭宽带/移动网络）
+    // 120s→300s——大包（接近 100MB 上限）在慢速上行链路（家庭宽带/移动网络）
     // 120s 内传不完，axios 客户端侧超时先于网关 300s 读写窗掐断，用户只见"上传失败"。
     // 与 nginx proxy_read/send_timeout 300s 对齐。
     timeout: 300_000,
@@ -172,13 +193,29 @@ export async function uploadArchive(file: File): Promise<UploadArchiveResponse> 
 // REST 响应形状在此单点锚定：锚 = proto 响应消息的 protojson 序列化（gateway transcode 直转，
 // services/gateway-service/internal/handler/transcode.go）或 gateway 手写 JSON（/v1/tools）。
 // 页面禁止 `.data as {手写形状}`——此前 20 处散落 as-cast 是臆造空间（ProjectsPage res.dir 死链路
-// 存活三个版本的实证）；形状漂移由 verify.sh G3 的 tsc 红在消费点，而非等 GUI 事故揭发。
+// 存活三个版本的实证）；形状漂移由类型门禁的 tsc 红在消费点，而非等 GUI 事故揭发。
 
 export async function getProjects(pagination?: { page_size: number; cursor?: string }): Promise<ListProjectsResponse> {
   const params = pagination
     ? { pagination: { page_size: pagination.page_size, cursor: pagination.cursor ?? '' } }
     : undefined;
   return (await api.get('/v1/projects', params ? { params } : undefined)).data;
+}
+
+// B5-P2-7: 下拉/索引用途的全量项目——循环翻页直到 has_next=false。
+// 服务端 project handler 恒发精确 pagination（has_next 精确 + 数字偏移游标），循环可靠
+// 终止；上限 10 页（=1000 项目）防异常 has_next 恒真打爆。此前下拉调 getProjects() 缺省页
+// 只拿最新 20 条（服务端缺省 pageSize=20），项目 >20 后旧项目在下拉/筛选/深链预选不可达。
+export async function listAllProjects(): Promise<Project[]> {
+  const out: Project[] = [];
+  let cursor = '';
+  for (let i = 0; i < 10; i++) {
+    const resp = await getProjects({ page_size: 100, cursor });
+    out.push(...resp.projects);
+    if (!resp.pagination?.has_next || !resp.pagination.next_cursor) break;
+    cursor = resp.pagination.next_cursor;
+  }
+  return out;
 }
 
 // proto L845: GetProject 返回裸 Project（protojson 直出，无包装）
@@ -232,12 +269,14 @@ export async function createTask(payload: CreateTaskPayload): Promise<{ task_id:
 }
 
 // 启动续签（ADR-145 补全）：页面刷新后用 refresh_token 静默恢复 access（14号 §2.1 Q3 口径）。
+// B5-P2-4 同口径：仅凭据确死才清 refresh_token（boot 落登录页）；抖动时保留令牌，
+// 用户重新登录成功自然滚动换新。
 export async function bootRefresh(): Promise<string | null> {
   if (!readRefreshToken()) return null;
   try {
     return await requestRefresh();
-  } catch {
-    clearSession();
+  } catch (e) {
+    if (refreshAuthDead(e)) clearSession();
     return null;
   }
 }
@@ -299,13 +338,24 @@ export async function getReportContent(reportId: string): Promise<{ format: stri
   return { format, content };
 }
 
-// 报告窗口 CSP meta（审计 B3-2，纵深防御·双保险第一层）：报告 HTML 仅内联样式、无脚本——
+// 报告窗口 CSP meta（纵深防御·双保险第一层）：报告 HTML 仅内联样式、无脚本——
 // 写入报告窗口前先注入此 meta（必须先于任何内容写入），default-src 'none' 全灭脚本/
 // 外链资源，style-src 'unsafe-inline' 保内联样式活。
 export const REPORT_WINDOW_CSP_META =
   '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'">';
 
-// 报告窗口渲染（fix-plan-0911 §14 升级，双保险第二层·更硬）：打开 about:blank 宿主窗，
+// (P3-a)：meta 插入位置 doctype 感知——后端报告首字节是 <!doctype html>，旧实现把
+// meta 拼在最前会把 doctype 挤到非首位 → 文档落 quirks 模式（表格/行高随样式演进漂移）。
+// 有 doctype 时插到其后（CSP meta 在 head 前同样生效），无 doctype 维持首字节前置。
+export function withReportCspMeta(content: string): string {
+  // doctype 前允许可有空白/BOM/HTML 注释（复审 R：模板演进可能出现注释前导变体）
+  const m = /^(?:\s|<!--[\s\S]*?-->)*<!doctype\s+html[^>]*>/i.exec(content);
+  return m
+    ? content.slice(0, m[0].length) + REPORT_WINDOW_CSP_META + content.slice(m[0].length)
+    : REPORT_WINDOW_CSP_META + content;
+}
+
+// 报告窗口渲染：打开 about:blank 宿主窗，
 // 在其中插入 <iframe sandbox src=blob:> 携带报告内容——sandbox 空 token 不含
 // allow-scripts / allow-same-origin，iframe 内脚本与同源权限全灭（纯渲染不需要任何
 // 能力，比 meta CSP 更硬）；同时 CSP meta 由本函数统一前置于 blob 内容，即便
@@ -314,7 +364,7 @@ export const REPORT_WINDOW_CSP_META =
 export function openReportWindow(content: string, mime: 'text/html' | 'text/plain'): Window | null {
   const w = window.open('about:blank', '_blank');
   if (!w) return null;
-  const blob = new Blob([REPORT_WINDOW_CSP_META + content], { type: `${mime};charset=utf-8` });
+  const blob = new Blob([withReportCspMeta(content)], { type: `${mime};charset=utf-8` });
   const url = URL.createObjectURL(blob);
   const iframe = w.document.createElement('iframe');
   // 无 allow-scripts：脚本全灭；无 allow-same-origin：来源隔离（blob 亦不继承宿主源）
@@ -323,10 +373,22 @@ export function openReportWindow(content: string, mime: 'text/html' | 'text/plai
   iframe.setAttribute('title', '报告内容');
   iframe.setAttribute('style', 'border:0;width:100%;height:100vh;display:block');
   w.document.body.appendChild(iframe);
+  // (P3-a)：blob URL 生命周期回收——宿主窗卸载（用户关闭报告窗）即 revoke。此前每次
+  // "在线查看"泄漏一份报告正文的 blob 引用直至宿主文档卸载。不在 iframe load 即 revoke：
+  // 窗口开着期间 blob 须保持可取（ui_check 等外部校验 fetch(blob:) 与其兼容），关闭即释放。
+  // 复审 R：beforeunload 在未交互 about:blank 窗口的触发语义跨浏览器不保证——加 opener 侧
+  // w.closed 轮询兜底（1s 粒度，关窗即停），语义确定性优先。
+  w.addEventListener('beforeunload', () => URL.revokeObjectURL(url));
+  const closedPoll = setInterval(() => {
+    if (w.closed) {
+      URL.revokeObjectURL(url);
+      clearInterval(closedPoll);
+    }
+  }, 1000);
   return w;
 }
 
-// 重新生成报告（审计 B3-5 接线，D4 裁定）：POST /v1/tasks/{task_id}/report →
+// 重新生成报告（审计 接线，D4 裁定）：POST /v1/tasks/{task_id}/report →
 // ReportService/GenerateReport（幂等，网关生成幂等键；旧报告保留，新报告入列后经
 // ['reports'] 失效刷新）。报告中心"重新生成"按钮消费。
 export async function regenerateReport(taskId: string): Promise<{ result?: { report_id: string } }> {

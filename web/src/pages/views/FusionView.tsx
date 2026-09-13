@@ -5,9 +5,11 @@ import { Card, Row, Tag, Typography } from 'antd';
 import { api } from '../../api/client';
 import type { UnifiedFinding } from '../../api/types';
 import { SEVERITY, zh } from '../../dict';
+import { SEVERITY_COLOR } from '../../dict/tokens';
+import { PageLoading, QueryError } from '../../components/states';
 
 export default function FusionView({ taskId }: { taskId: string }) {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['fusion-findings', taskId],
     queryFn: async () =>
       (await api.get('/v1/findings', { params: { task_id: taskId, pagination: { page_size: 100 } } })).data as {
@@ -16,9 +18,11 @@ export default function FusionView({ taskId }: { taskId: string }) {
       },
   });
 
-  if (isLoading) return <Typography.Text type="secondary">加载中…</Typography.Text>;
+  //  补错误分支——此前查询失败永远停在加载文案（与 ReviewView 同病）
+  if (isLoading) return <PageLoading />;
+  if (isError) return <QueryError error={error} onRetry={() => refetch()} />;
   const findings = data?.findings ?? [];
-  // B3-4（审计修复）：视图单页拉 100 条截断——has_next=true 时如实提示，不再静默丢剩余
+  // （审计修复）：视图单页拉 100 条截断——has_next=true 时如实提示，不再静默丢剩余
   const truncated = data?.pagination?.has_next === true;
 
   // dedup_group 非空 → 组视图；空 → 未合并分区
@@ -69,7 +73,7 @@ export default function FusionView({ taskId }: { taskId: string }) {
               {others.length === 0 && <Tag>无（其余成员与主条目相同，已合并）</Tag>}
             </div>
             <div style={{ marginTop: 8 }}>
-              <Tag color="red">{zh(SEVERITY, primary.severity)}</Tag>
+              <Tag color={SEVERITY_COLOR[primary.severity]}>{zh(SEVERITY, primary.severity)}</Tag>
               <Tag>{primary.cwe_id || 'CWE—'}</Tag>
             </div>
           </Card>
@@ -85,7 +89,7 @@ export default function FusionView({ taskId }: { taskId: string }) {
             {uniques.map((f) => (
               <Card key={f.finding_id} size="small" style={{ marginBottom: 8, width: '100%' }}>
                 <Tag color="blue">{f.source_tool}</Tag> {f.title}{' '}
-                <Tag color="red">{zh(SEVERITY, f.severity)}</Tag>
+                <Tag color={SEVERITY_COLOR[f.severity]}>{zh(SEVERITY, f.severity)}</Tag>
               </Card>
             ))}
           </Row>

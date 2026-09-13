@@ -1,11 +1,11 @@
-// 任务详情（14号 §3.3 ②）。ADR-188（人类指令 2026-09-03）：左右两栏——左=AI 交互日志
+// 任务详情（14号 §3.3 ②）。ADR-188：左右两栏——左=AI 交互日志
 // 内联常驻（吸顶），右=任务信息+报告摘要（合并首卡）/阶段时间线/执行日志/发现 Tabs。
 // 快照供给：WS 推流在线时帧驱动（ADR-188 起 250ms 聚合近实时），断线回退 10s 轮询（终态自停）。
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Card, Descriptions, Divider, Popconfirm, Space, Steps, Tabs, Tag, Typography, message } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, getAccessToken, getProjects, getReportContent, openReportWindow, pollIntervalMs } from '../../api/client';
+import { api, getAccessToken, getReportContent, listAllProjects, openReportWindow, pollIntervalMs } from '../../api/client';
 import type { ScanTask, TaskLogEntry, TaskSnapshot, TaskStage, UnifiedFinding } from '../../api/types';
 
 import FindingsPage, { isDegradedFinding } from '../findings/FindingsPage';
@@ -14,14 +14,21 @@ import ReviewView from '../views/ReviewView';
 import TaskLogPanel, { MAX_LOG_ROWS } from '../../components/TaskLogPanel';
 import AIInteractionLogPanel from '../../components/AIInteractionLogPanel';
 import { SCAN_MODE, STAGE_TYPE, TASK_STATUS, reportFileExt, zh } from '../../dict';
+import { STATUS_COLOR } from '../../dict/tokens';
+import PageHeader from '../../components/PageHeader';
+import { PageLoading } from '../../components/states';
 import { actionLabel, allowedActions, dispatchAction, isTerminal, type TaskAction } from '../../tasks/stateMachine';
+import { usePageTitle } from '../../hooks/usePageTitle';
 
-// proto bytes（protojson base64）→ utf-8 原文（AI 交互日志增量）
-function b64ToText(b64: string): string {
+// proto bytes（protojson base64）→ utf-8 原文（AI 交互日志增量）。
+// (P3-b)：解码改流式——服务端日志块按任意字节偏移切（256KB maxBytes），多字节字符
+// （中文为主）可跨块边界；每帧独立 decode 会产生 U+FFFD 并随 aiText/下载产物持久化。
+// chunk 全部经 absorbSnapshot 单路按游标顺序到达，decoder 实例随组件（=任务）生命周期。
+function decodeAiChunk(decoder: TextDecoder, b64: string): string {
   if (!b64) return '';
   const bin = atob(b64);
   const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
+  return decoder.decode(bytes, { stream: true });
 }
 
 const STEP_STATUS: Record<string, 'wait' | 'process' | 'finish' | 'error'> = {
@@ -81,6 +88,7 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
   // 断线回退本轮询器（保底语义不变）。日志/AI 游标在 refs 中累进。
   const logAfterRef = useRef('');
   const aiCursorRef = useRef(0);
+  const aiDecoderRef = useRef<TextDecoder | null>(null); // (P3-b)：流式 UTF-8 解码器（跨块残余字节）
   const [logRows, setLogRows] = useState<TaskLogEntry[]>([]);
   const [aiText, setAiText] = useState('');
   const [aiMeta, setAiMeta] = useState({ complete: false, total: 0 });
@@ -90,7 +98,7 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
   // 快照增量吸收：轮询响应与 WS 帧（ADR-172 同构 JSON）共用一条路径。
   // log_id 去重 + AI 游标单调：轮询与 WS 游标各自独立（服务端连接游标自订阅位起算），
   // 首帧/重连交叠时此处兜底，杜绝重复行。
-  // B4-3（审计修复）保尾上限：超长任务的执行日志/AI 正文此前无界累积（万条日志行/数 MB
+  // （审计修复）保尾上限：超长任务的执行日志/AI 正文此前无界累积（万条日志行/数 MB
   // 文本拖垮标签页）。日志保尾 MAX_LOG_ROWS（1000）条、AI 正文保尾 1M 字符，均留最新侧；
   // 游标不受影响（logAfter/aiCursor 是服务端口径，丢弃的只是客户端已渲染历史）。
   // 完整内容下载入口延后：服务端无日志全量导出端点，暂不做（TaskLogPanel 顶部如实提示
@@ -114,7 +122,8 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
     const nextCursor = Number(d.ai?.next_cursor ?? 0);
     if (nextCursor > aiCursorRef.current && (d.ai?.chunk ?? '') !== '') {
       aiCursorRef.current = nextCursor;
-      setAiText((prev) => (prev + b64ToText(d.ai!.chunk)).slice(-MAX_AI_TEXT_CHARS));
+      aiDecoderRef.current ??= new TextDecoder('utf-8');
+      setAiText((prev) => (prev + decodeAiChunk(aiDecoderRef.current!, d.ai!.chunk)).slice(-MAX_AI_TEXT_CHARS));
     }
     setAiMeta({ complete: !!d.ai?.complete, total: Number(d.ai?.total_bytes ?? 0) });
   };
@@ -139,7 +148,7 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
       if (!d?.task) return pollIntervalMs(10_000);
       const aiDone = !!d.ai?.complete && aiCursorRef.current >= Number(d.ai?.total_bytes ?? 0);
       if (isTerminal(d.task.status) && aiDone) return false; // 终态且日志收束 → 自停
-      return pollIntervalMs(10_000); // WS 断线回退 10s/次（人类指令 2026-09-01；限流余量进一步扩大）
+      return pollIntervalMs(10_000); // WS 断线回退 10s/次（限流余量进一步扩大）
     },
   });
 
@@ -209,7 +218,7 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
           // 断线窗口即时回填：重连前后端游标已越过帧的内容只能经快照兜底，
           // 此前等 5s 重连（或最坏 10s 轮询拍）——长任务中途断流即观测空白；
           // 若 access token 已过期（WS 在线期无 REST 调用无续期），本次快照
-          // 401 会经 axios 拦截器单飞刷新，下轮重连即用新 token（gw-f6a3523 实证链）。
+          // 401 会经 axios 拦截器单飞刷新，下轮重连即用新 token（实证链）。
           void qc.refetchQueries({ queryKey: ['task-snapshot', taskId] });
           retryTimer = window.setTimeout(connect, 5000);
         }
@@ -233,7 +242,9 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['task-snapshot', taskId] });
-    qc.invalidateQueries({ queryKey: ['tasks'] });
+    // 旧键 ['tasks'] 是死失效（任务列表真实键=['tasks-page',…]，前缀失配恒 no-op，
+    // 恰是 G-02b 封的"死键失效"模式新形态）；列表 staleTime=0 靠重挂载自愈才未显形。
+    qc.invalidateQueries({ queryKey: ['tasks-page'] });
   };
 
   // 收束即补拉：发现/融合/审核列表在"终态帧早于发现落库"的异常序列（如长任务被
@@ -264,9 +275,8 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
   // 降级痕迹警示已下沉到 <DegradedNotice>（隔离订阅）——findings 缓存更新不再
   // 连带本页（含发现表格/展开行）重渲染，定位器/滚动位置保持稳定（R56 报障修复）。
   // 面板空态归因用非订阅快照（挂载时点读一次，不建立缓存依赖）。
-  const queryClient = useQueryClient();
   const aiDegradedSnapshot = (() => {
-    const cached = queryClient.getQueryData<{ pages: { findings: UnifiedFinding[] }[] }>(['findings', taskId]);
+    const cached = qc.getQueryData<{ pages: { findings: UnifiedFinding[] }[] }>(['findings', taskId]);
     return (cached?.pages ?? []).some((pg) => (pg.findings ?? []).some(isDegradedFinding));
   })();
 
@@ -275,13 +285,13 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
     queryKey: ['task-reports', taskId],
     enabled: isCompletedTask,
     queryFn: async () => (await api.get('/v1/reports', { params: { task_id: taskId } })).data as {
-      reports: { report_id: string; format: number }[];
+      reports: { report_id: string; format: string }[]; // B5-P1-1: 枚举名字符串（非数值）
     },
   });
   // 2026-09-09 GUI 评审: 头部信息卡显示项目名称（而非裸项目 ID）
   const { data: projectsIndex } = useQuery({
     queryKey: ['projects-index'],
-    queryFn: () => getProjects({ page_size: 200 }),
+    queryFn: async () => ({ projects: await listAllProjects() }), // B5-P2-7: 全量翻页（200 被服务端钳 100）
     staleTime: 60_000,
   });
   const projectName = projectsIndex?.projects.find((p) => p.project_id === task?.project_id)?.name;
@@ -305,16 +315,16 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
   const viewReport = () => {
     if (!latestReport) return;
     getReportContent(latestReport.report_id).then(({ format, content }) => {
-      // 审计 B3-2 纵深防御（fix-plan-0911 §14 升级）：报告内容统一经 openReportWindow 的
+      // 纵深防御：报告内容统一经 openReportWindow 的
       // sandboxed iframe 渲染（脚本全灭，CSP meta 前置双保险，注入统一收口在 client.ts）；
       // JSON 分支保持转义 <pre> 文本。
-      if (format === 'html') {
-        openReportWindow(content, 'text/html');
-      } else {
-        openReportWindow('<pre style="font-size:13px;white-space:pre-wrap">' +
+      // (P3-a)：弹窗被拦（异步后 user activation 失效）——显式提示而非静默
+      const opened = format === 'html'
+        ? openReportWindow(content, 'text/html')
+        : openReportWindow('<pre style="font-size:13px;white-space:pre-wrap">' +
           JSON.stringify(JSON.parse(content), null, 2).replace(/[<>&]/g,
             (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c] || c)) + '</pre>', 'text/html');
-      }
+      if (!opened) message.warning('弹出窗口被浏览器拦截，请允许弹出窗口后重试');
     }).catch(() => message.error('打开失败'));
   };
   const downloadReport = async () => {
@@ -331,6 +341,9 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
       message.error('下载失败');
     }
   };
+
+  // 页面标题——必须在全部早退 return 之前调用（条件钩子会崩渲染）
+  usePageTitle(task ? `任务 ${task.task_id.slice(-6)}` : '任务详情');
 
   if (taskError) {
     // ADR-147: 区分 404（任务已清除）与其他错误（限流/网络）——此前限流也误报"不存在"
@@ -350,27 +363,34 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
         action={<Button onClick={() => window.history.back()}>返回</Button>} />
     );
   }
-  if (!task) return <Typography.Text type="secondary">加载中…</Typography.Text>;
+  if (!task) return <PageLoading />;
   const actions = allowedActions(task.status);
 
   return (
     <div>
-      {/* 2026-09-12 间距修复（人类反馈"导航栏与内容间空白太多"）：antd Title 默认
-          margin-top 24px 与 Content padding 24px 叠加，首屏标题行前出现 ~48px 空带——
-          置零贴住内容区 padding；右栏视口封顶高度同步把省出的 24px 还给内容（150→126）。 */}
-      <Typography.Title level={3} style={{ marginTop: 0 }}>
-        任务 {task.task_id} <Tag color="blue">{zh(TASK_STATUS, task.status)}</Tag>
-      </Typography.Title>
+      {/* 2026-09-12 间距修复（人类反馈"导航栏与内容间空白太多"）曾在此手工置零 Title
+          margin—— 起由 PageHeader 全站统一归零；右栏视口封顶高度 126 保持 */}
+      <PageHeader
+        title={<>任务 {task.task_id} <Tag color={STATUS_COLOR[task.status]}>{zh(TASK_STATUS, task.status)}</Tag></>}
+      />
 
-      {/* ADR-188（人类指令 2026-09-03）：左右两栏——左=AI 交互日志（50%，吸顶随滚常驻），
+      {/* ADR-188：左右两栏——左=AI 交互日志（50%，吸顶随滚常驻），
           右=其余信息。min-width:0 防 flex 子元素内容把 50% 宽度撑破（长 token/URL 溢出）。
-          2026-09-09 布局改版（人类指令）：右侧固定一页高（视口封顶、内部滚动）——任务信息
+          布局改版：右侧固定一页高（视口封顶、内部滚动）——任务信息
           精简（去掉重试次数/进度/查看报告/重新生成报告）、阶段时间线横排紧凑、执行日志
           压缩高度、产出视图（发现/融合 Tabs）占满剩余空间并框内滚动，为发现列表让出稳定
           可视面积。
           2026-09-12 布局调整（用户指令）：左栏高度与右栏总高一致（fill 撑满）；任务信息卡
           与报告初步判断合并为右侧首卡；执行日志可视高度放大到 ≥10 行。 */}
-      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+      {/*  窄屏（<1200px）双栏折叠为上下堆叠——纯 CSS 媒体查询覆盖，桌面
+          （≥1200px）50/50+视口封顶+吸顶布局已定版，零变更 */}
+      <style>{`
+        @media (max-width: 1199px) {
+          .task-detail-cols { flex-direction: column; }
+          .task-detail-cols > * { width: 100% !important; height: auto !important; position: static !important; }
+        }
+      `}</style>
+      <div className="task-detail-cols" style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         <div style={{ width: '50%', minWidth: 0, position: 'sticky', top: 16, height: 'calc(100vh - 126px)' }}>
           {/* ADR-168/170/172/188: AI 交互日志——人性化渲染流增量下发；终态=最终交互日志（可下载）。
               内联时间线为主视图（不再默认折叠），整页 Modal 为辅入口（组件内）。 */}

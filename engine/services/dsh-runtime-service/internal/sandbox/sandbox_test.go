@@ -346,7 +346,7 @@ func TestRun_FullLifecycleViaBridge(t *testing.T) {
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1",
 		Workspace: "codeaudit", Image: "dsh-pentest-sse:1.2.2",
-		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 131072,
+		WaitReadyTimeoutS: 5, DSHMaxTokens: 131072,
 		// 测试中沙箱服务域无 DNS：显式把服务路由拨号指到假 bridge（等价生产网关直拨）
 		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
 		OnHumanLog:      human.writeString,
@@ -424,7 +424,7 @@ func TestRun_FullLifecycleViaBridge(t *testing.T) {
 	}
 }
 
-// ADR-190 回归锁①：子任务会话的 idle 不是回合终态——gw-391b10f1 实证（4 个后台
+// ADR-190 回归锁①：子任务会话的 idle 不是回合终态——实证（4 个后台
 // 子代理之一被 provider 断流掐死，其 idle 曾被误判为主会话收敛 → 主会话尚未产出
 // submit_findings 即拆沙箱 → "no JSON in DSH output"）。修复后：子 idle 滤除，
 // 主会话继续产出并正常收敛。
@@ -448,7 +448,7 @@ func TestRun_SubagentIdleDoesNotConverge(t *testing.T) {
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1",
 		Workspace: "codeaudit", Image: "dsh-pentest-sse:1.2.0",
-		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 131072,
+		WaitReadyTimeoutS: 5, DSHMaxTokens: 131072,
 		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
 	})
 	res, err := r.Run(context.Background(), Task{
@@ -501,7 +501,7 @@ func TestRun_DeadSubagentRecoveryRound(t *testing.T) {
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1",
 		Workspace: "codeaudit", Image: "dsh-pentest-sse:1.2.0",
-		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 131072,
+		WaitReadyTimeoutS: 5, DSHMaxTokens: 131072,
 		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
 		EventFn:         func(level, msg string) { events.write(fmt.Sprintf("[%s] %s\n", level, msg)) },
 	})
@@ -570,7 +570,7 @@ func TestRun_EmptyFindingsViaToolSucceeds(t *testing.T) {
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1",
 		Workspace: "codeaudit", Image: "dsh-pentest-sse:1.2.0",
-		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 131072,
+		WaitReadyTimeoutS: 5, DSHMaxTokens: 131072,
 		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
 		EventFn:         func(level, msg string) { events.write(fmt.Sprintf("[%s] %s\n", level, msg)) },
 	})
@@ -612,7 +612,7 @@ func (w *syncwriter) String() string {
 	return w.buf.String()
 }
 
-// R34 回归锁（gw-d331089f 实证）：补丁再生成回合（PatchFixRound）按契约分批调用
+// R34 回归锁（实证）：补丁再生成回合（PatchFixRound）按契约分批调用
 // submit_patches、正文无 JSON——Run 曾套用审计回合的 findings 语义解析，报
 // "no JSON in DSH output" 判废整轮，模型合规提交的 4 批补丁全被丢弃（9 分钟
 // 再生成沙箱白跑）。修复后 Run 按 patches 语义合并工具批次产出。
@@ -626,7 +626,7 @@ func TestRun_PatchFixRoundToolBatchesMerged(t *testing.T) {
 		"event: session.status\ndata: {\"sessionId\":\"main\",\"status\":\"running\"}\n\n",
 		"event: session.event\ndata: {\"sessionId\":\"main\",\"event\":{\"type\":\"turn/start\",\"seq\":10,\"data\":{\"turn\":1}}}\n\n",
 		patchCall("11", "0"), patchCall("12", "1"), patchCall("13", "2"), patchCall("14", "0" /*重发同 index：后批覆盖*/),
-		// 最终消息：纯正文无任何 JSON（真实回合形态，gw-d331089f .ai.log 实证）
+		// 最终消息：纯正文无任何 JSON（真实回合形态，.ai.log 实证）
 		"event: session.event\ndata: " + `{"sessionId":"main","event":{"type":"assistant/message","seq":20,"data":{"message":{"content":[{"type":"text","text":"` + jsEscape("全部 13 项已重新生成并分批提交，根因是路径前缀。") + `"}]}}}}` + "\n\n",
 		"event: session.event\ndata: " + `{"sessionId":"main","event":{"type":"turn/end","seq":30,"data":{"turn":1,"reason":{"kind":"completed"}}}}` + "\n\n",
 		"event: session.status\ndata: {\"sessionId\":\"main\",\"status\":\"idle\"}\n\n",
@@ -640,7 +640,7 @@ func TestRun_PatchFixRoundToolBatchesMerged(t *testing.T) {
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1",
 		Workspace: "codeaudit", Image: "dsh-pentest-sse:1.2.1",
-		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 32768,
+		WaitReadyTimeoutS: 5, DSHMaxTokens: 32768,
 		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
 	})
 	res, err := r.Run(context.Background(), Task{
@@ -676,7 +676,7 @@ func TestRun_TeardownEvenOnTurnError(t *testing.T) {
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL,
 		Workspace: "w", Image: "dsh-pentest-sse:1.0.0",
-		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 131072,
+		WaitReadyTimeoutS: 5, DSHMaxTokens: 131072,
 		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
 	})
 	res, err := r.Run(context.Background(), Task{TaskID: "t", WorkspaceDir: newTestWorkspace(t), Assignment: "x"})
@@ -698,7 +698,7 @@ func TestRun_TeardownEvenOnLaunchFailure(t *testing.T) {
 
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL,
-		Workspace: "w", Image: "img", WaitReadyTimeoutS: 5, ExecTimeoutS: 30,
+		Workspace: "w", Image: "img", WaitReadyTimeoutS: 5,
 	})
 	if _, err := r.Run(context.Background(), Task{TaskID: "t", WorkspaceDir: newTestWorkspace(t), Assignment: "x"}); err == nil {
 		t.Fatal("bridge launch failure must surface")
@@ -711,7 +711,7 @@ func TestRun_TeardownEvenOnLaunchFailure(t *testing.T) {
 func TestRun_UnreachableManagerFailsLoud(t *testing.T) {
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: "http://127.0.0.1:1", // 无监听端口
-		Workspace: "w", Image: "img", WaitReadyTimeoutS: 1, ExecTimeoutS: 1,
+		Workspace: "w", Image: "img", WaitReadyTimeoutS: 1,
 	})
 	if _, err := r.Run(context.Background(), Task{WorkspaceDir: newTestWorkspace(t), Assignment: "x"}); err == nil {
 		t.Fatal("unreachable manager must fail loud (no direct-gRPC fallback)")
@@ -725,7 +725,7 @@ func TestRun_BearerTokenRequired(t *testing.T) {
 
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "wrong",
-		Workspace: "w", Image: "img", WaitReadyTimeoutS: 1, ExecTimeoutS: 1,
+		Workspace: "w", Image: "img", WaitReadyTimeoutS: 1,
 	})
 	if _, err := r.Run(context.Background(), Task{WorkspaceDir: newTestWorkspace(t), Assignment: "x"}); err == nil {
 		t.Fatal("401 must surface as error")
@@ -734,7 +734,7 @@ func TestRun_BearerTokenRequired(t *testing.T) {
 
 // TestSSEParser_BridgeFrames — bridge SSE 帧行解析器（wire 契约 bridge.mjs 同源）+ 人性化渲染。
 // ADR-181 回归锁：模型路由/审批策略/系统上下文/用量/tool-call 静默；任务下发全文；
-// 子任务会话只出骨架行且不参与收敛投影（gw-3b0b9ebf 乱码根因）。
+// 子任务会话只出骨架行且不参与收敛投影（乱码根因）。
 func TestSSEParser_BridgeFrames(t *testing.T) {
 	var human syncwriter
 	p := &sseParser{onHuman: human.writeString}
@@ -795,7 +795,7 @@ func TestSSEParser_BridgeFrames(t *testing.T) {
 		"data: {\"sessionId\":\"4bb5a865-791c-4b67-811a-d56a7aec3a41\",\"event\":{\"type\":\"assistant/chunk\",\"data\":{\"chunk\":{\"type\":\"text-delta\",\"text\":\"子任务正文不得混入\"}}}}\n", "\n",
 		"event: session.event\n",
 		"data: {\"sessionId\":\"4bb5a865-791c-4b67-811a-d56a7aec3a41\",\"event\":{\"type\":\"turn/end\",\"data\":{\"reason\":{\"kind\":\"error\",\"error\":{\"message\":\"子任务错误不得误伤主回合\"}}}}}\n", "\n",
-		// ADR-190：子任务 idle 不是回合终态（gw-391b10f1 回归）
+		// ADR-190：子任务 idle 不是回合终态（回归）
 		"event: session.status\n",
 		"data: {\"sessionId\":\"4bb5a865-791c-4b67-811a-d56a7aec3a41\",\"status\":\"idle\"}\n", "\n")
 	if len(evs) != 1 || evs[0].agentErr == "" || evs[0].idle || evs[0].err != nil || evs[0].assistantText != "" {
@@ -875,14 +875,14 @@ func TestBuildTurnPrompt_PathBasedNoInline(t *testing.T) {
 }
 
 // ADR-211/ADR-220 回归锁：分批契约按补丁体量分层（gw 实证：条数不是唯一变量，补丁体量
-// 才是——大补丁单条层与上下文行上限不变；ADR-220 依 gw-d331089f 实证放宽条数层：
+// 才是——大补丁单条层与上下文行上限不变；ADR-220 依实证放宽条数层：
 // 6.5KB 参数流全程无断流，而历史断流批为万级 token 巨型批）。
 func TestBuildTurnPrompt_BatchContractTieredByPatchMass(t *testing.T) {
 	prompt := buildTurnPrompt(Task{Assignment: "审计它"})
 	for _, want := range []string{
 		"分批提交（强制",                   // 分批不再是"发现较多时"的建议而是强制
 		"每批最多 8 条",                  // 无补丁层（ADR-220: 4→8）
-		"含 diff_patch 的发现：每批最多 4 条", // 含补丁层（ADR-220: 2→3→4，人类指令 2026-09-08 再放宽）
+		"含 diff_patch 的发现：每批最多 4 条", // 含补丁层（ADR-220: 2→3→4）
 		"该批只提交这 1 条",                // 大补丁单条层
 		"上下文行在改动块上方/下方各最多 3 行",      // 上下文行上限——补丁瘦身的主杠杆
 	} {
@@ -925,7 +925,7 @@ func TestLive_ManagerSandboxLifecycle(t *testing.T) {
 		// 再上 1 级即 openshell-manager 兄弟目录（部署布局）
 		ManagerConfig: filepath.Join("..", "..", "..", "..", "..", "openshell-manager", "config.json"),
 		Workspace:     "default", Image: "dsh-pentest-sse:1.2.0", // 现役配置口径（configs/codeaudit.yaml；1.2.0=ADR-185 submit 工具层）
-		WaitReadyTimeoutS: 120, ExecTimeoutS: 300, DSHMaxTokens: 131072,
+		WaitReadyTimeoutS: 120, DSHMaxTokens: 131072,
 	}
 	r := NewManagerRunner(cfg)
 	url, token := r.managerEndpoint()
@@ -1072,7 +1072,7 @@ func TestParsePatchFixResult(t *testing.T) {
 	}
 }
 
-// 空列表陷阱回归锁（gw-5a96f1f7 实证修复）：submit_findings 提交 {"findings":[]} 是
+// 空列表陷阱回归锁（实证修复）：submit_findings 提交 {"findings":[]} 是
 // 合法产出（完整审计后零发现）。判据须是"至少一批参数解析成功"而非 len(merged)>0——
 // 后者把干净零发现误判为两代通道皆空 → "no JSON in DSH output" 整轮报废降级 RuleScan。
 func TestParseAuditResult_EmptyFindingsViaToolIsValid(t *testing.T) {
@@ -1108,7 +1108,7 @@ func TestParseFindingsTrailingCommaRepair(t *testing.T) {
 	}
 }
 
-// ADR-192 回归锁：主会话推理流瞬态中断（STREAM_CLOSED——gw-d911757 实证：7 项发现
+// ADR-192 回归锁：主会话推理流瞬态中断（STREAM_CLOSED——实证：7 项发现
 // 确认完毕、死于 submit_findings 参数流式生成途中）→ 继续指令重试后模型重发提交。
 func TestRun_MainTurnTransientRetry(t *testing.T) {
 	const submitArgs = `{"findings":[{"title":"stub","severity":"SEVERITY_HIGH","cwe_id":"CWE-89","file_path":"a.py","start_line":1,"confidence":0.9,"description":"d","reasoning":"r"}]}`
@@ -1137,7 +1137,7 @@ func TestRun_MainTurnTransientRetry(t *testing.T) {
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1",
 		Workspace: "codeaudit", Image: "dsh-pentest-sse:1.2.0",
-		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 131072,
+		WaitReadyTimeoutS: 5, DSHMaxTokens: 131072,
 		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
 		EventFn:         func(level, msg string) { events.write(fmt.Sprintf("[%s] %s\n", level, msg)) },
 	})
@@ -1193,7 +1193,7 @@ func TestRun_MainTurnMalformedPayloadRetry(t *testing.T) {
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1",
 		Workspace: "codeaudit", Image: "dsh-pentest-sse:1.2.0",
-		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 131072,
+		WaitReadyTimeoutS: 5, DSHMaxTokens: 131072,
 		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
 		EventFn:         func(level, msg string) { events.write(fmt.Sprintf("[%s] %s\n", level, msg)) },
 	})
@@ -1233,7 +1233,7 @@ func TestRun_MainTurnPermanentErrorFails(t *testing.T) {
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1",
 		Workspace: "codeaudit", Image: "dsh-pentest-sse:1.2.0",
-		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 131072,
+		WaitReadyTimeoutS: 5, DSHMaxTokens: 131072,
 		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
 	})
 	_, err := r.Run(context.Background(), Task{
@@ -1267,7 +1267,7 @@ func TestRun_MainTurnRetryExhausted(t *testing.T) {
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1",
 		Workspace: "codeaudit", Image: "dsh-pentest-sse:1.2.0",
-		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 131072,
+		WaitReadyTimeoutS: 5, DSHMaxTokens: 131072,
 		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
 	})
 	_, err := r.Run(context.Background(), Task{
@@ -1331,7 +1331,7 @@ func TestRun_BatchedSubmitMergeAcrossRetry(t *testing.T) {
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1",
 		Workspace: "codeaudit", Image: "dsh-pentest-sse:1.2.1",
-		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 32768,
+		WaitReadyTimeoutS: 5, DSHMaxTokens: 32768,
 		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
 	})
 	res, err := r.Run(context.Background(), Task{
@@ -1371,7 +1371,7 @@ func TestRun_CreateFailure_DeregistersActiveEntry(t *testing.T) {
 
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "wrong",
-		Workspace: "w", Image: "img", WaitReadyTimeoutS: 1, ExecTimeoutS: 1,
+		Workspace: "w", Image: "img", WaitReadyTimeoutS: 1,
 	})
 	if _, err := r.Run(context.Background(), Task{TaskID: "t", WorkspaceDir: newTestWorkspace(t), Assignment: "x"}); err == nil {
 		t.Fatal("create failure must surface")

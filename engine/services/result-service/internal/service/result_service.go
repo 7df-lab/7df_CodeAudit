@@ -551,6 +551,9 @@ func (s *ResultServiceImpl) SubmitFindingFeedback(ctx context.Context, req *pb.S
 		Comment:   req.GetComment(),
 		CreatedAt: time.Now(),
 		RequestID: req.GetMetadata().GetRequestId(),
+		// R82: 此前 feedback_type 被丢弃（proto/model/DDL 三处有字段而实现从不读取）
+		// ——误报/漏报/误级分类全丢，统计与训练回流数据源失效。
+		FeedbackType: req.GetFeedbackType().String(),
 	}
 
 	if err := s.repo.CreateFeedback(feedback); err != nil {

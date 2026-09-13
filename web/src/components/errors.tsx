@@ -8,15 +8,19 @@ import { useNavigate } from 'react-router-dom';
 import { API_ERROR_EVENT, API_OK_EVENT, type ApiErrorCode } from '../api/apiEvents';
 
 // 路由级错误页：404 兜底路由 / 显式引用
-export function ErrorPage({ code }: { code: 403 | 404 | 501 }) {
+export function ErrorPage({ code, hideAction }: { code: 403 | 404 | 501; hideAction?: boolean }) {
   const navigate = useNavigate();
+  // 403/404 共用同一「返回项目页」出口；hideAction 供 ApiErrorOverlay 收敛双出口（见下方 overlay 注释）
+  const backToProjects = hideAction ? undefined : (
+    <Button type="primary" onClick={() => navigate('/projects')}>返回项目页</Button>
+  );
   if (code === 403) {
     return (
       <Result
         status="403"
         title="权限不足"
         subTitle="当前账号无权访问该资源或执行该操作。"
-        extra={<Button type="primary" onClick={() => navigate('/projects')}>返回项目页</Button>}
+        extra={backToProjects}
       />
     );
   }
@@ -29,9 +33,11 @@ export function ErrorPage({ code }: { code: 403 | 404 | 501 }) {
             该能力在当前版本尚未实现——这是诚实的降级声明而非故障。
             对应设计见仓库 14 号《展现层设计》§3.5 与各服务设计文档。
           </Typography.Text>
-          <div style={{ marginTop: 16 }}>
-            <Button onClick={() => navigate('/projects')}>返回项目页</Button>
-          </div>
+          {!hideAction && (
+            <div style={{ marginTop: 16 }}>
+              <Button onClick={() => navigate('/projects')}>返回项目页</Button>
+            </div>
+          )}
         </Card>
       </div>
     );
@@ -41,7 +47,7 @@ export function ErrorPage({ code }: { code: 403 | 404 | 501 }) {
       status="404"
       title="404"
       subTitle="页面不存在或已被移除。"
-      extra={<Button type="primary" onClick={() => navigate('/projects')}>返回项目页</Button>}
+      extra={backToProjects}
     />
   );
 }
@@ -82,7 +88,8 @@ export function ApiErrorOverlay() {
       )}
       {pageCode && (
         <div style={{ position: 'fixed', inset: 0, background: '#fff', zIndex: 1000, paddingTop: 60 }}>
-          <ErrorPage code={pageCode} />
+          {/* B5: hideAction——overlay 自带「关闭并返回项目页」（会清 pageCode）；ErrorPage 自带按钮只 navigate 不清遮罩，双按钮并存时上层点击无反馈形似失灵 */}
+          <ErrorPage code={pageCode} hideAction />
           <div style={{ textAlign: 'center' }}>
             <Button type="link" onClick={() => { setPageCode(null); navigate('/projects'); }}>
               关闭并返回项目页

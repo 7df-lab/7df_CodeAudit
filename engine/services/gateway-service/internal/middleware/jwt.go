@@ -51,6 +51,13 @@ func JWTMiddleware(secret string, next http.Handler) http.Handler {
 
 		tokenString := parts[1]
 
+		// R88: 网关本地撤销集（登出即时性）——撤销记录由 /v1/auth/logout 通道写入，
+		// 服务端 revokedTokens 只有 GetCurrentUser 消费、管不到业务路由。
+		if AccessRevoked(tokenString) {
+			http.Error(w, `{"error": "token has been revoked"}`, http.StatusUnauthorized)
+			return
+		}
+
 		// Parse and validate token - 依据: 03 §4 (JWT HS256 auth)
 		token, err := jwt.ParseWithClaims(tokenString, &JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
 			// Verify signing method

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Contract tests for the OpenShell manager HTTP surface.
 
-Runs the real ThreadingHTTPServer against a GatewayFacade wired to a FAKE
-SDK client (injected via client_factory) — no gateway, no network. Covers:
+Runs a real HTTP server (uvicorn, ADR-174) against a GatewayFacade wired to
+a FAKE SDK client (injected via client_factory) — no gateway, no network.
+Covers:
 auth (token on/off, 401, tokenFile fallback priority), healthz, gateway
 health, sandbox create/get/exec/delete/wait-ready/list-all, inference route
 get/set, provider list/upsert, service expose/list/delete, and error mapping (404 unknown route/lookup,
@@ -27,7 +28,6 @@ import time
 import uvicorn
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, Tuple
@@ -56,6 +56,16 @@ def run_case(fn):
         print(f"  FAIL {fn.__name__}: {type(exc).__name__}: {exc}")
 
 
+def restore_env(saved: Dict[str, str | None]) -> None:
+    """恢复 saved = {key: 原值|None}（None = 原本不存在 → pop）。
+    各用例 finally 块逐字重复的环境恢复收敛于此（纯结构性去重）。"""
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
 # ---------------------------------------------------------------------------
 # fake SDK client (the facade's client_factory seam)
 # ---------------------------------------------------------------------------
@@ -69,21 +79,35 @@ class FakeRef:
         self.labels = {"k": "v"}
 
 
-class FakeExecResult:
-    exit_code = 0
-    stdout = b"hello-out"
-    stderr = b"hello-err"
+class FakeRpcError(Exception):
+    """grpc.RpcError 同形替身（R22 审计修复）：code() 返回带 .name 的对象
+    （grpc.Call 语义）。真实 SDK 对网关 NOT_FOUND 裸抛 grpc.RpcError——它
+    不是 LookupError 子类（MRO 实证 [RpcError, Exception, …]），假件此前抛
+    LookupError 恰好喂给了 api 层的 LookupError→404 映射，掩盖了生产 404
+    通道从未生效的事实。"""
+
+    def __init__(self, code_name: str, message: str):
+        super().__init__(message)
+        self._code_name = code_name
+
+    def code(self):
+        return SimpleNamespace(name=self._code_name)
 
 
 class FakeInnerStub:
-    def __init__(self):
+    def __init__(self, owner=None):
         self.last_logs_request = None
+        self.owner = owner  # 所属 FakeSandboxClient（missing_names 联动）
 
     def GetSandboxLogs(self, request, timeout=None):
         self.last_logs_request = request
         return SimpleNamespace(logs=[])
 
     def UpdateConfig(self, request, timeout=None):
+        if self.owner is not None and request.name in self.owner.missing_names:
+            # 真实网关对不存在沙箱的 UpdateConfig 同回 NOT_FOUND（R22 审查
+            # 补全：update_config 曾漏包 _map_not_found → 500）
+            raise FakeRpcError("NOT_FOUND", f"sandbox '{request.name}' not found")
         assert request.name == "dsh-fake"
         return SimpleNamespace(version=3, policy_hash="abc123")
 
@@ -91,10 +115,11 @@ class FakeInnerStub:
 class FakeSandboxClient:
     def __init__(self):
         self.calls = []
-        self._stub = FakeInnerStub()
+        self._stub = FakeInnerStub(self)
         # 可编程失败注入（.part 清理路径等负向用例）
         self.fail_exec_containing = None   # 子串：命中则该 exec 返回非零退出
-        self.missing_names = set()         # get() 对这些名字抛 LookupError
+        self.missing_names = set()         # get()/wait_ready()/delete() 对这些名字抛 NOT_FOUND
+        self.missing_ids = set()           # exec_stream() 对这些 UUID 抛 NOT_FOUND
         self.delete_result = True
 
     def health(self):
@@ -107,25 +132,42 @@ class FakeSandboxClient:
     def get(self, name, workspace=None):
         self.calls.append(("get", name, workspace))
         if name in self.missing_names:
-            raise LookupError(f"sandbox '{name}' not found")
+            raise FakeRpcError("NOT_FOUND", f"sandbox '{name}' not found")
         return FakeRef(name=name)
 
     def wait_ready(self, name, *, workspace, timeout_seconds=None):
         self.calls.append(("wait_ready", name, workspace, timeout_seconds))
+        if name in self.missing_names:
+            # 真实 SDK _wait_for_phase 首步即 get()，NOT_FOUND 原样上抛
+            raise FakeRpcError("NOT_FOUND", f"sandbox '{name}' not found")
         return FakeRef(name=name)
-
-    def exec(self, sandbox_id, command, *, workdir=None, env=None, stdin=None,
-             timeout_seconds=None):
-        self.calls.append(("exec", sandbox_id, command, workdir, env, stdin,
-                           timeout_seconds))
-        if self.fail_exec_containing and \
-                self.fail_exec_containing in " ".join(command):
-            return SimpleNamespace(exit_code=1, stdout=b"", stderr=b"boom")
-        return FakeExecResult()
 
     def delete(self, name, workspace=None):
         self.calls.append(("delete", name, workspace))
+        if name in self.missing_names:
+            raise FakeRpcError("NOT_FOUND", f"sandbox '{name}' not found")
         return self.delete_result
+
+    def exec_stream(self, sandbox_id, command, *, workdir=None, env=None,
+                    stdin=None, timeout_seconds=None):
+        """真实 SDK exec_stream 同形替身：yield ExecChunk(stream/data) 形态
+        事件，收尾 yield ExecResult(exit_code/stdout/stderr)。起
+        facade 改走流式消费（输出上限在 facade 层钳制）。"""
+        self.calls.append(("exec", sandbox_id, command, workdir, env, stdin,
+                           timeout_seconds))
+        if sandbox_id in self.missing_ids:
+            raise FakeRpcError("NOT_FOUND",
+                               f"sandbox '{sandbox_id}' not found")
+        if self.fail_exec_containing and \
+                self.fail_exec_containing in " ".join(command):
+            yield SimpleNamespace(stream="stdout", data=b"")
+            yield SimpleNamespace(stream="stderr", data=b"boom")
+            yield SimpleNamespace(exit_code=1, stdout="", stderr="boom")
+            return
+        yield SimpleNamespace(stream="stdout", data=b"hello-out")
+        yield SimpleNamespace(stream="stderr", data=b"hello-err")
+        yield SimpleNamespace(exit_code=0, stdout="hello-out",
+                              stderr="hello-err")
 
     def list_for_all_workspaces(self, limit=None):
         return [FakeRef(name="dsh-a"), FakeRef(name="dsh-b")]
@@ -145,12 +187,19 @@ class FakeInferenceStub:
 
     def __init__(self):
         self.last = None
+        # R30：南向异常注入缝（None=正常回执；FakeRpcError 模拟网关错误码）
+        self.get_error = None
+        self.set_error = None
 
     def GetInferenceRoute(self, request, timeout=None):
+        if self.get_error is not None:
+            raise self.get_error
         self.last_get = request.workspace
         return self.ROUTE
 
     def SetInferenceRoute(self, request, timeout=None):
+        if self.set_error is not None:
+            raise self.set_error
         self.last = (request.workspace, request.provider_name,
                      request.model_id, request.no_verify)
         return self.SET_RESPONSE
@@ -222,7 +271,10 @@ def make_app(token_env, client=None):
     client = client or FAKE
     client.fail_exec_containing = None
     client.missing_names = set()
+    client.missing_ids = set()
     client.delete_result = True
+    INFERENCE_FAKE.get_error = None
+    INFERENCE_FAKE.set_error = None
     FakeAdminStub.PROVIDERS = {"prov-x"}
     if token_env is None:
         os.environ.pop("OPENSHELL_MANAGER_TOKEN", None)
@@ -449,7 +501,9 @@ def test_token_auth_enforced():
 
 class FailingClient(FakeSandboxClient):
     def get(self, name, workspace=None):
-        raise LookupError(f"sandbox '{name}' not found")
+        # R22：对齐真实 SDK 异常面——网关 NOT_FOUND 是 grpc.RpcError（非
+        # LookupError 子类）；假件抛 LookupError 曾掩盖 404 通道失效
+        raise FakeRpcError("NOT_FOUND", f"sandbox '{name}' not found")
 
     def health(self):
         raise RuntimeError("gateway unreachable")
@@ -469,9 +523,11 @@ def test_upstream_error_mapping():
     server, req = make_app(token_env=None)
     api.facade = GatewayFacade(client_factory=lambda: FailingClient())
     try:
+        # R22：NOT_FOUND 为真实 RpcError 形态（假件已对齐），必须 404——
+        # 修复前落兜底 500，文档承诺的 404 从未生效
         status, payload = req("GET", "/api/v1/sandboxes/nope?workspace=default")
         assert status == 404 and "not found" in payload["error"], payload
-        # B3-3 同步收紧：南向未捕获异常走兜底处理器 → 500 + 通用文案
+        # 同步收紧：南向未捕获异常走兜底处理器 → 500 + 通用文案
         # （原 502 让上游按"网关不可达"误重试/降级）
         status, payload = req("GET", "/api/v1/gateway/health")
         assert status == 500 and payload == {"error": "internal error"}, payload
@@ -514,11 +570,7 @@ def test_config_validate_bind_discipline():
         os.environ.pop("OPENSHELL_MANAGER_TOKEN", None)
         config.validate()  # loopback without token: allowed
     finally:
-        for key, value in saved.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        restore_env(saved)
 
 
 def test_token_priority_env_over_tokenfile():
@@ -539,11 +591,7 @@ def test_token_priority_env_over_tokenfile():
         os.environ["OPENSHELL_MANAGER_TOKEN"] = "env-token"
         assert config.manager_token() == "env-token", config.manager_token()
     finally:
-        for key, value in saved.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        restore_env(saved)
         config._config_cache = None
         config._token_cache = None
 
@@ -785,11 +833,7 @@ def test_upload_size_limit_enforced():
                               raw=body, ctype=ctype)
         assert status == 200 and payload["bytes"] == 512, payload
     finally:
-        for key, value in saved.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        restore_env(saved)
         server.shutdown()
 
 
@@ -999,7 +1043,7 @@ def test_upload_to_missing_sandbox_maps_404():
 
 def test_upload_failure_cleans_part_and_maps_5xx():
     """R1 族防线：chunk 写失败（远端非零退出）必须 rm -f .part 后上抛
-    5xx——防失败上传留下 .part 残片/半写文件回归。（B3-3 同步收紧：兜底
+    5xx——防失败上传留下 .part 残片/半写文件回归。（同步收紧：兜底
     处理器 502 → 500 "internal error"。）"""
     server, req = make_app(token_env=None)
     try:
@@ -1302,6 +1346,38 @@ def test_method_not_allowed_error_contract():
         server.shutdown()
 
 
+def test_route_unconfigured_404_and_verification_failed_400():
+    """R30（dind 七战 e2e 实证）：全新部署读路由=南向 NOT_FOUND 曾裸 500，
+    契约=404（R22 沙箱面同款映射）；PUT 实核失败=南向 FAILED_PRECONDITION
+    曾裸 500，客户端可修正条件须确定性 400（同 ExecOutputTooLarge 413 理由）。"""
+    server, req = make_app(token_env=None)
+    try:
+        INFERENCE_FAKE.get_error = FakeRpcError(
+            "NOT_FOUND",
+            "inference route 'inference.local' is not configured in workspace 'default'")
+        status, payload = req("GET",
+                              "/api/v1/inference/route?workspace=default")
+        assert status == 404 and "not found" in payload["error"], payload
+
+        INFERENCE_FAKE.get_error = None
+        INFERENCE_FAKE.set_error = FakeRpcError(
+            "FAILED_PRECONDITION",
+            "failed to verify inference endpoint for provider 'prov-x' "
+            "and model 'model-y' at 'http://10.10.210.1:19419'")
+        status, payload = req("PUT", "/api/v1/inference/route",
+                              {"workspace": "default", "provider": "prov-x",
+                               "model": "model-y", "no_verify": False})
+        assert status == 400 and "failed to verify" in payload["error"], payload
+        # 非 FAILED_PRECONDITION 的南向错误维持 500 兜底（不扩大映射面）
+        INFERENCE_FAKE.set_error = FakeRpcError("UNAVAILABLE", "connection refused")
+        status, payload = req("PUT", "/api/v1/inference/route",
+                              {"workspace": "default", "provider": "prov-x",
+                               "model": "model-y", "no_verify": False})
+        assert status == 500 and payload["error"] == "internal error", payload
+    finally:
+        server.shutdown()
+
+
 def test_404_route_message_contract():
     """未知路由文案锁定 `no route for METHOD /path`；尾斜杠归一。"""
     server, req = make_app(token_env=None)
@@ -1334,16 +1410,19 @@ def test_auth_rejects_lowercase_bearer_scheme():
 
 
 # ---------------------------------------------------------------------------
-# B3 审计修复批（fix-plan-2026-09-11 §5，先红后修）
+# 修复批（§5，先红后修）
 # ---------------------------------------------------------------------------
 
 class SlowExecClient(FakeSandboxClient):
-    """模拟慢南向调用（gRPC 在途）：exec 阻塞 2 秒。"""
+    """模拟慢南向调用（gRPC 在途）：exec_stream 阻塞 2 秒（起
+    facade 经 exec_stream 流式消费，慢点移到此处）。"""
 
-    def exec(self, sandbox_id, command, *, workdir=None, env=None, stdin=None,
-             timeout_seconds=None):
+    def exec_stream(self, sandbox_id, command, *, workdir=None, env=None,
+                    stdin=None, timeout_seconds=None):
         time.sleep(2)
-        return FakeExecResult()
+        yield from FakeSandboxClient.exec_stream(
+            self, sandbox_id, command, workdir=workdir, env=env,
+            stdin=stdin, timeout_seconds=timeout_seconds)
 
 
 def test_slow_exec_does_not_block_healthz():
@@ -1453,11 +1532,7 @@ def test_token_file_auth_and_fail_closed():
         os.chmod(token_file.name, 0o644)
         if unreadable_dir:
             os.rmdir(unreadable_dir)
-        for key, value in saved.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        restore_env(saved)
         config._config_cache = None
         config._token_cache = None
         server.shutdown()
@@ -1497,11 +1572,7 @@ def test_manager_token_file_result_cached():
         assert config.manager_token() == "env-token"
     finally:
         config._token_from_file = orig
-        for key, value in saved.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        restore_env(saved)
         config._config_cache = None
         config._token_cache = None
 
@@ -1555,12 +1626,391 @@ def test_max_upload_bytes_defaults_to_2gib():
         assert config.max_upload_bytes() == 2147483648, \
             config.max_upload_bytes()
     finally:
-        for key, value in saved.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        restore_env(saved)
         config._config_cache = None
+
+
+# ---------------------------------------------------------------------------
+# 修复批（§2，先红后修）
+# ---------------------------------------------------------------------------
+
+class RaceAdminStub(FakeAdminStub):
+    """C1-7：CreateProvider 撞 ALREADY_EXISTS（并发双 Create 的败者）——
+    upsert 必须收敛为一次 Update（200 created:false），而非 500。"""
+
+    def CreateProvider(self, request, timeout=None):
+        raise FakeRpcError("ALREADY_EXISTS",
+                           f"'{request.provider.metadata.name}' already exists")
+
+    def UpdateProvider(self, request, timeout=None):
+        return SimpleNamespace()
+
+
+class UnknownErrClient(FakeSandboxClient):
+    """反向锁定：非 NOT_FOUND 的南向异常不得被映射成 4xx。"""
+
+    def get(self, name, workspace=None):
+        raise FakeRpcError("UNKNOWN", "backend hiccup")
+
+
+def test_missing_sandbox_maps_404_not_500():
+    """（R22）：沙箱不存在 = 客户端寻址错误 → 404（docs/api-external
+    3.4/3.6/3.10 契约）。真实 SDK 对网关 NOT_FOUND 裸抛 grpc.RpcError（非
+    LookupError 子类），修复前全落兜底 500——本用例假件已改抛 FakeRpcError
+    对齐真实异常面，修复前必红（500）。"""
+    server, req = make_app(token_env=None)
+    try:
+        FAKE.missing_names.add("ghost")
+        status, payload = req("GET",
+                              "/api/v1/sandboxes/ghost?workspace=default")
+        assert status == 404 and "not found" in payload["error"], \
+            (status, payload)
+        status, payload = req("DELETE",
+                              "/api/v1/sandboxes/ghost?workspace=default")
+        assert status == 404, (status, payload)
+        status, payload = req("POST", "/api/v1/sandboxes/ghost/wait-ready",
+                              {"workspace": "default", "timeout_seconds": 1})
+        assert status == 404, (status, payload)
+        status, payload = req("GET",
+                              "/api/v1/sandboxes/ghost/logs?workspace=default")
+        assert status == 404, (status, payload)
+        # R22 审查补全（code-review F3）：update-config 对不存在沙箱同属
+        # 寻址错误 → 404（修复面曾漏掉该端点，仍落兜底 500）
+        status, payload = req("POST",
+                              "/api/v1/sandboxes/ghost/update-config",
+                              {"workspace": "default", "policy": {"version": 1}})
+        assert status == 404, (status, payload)
+    finally:
+        server.shutdown()
+
+
+def test_unhandled_log_line_sanitized():
+    """R26e 审查补全（code-review F2）：兜底日志除 path 外对异常文本同样
+    中和——南向异常 detail 常回显请求资源名（百分号解码后的路径参数），
+    %0A 可经"path 参数 → 异常消息 → 兜底 {exc}"二段路径注入伪 stderr
+    日志行。内容保留（? 替换），换行消灭。"""
+    import asyncio
+    import contextlib
+    import io
+    app = api.create_app()
+    handler = app.exception_handlers[Exception]
+    req = SimpleNamespace(method="GET",
+                          url=SimpleNamespace(path="/x\n[manager] fake"))
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        resp = asyncio.run(
+            handler(req, RuntimeError("boom\n[manager] injected")))
+    assert resp.status_code == 500
+    text = buf.getvalue()
+    assert text.count("\n") == 1, f"log injection survived: {text!r}"
+    assert "boom?[manager] injected" in text, \
+        f"sanitized detail must stay readable in-line: {text!r}"
+    assert "/x?[manager] fake" in text, text
+
+
+def test_exec_unknown_uuid_maps_404():
+    """（R22）：/exec 对不存在的 sandbox_id 同为寻址错误 → 404（曾
+    500——上游会把服务端故障口径误用于重试/降级）。"""
+    server, req = make_app(token_env=None)
+    try:
+        FAKE.missing_ids.add("sb-ghost")
+        status, payload = req("POST", "/api/v1/sandboxes/exec",
+                              {"sandbox_id": "sb-ghost",
+                               "command": ["/bin/echo", "hi"]})
+        assert status == 404 and "not found" in payload["error"], \
+            (status, payload)
+    finally:
+        server.shutdown()
+
+
+def test_upstream_non_not_found_stays_500():
+    """（R22）反向锁定：NOT_FOUND 之外的南向 RpcError 不映射——维持
+    兜底 500 "internal error"（health→500 是 api-external 已接受口径），
+    防映射过宽把上游故障伪装成客户端寻址错误。"""
+    server, req = make_app(token_env=None)
+    api.facade = GatewayFacade(client_factory=lambda: UnknownErrClient())
+    try:
+        status, payload = req("GET",
+                              "/api/v1/sandboxes/dsh-fake?workspace=default")
+        assert status == 500 and payload == {"error": "internal error"}, \
+            (status, payload)
+    finally:
+        server.shutdown()
+
+
+def test_exec_timeout_server_side_cap():
+    """（R23）：exec timeout_seconds 服务端上限 600（wait_ready
+    同族漏修——客户端曾可传 1e9 抬 gRPC deadline 无限占线程池令牌+南向
+    连接）+ 严格 int（bool/float/字符串数字一律 400，R21 口径）。engine
+    现役实参 60/20/600 内，兼容性已核（§0）。"""
+    server, req = make_app(token_env=None)
+    try:
+        for bad in (601, 10**9, -1, "30", True, 30.5):
+            status, payload = req("POST", "/api/v1/sandboxes/exec",
+                                  {"sandbox_id": "sb-1",
+                                   "command": ["/bin/echo", "hi"],
+                                   "timeout_seconds": bad})
+            assert status == 400 and "timeout_seconds" in payload["error"], \
+                (bad, status, payload)
+        # 边界含 600；缺省（不传）不受限
+        for ok in (600, 60, None):
+            body = {"sandbox_id": "sb-1", "command": ["/bin/echo", "hi"]}
+            if ok is not None:
+                body["timeout_seconds"] = ok
+            status, payload = req("POST", "/api/v1/sandboxes/exec", body)
+            assert status == 200, (ok, status, payload)
+    finally:
+        server.shutdown()
+
+
+def test_empty_token_file_fail_closed():
+    """（R24）：tokenFile 存在但内容为空 = 配置错误 → fail-closed 503
+    （修复前空 = 无 token → 整面放行；非 loopback 轮换窗口即裸奔）。
+    validate() 分治：loopback 放行启动但 /api/* 持续 503（stderr 告警）、
+    非 loopback 拒启。异常不落缓存：写入真值后自愈（本用例空文件期间从未
+    成功落缓存故下一请求即愈；一般情形至多延迟一个 5s 缓存 TTL）。"""
+    empty_file = tempfile.NamedTemporaryFile("w", suffix=".token",
+                                             delete=False)
+    empty_file.close()
+    cfg = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+    cfg.write(json.dumps({"tokenFile": empty_file.name}))
+    cfg.close()
+    saved = {k: os.environ.get(k) for k in
+             ("OPENSHELL_MANAGER_TOKEN", "OPENSHELL_MANAGER_CONFIG",
+              "OPENSHELL_MANAGER_BIND")}
+    server, req = make_app(token_env=None)
+    try:
+        os.environ["OPENSHELL_MANAGER_CONFIG"] = cfg.name
+        os.environ.pop("OPENSHELL_MANAGER_TOKEN", None)
+        config._config_cache = None
+        config._token_cache = None
+        status, payload = req("GET",
+                              "/api/v1/inference/route?workspace=default",
+                              token="whatever")
+        assert status == 503 and "token" in payload["error"], (status, payload)
+        status, payload = req("GET", "/healthz")
+        assert status == 200 and payload["ok"] is True, payload
+
+        os.environ["OPENSHELL_MANAGER_BIND"] = "127.0.0.1"
+        config.validate()  # loopback + 空 tokenFile：放行（dev 语义）
+        os.environ["OPENSHELL_MANAGER_BIND"] = "0.0.0.0"
+        try:
+            config.validate()
+            raise AssertionError("empty tokenFile must refuse non-loopback bind")
+        except RuntimeError:
+            pass
+
+        # 自愈：写入真值后（无缓存复位）下一请求按新 token 鉴权
+        with open(empty_file.name, "w", encoding="utf-8") as fh:
+            fh.write("healed-token\n")
+        status, payload = req("GET",
+                              "/api/v1/inference/route?workspace=default",
+                              token="wrong")
+        assert status == 401, (status, payload)
+        status, payload = req("GET",
+                              "/api/v1/inference/route?workspace=default",
+                              token="healed-token")
+        assert status == 200 and payload["provider"] == "prov-x", payload
+    finally:
+        restore_env(saved)
+        config._config_cache = None
+        config._token_cache = None
+        server.shutdown()
+
+
+def test_multipart_preamble_capped():
+    """（R25）：首个 boundary 前的前导超上限 → 400（修复前无界累积，
+    2GiB 缺省上限内发永不含 boundary 的 body 可把全量字节缓冲进内存——
+    OOM 管理面，模块 docstring"内存恒定"在前置阶段不成立）。"""
+    server, req = make_app(token_env=None)
+    try:
+        body, ctype = multipart_body({"path": "/tmp/x"}, file_content=b"hi")
+        blob = b"z" * (1024 * 1024 + 512 * 1024) + body  # 1.5MiB 前导 + 合法体
+        status, payload = req("POST", "/api/v1/sandboxes/sb-1/files",
+                              raw=blob, ctype=ctype)
+        assert status == 400 and "preamble" in payload["error"], \
+            (status, payload)
+    finally:
+        server.shutdown()
+
+
+def test_multipart_part_headers_capped():
+    """（R25）：单 part 头块超上限 → 400（修复前头块扫描无界，超长
+    无终止符的头会把后续字节一并缓冲进内存）。"""
+    server, req = make_app(token_env=None)
+    try:
+        blob = (b"--b\r\n"
+                b'Content-Disposition: form-data; name="junk"\r\n'
+                b"X-Pad: " + b"p" * (200 * 1024) + b"\r\n"
+                b"--b\r\n"
+                b'Content-Disposition: form-data; name="path"\r\n\r\n'
+                b"/tmp/x\r\n"
+                b"--b--\r\n")
+        status, payload = req("POST", "/api/v1/sandboxes/sb-1/files",
+                              raw=blob,
+                              ctype="multipart/form-data; boundary=b")
+        assert status == 400 and "headers" in payload["error"], \
+            (status, payload)
+    finally:
+        server.shutdown()
+
+
+def test_query_int_range_maps_400():
+    """（R26a）：query 整数范围钳制——负数/超 int32 值曾直通 proto
+    构造炸 ValueError → 兜底 500（违反 README 错误码段"客户端格式错误
+    一律 400"红线；limit=-7 触发 proto ValueError 已实测在案）。"""
+    server, req = make_app(token_env=None)
+    try:
+        status, payload = req("GET", "/api/v1/sandboxes?limit=-1")
+        assert status == 400 and "limit" in payload["error"], payload
+        status, payload = req("GET", "/api/v1/sandboxes?limit=99999999999")
+        assert status == 400 and "limit" in payload["error"], payload
+        status, payload = req("GET", "/api/v1/sandboxes?limit=0")
+        assert status == 200, payload  # 0 是合法下界
+        status, payload = req("GET",
+                              "/api/v1/sandboxes/x/logs"
+                              "?workspace=default&lines=-5")
+        assert status == 400 and "lines" in payload["error"], payload
+        status, payload = req("GET",
+                              "/api/v1/sandboxes/x/logs"
+                              "?workspace=default&since_ms=-1")
+        assert status == 400 and "since_ms" in payload["error"], payload
+        status, payload = req("GET",
+                              "/api/v1/sandboxes/x/services"
+                              "?workspace=default&offset=-1")
+        assert status == 400 and "offset" in payload["error"], payload
+    finally:
+        server.shutdown()
+
+
+def test_target_port_range():
+    """（R26a）：target_port 语义范围 1..65535（端口域），越界 400
+    （0/65536/2**40 曾直通 stub 或炸 500）。"""
+    server, req = make_app(token_env=None)
+    try:
+        for bad in (0, -1, 65536, 2**40):
+            status, payload = req("POST",
+                                  "/api/v1/sandboxes/dsh-fake/services",
+                                  {"workspace": "default", "service": "s",
+                                   "target_port": bad})
+            assert status == 400 and "target_port" in payload["error"], \
+                (bad, status, payload)
+        status, payload = req("POST",
+                              "/api/v1/sandboxes/dsh-fake/services",
+                              {"workspace": "default", "service": "s",
+                               "target_port": 65535})
+        assert status == 200 and payload["target_port"] == 65535, payload
+    finally:
+        server.shutdown()
+
+
+def test_wait_ready_strict_number():
+    """（R26b）：wait_ready timeout_seconds 严格数值（R21 口径）——
+    "300"/True 曾被 float() 静默放行；json.loads 默认收 NaN 字面量，
+    `nan > cap` 恒 False 曾绕过 上限直达 SDK 炸 500；负值同样 500。"""
+    server, req = make_app(token_env=None)
+    try:
+        for bad in ("300", True, float("nan"), -1, "abc"):
+            status, payload = req("POST",
+                                  "/api/v1/sandboxes/dsh-fake/wait-ready",
+                                  {"workspace": "default",
+                                   "timeout_seconds": bad})
+            assert status == 400 and "timeout_seconds" in payload["error"], \
+                (bad, status, payload)
+        status, payload = req("POST",
+                              "/api/v1/sandboxes/dsh-fake/wait-ready",
+                              {"workspace": "default", "timeout_seconds": 12.5})
+        assert status == 200 and FAKE.calls[-1][3] == 12.5, payload
+    finally:
+        server.shutdown()
+
+
+def test_provider_credentials_strict():
+    """（R26c）：providers_upsert 的 credentials/config 是 str→str 映射
+    ——非对象或值含非字符串曾直透 proto map 构造炸 TypeError/ValueError →
+    500（R11 字符串字段族的 map 形态同族补口；空 falsy 值曾静默当 {}）。"""
+    server, req = make_app(token_env=None)
+    try:
+        for bad in ({"k": 1}, {"k": None}, [], "x"):
+            status, payload = req("PUT", "/api/v1/inference/providers",
+                                  {"workspace": "default", "name": "prov-x",
+                                   "type": "openai", "credentials": bad})
+            assert status == 400 and "credentials" in payload["error"], \
+                (bad, status, payload)
+        status, payload = req("PUT", "/api/v1/inference/providers",
+                              {"workspace": "default", "name": "prov-x",
+                               "type": "openai", "credentials": {"K": "v"},
+                               "config": {"C": "d"}})
+        assert status == 200 and payload["name"] == "prov-x", payload
+    finally:
+        server.shutdown()
+
+
+def test_upsert_race_converges_to_update():
+    """（R26c）：upsert 的 check-then-act 竞态——并发双 Create 的败者
+    收 ALREADY_EXISTS 必须落一次 Update 收敛（200 created:false），而非
+    500。"""
+    server, req = make_app(token_env=None)
+    gw.pb_grpc_stub = lambda client: RaceAdminStub()
+    try:
+        status, payload = req("PUT", "/api/v1/inference/providers",
+                              {"workspace": "default", "name": "prov-race",
+                               "type": "openai"})
+        assert status == 200 and payload == {"name": "prov-race",
+                                             "created": False}, payload
+    finally:
+        gw.pb_grpc_stub = lambda client: FakeAdminStub()
+        server.shutdown()
+
+
+def test_upload_finalize_failure_cleans_part():
+    """（R26d）：finalize mv/chmod 失败也必须 rm -f .part（修复前仅
+    chunk 写失败走清理，mv 因磁盘满/权限失败时 .part 残留——违背
+    write_file_stream docstring 的 any-failure 承诺；锁定测试只注入过
+    chunk 写失败路径）。"""
+    server, req = make_app(token_env=None)
+    try:
+        FAKE.fail_exec_containing = "mv "
+        calls_base = len(FAKE.calls)
+        body, ctype = multipart_body({"path": "/tmp/finalize/f.txt"},
+                                     file_content=b"hi")
+        status, payload = req("POST", "/api/v1/sandboxes/sb-1/files",
+                              raw=body, ctype=ctype)
+        assert status == 500 and payload == {"error": "internal error"}, \
+            payload
+        execs = [c for c in FAKE.calls[calls_base:] if c[0] == "exec"]
+        assert execs[-1][2] == ["rm", "-f", "/tmp/finalize/f.txt.part"], \
+            execs[-1]
+    finally:
+        server.shutdown()
+
+
+def test_log_safe_strips_control_chars():
+    """（R26e）：兜底日志的 path 不可打印字符中和——%0A 解码换行曾可
+    向 stderr 注入伪日志行（下游日志聚合可被污染）。"""
+    from urllib.parse import unquote
+    dirty = unquote("/api/v1/%0A[manager] fake log line")
+    safe = api._log_safe(dirty)
+    assert "\n" not in safe and "?" in safe, safe
+    assert api._log_safe("/clean/path") == "/clean/path", \
+        "printable path must pass through untouched"
+
+
+def test_exec_output_cap_maps_413():
+    """（R27）：exec 输出累计上限（facade 层流式消费）——SDK exec 曾
+    无界攒 stdout/stderr，`cat /dev/zero` 类命令以线速耗尽管理面内存
+    （殃及全部租户的沙箱管理）。超限 413：确定性拒绝，避免 5xx 被上游按
+    服务端故障重试/降级。"""
+    server, req = make_app(token_env=None)
+    try:
+        api.facade.MAX_EXEC_OUTPUT_BYTES = 16  # 实例级覆盖：测试用小上限
+        status, payload = req("POST", "/api/v1/sandboxes/exec",
+                              {"sandbox_id": "sb-1",
+                               "command": ["/bin/echo", "hi"]})
+        assert status == 413 and "exec output" in payload["error"], \
+            (status, payload)
+    finally:
+        server.shutdown()
 
 
 if __name__ == "__main__":

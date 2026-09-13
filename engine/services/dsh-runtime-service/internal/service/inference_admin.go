@@ -5,6 +5,7 @@ package service
 
 import (
 	"context"
+	"regexp"
 	"errors"
 	"strings"
 
@@ -156,6 +157,12 @@ func (s *DSHRuntimeServiceImpl) SetInferenceRoute(ctx context.Context, req *pb.S
 	if req.GetProvider() == "" || req.GetModel() == "" {
 		return nil, status.Error(codes.InvalidArgument, "provider and model are required")
 	}
+	// R80: model 名白名单——route.Model 会被烘进沙箱 launchScript（bash -c，
+	// session.go launch），空格即分词断裂（launch 必败难归因）、shell 元字符即
+	// 沙箱内命令注入。写入口为主防线，读路径 shQuoteLite 兜底。
+	if !modelSafePattern.MatchString(req.GetModel()) {
+		return nil, status.Error(codes.InvalidArgument, "model name must match [A-Za-z0-9._:/-]+")
+	}
 	r, err := inferenceRunner()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "config: %v", err)
@@ -177,6 +184,9 @@ func (s *DSHRuntimeServiceImpl) SetInferenceRoute(ctx context.Context, req *pb.S
 
 
 // inferenceCanonicalKeys — 网关约定的端点/凭据键（精确大小写），直接放行。
+// modelSafePattern — R80: 路由 model 名字符白名单（写入口主防线）。
+var modelSafePattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]+$`)
+
 var inferenceCanonicalKeys = map[string]bool{
 	"OPENAI_BASE_URL": true, "OPENAI_API_KEY": true,
 	"BASE_URL": true, "API_KEY": true,
@@ -184,7 +194,7 @@ var inferenceCanonicalKeys = map[string]bool{
 }
 
 // inferenceAliasKeys — 小写别名 → [openai 系约定键, anthropic 约定键]。
-// R55 补遗（2026-09-11 审计）：约定键的全小写形态（openai_base_url 等）比裸别名更
+// R55 补遗约定键的全小写形态（openai_base_url 等）比裸别名更
 // 常见的直觉输入，同样静默存储不被网关识别——一并拦截。
 var inferenceAliasKeys = map[string][2]string{
 	"base_url":         {"OPENAI_BASE_URL", "BASE_URL"},

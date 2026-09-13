@@ -17,7 +17,7 @@ export const ALLOWED_ACTIONS: Record<string, TaskAction[]> = {
   TASK_STATUS_CANCELLED: [],
 };
 
-// autoRunTask — 创建后直达启动（人类指令 2026-09-01：审批流废除+任务应自动执行）。
+// autoRunTask — 创建后直达启动（审批流废除+任务应自动执行）。
 // 失败即上抛，状态如实停在 CREATED，可在任务页人工点启动续走。
 export async function autoRunTask(taskId: string): Promise<void> {
   const { api } = await import('../api/client'); // 与 dispatchAction 同款动态引入（避免渲染层循环依赖）

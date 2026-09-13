@@ -14,7 +14,7 @@
 | engine | `engine/AGENTS.md`（红线 R1-R10、任务认领、gate.sh） | `bash -c '. .toolchain/env.sh && bash .agent/verify.sh'`（伞仓快捷：`make test-engine`） |
 | web | `web/README.md` | `npm test`（vitest）；类型门禁在 `npm run build`（`make test-web` / `make build-web`） |
 | vscode-plugin | `vscode-plugin/README.md` | `npm test`（mocha，vscode 桩）；打包关卡 `npm run package` |
-| manager | `manager/README.md` + `manager/deploy/README.md` | `python3 -m pytest tests/ -q`（26 条离线契约） |
+| manager | `manager/README.md` + `manager/deploy/README.md` | `python3 -m pytest tests/ -q`（2026-09-13 实测 75 通过，随交付演进；现行口径以 manager 仓 verify 为准） |
 | openshell-gateway | `openshell-gateway/README.md` | 无测试仓：改配置后 `./deploy.sh --check` + `./gateway_lifecycle.sh verify` |
 | dsh-runtime | `dsh-runtime/AGENTS.md`（上游约定） | `pnpm test`（分层见其 docs/testing.md） |
 | dsh-pentest-sse | `dsh-pentest-sse/README.md` | `node --test test/*.test.mjs`（48 例门禁，含变异自检；node 22 不收目录参数）+ 构建期断言；镜像联动走 pb-C |

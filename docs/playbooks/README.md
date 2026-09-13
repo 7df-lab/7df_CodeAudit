@@ -6,7 +6,7 @@
 
 | 手册 | 模式 | 一句话 |
 |------|------|--------|
-| [pb-A-integration.md](pb-A-integration.md) | A 协同测试部署 | 同步全部子仓 → 起模拟栈 → e2e 七用例 → 失败路由 |
+| [pb-A-integration.md](pb-A-integration.md) | A 协同测试部署 | 同步全部子仓 → 起模拟栈 → e2e 11 用例 → 失败路由 |
 | [pb-B-iteration.md](pb-B-iteration.md) | B 子项目迭代 | 认领 → 进子仓开发 → 过子仓门禁 → 推送 → 判断联动验证 |
 | [pb-C-sandbox-image.md](pb-C-sandbox-image.md) | C 沙箱镜像链路 | dsh-runtime(源码)↔dsh-pentest-sse(配方) 双仓联动重建镜像 |
 | [pb-D-prod-deploy.md](pb-D-prod-deploy.md) | D 生产部署 | 只读检查 → 按拓扑部署 LXC 107 → 验证 → pin 锚点 |

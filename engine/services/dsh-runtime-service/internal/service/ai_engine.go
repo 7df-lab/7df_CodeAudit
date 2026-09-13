@@ -182,7 +182,7 @@ func (s *DSHRuntimeServiceImpl) runFiveAgentPipeline(ctx context.Context, req *p
 		},
 	}
 	// R56: 降级=沙箱路径失败（sbxErr），与 RuleScan 是否有产出无关——
-// :117 的 fallbackUsed 被"是否零发现"语义覆盖，不能作标志源
+// 117 的 fallbackUsed 被"是否零发现"语义覆盖，不能作标志源
 return &pb.RunAIAnalysisResponse{Result: res, FixSuggestions: fixSuggestions, Degraded: sbxErr != nil}, nil
 }
 

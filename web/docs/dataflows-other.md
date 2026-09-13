@@ -61,15 +61,14 @@ Shell 与 LoginPage 双处消费防闪烁。锚点：session.test.tsx。
 |----|------|------|------|
 | 报告下载 | `GET /v1/reports/:id/download`(blob) → `URL.createObjectURL` → 隐形 `<a download="${id}.${ext}">`.click() → revoke | 文件名扩展名由 `reportFileExt(format)`（I-63）；两处复用（ReportsPage/TaskDetail） | dict.test.ts |
 | AI 日志下载 | `Blob([text], 'text/plain;charset=utf-8')` → `ai-interaction.ai.log` | 纯前端文本落盘 | AIInteractionLogPanel.test.tsx |
-| 在线查看（HTML） | blob 首字节 `<` → `window.open(objectURL)` | — | — |
-| 在线查看（JSON） | blob.text → pretty JSON → `<pre>` 写入新窗口，`<>&` 转义防注入 | — | — |
+| 在线查看（HTML/JSON） | 统一 `openReportWindow(content,mime)`：about:blank 宿主窗 + `<iframe sandbox="">`（空 token：脚本全灭+来源隔离）+ blob 前置 CSP meta 双保险（453b6bd）；JSON 分支先 `JSON.stringify(...,2)`+尖括号转义再走同一通道 | B3AuditFixes.test.tsx | B5 已核 |
 | 报告内联摘要 | getReportContent（text 模式嗅探）→ `JSON.parse(content).summary` 四指标卡 | parse 失败静默不渲染（报告格式漂移不崩页） | clientContract.test.ts |
 
 ## D-5 表单/上传的 antd 拦截流
 
 | 流 | 契约 | 锚点 |
 |----|------|------|
-| ~~任务向导上传~~ | **已退役（2026-09-09 人类指令"项目层级决定源代码仓库"）**：任务向导不再提供上传/仓库/路径输入，源码来源由项目解析（任务 config 留空，启动时 task-service 走 ADR-203 兜底链）；原 onRemove 清 file_id 矛盾态（ADR-202/P-16）随控件移除消失 | TaskNewPage.test.tsx（无上传控件锁） |
+| ~~任务向导上传~~ | **已退役**：任务向导不再提供上传/仓库/路径输入，源码来源由项目解析（任务 config 留空，启动时 task-service 走 ADR-203 兜底链）；原 onRemove 清 file_id 矛盾态（ADR-202/P-16）随控件移除消失 | TaskNewPage.test.tsx（无上传控件锁） |
 | 项目弹窗上传 | `Upload.Dragger.beforeUpload` → `uploadArchive(file)` → file_id+原始文件名一并落项目 config（upload_file_id/upload_file_name，2026-09-09）→ `return Upload.LIST_IGNORE`（受控 fileList 禁 antd 追加）；`onRemove` 同步清两态（防 file_id 残留跨项目）；弹窗重开/提交后清空 | ProjectsPage.test.tsx |
 | 创建后自动链 | 建任务成功 → `autoRunTask`（start）失败仅 warning 不阻塞导航（任务页可手动续走）；建项目成功 → 自动 createTask(config 留空) → autoRun → navigate 任务页；项目详情页快建任务同链（2026-09-09） | ProjectsPage.test.tsx；ProjectDetailPage.test.tsx |
 
@@ -90,7 +89,7 @@ Shell 与 LoginPage 双处消费防闪烁。锚点：session.test.tsx。
 - 产物分包（vite manualChunks 四块：index/react/vendor/antd）与 nginx 缓存策略耦合：
   发版回访只需重下 index 块；`chunkSizeWarningLimit: 1000` 为 antd 单块固有体积的有依据接受。
 
-锚点：nginx 模板与 vite 配置为部署期人工验证（preview 冒烟）；guard.sh 锚定 `/v1` 反代存在性（文本级）。
+锚点：nginx 模板与 vite 配置为部署期人工验证（preview 冒烟；web/deploy.sh 可机检项=构建失败即断、health 200、/v1 401 透传、check drift 比对；guard.sh 只扫 src/ 下 *.ts/tsx，不检查 nginx/vite 配置——B5 修正此前虚构的『guard.sh 锚定 /v1 反代』表述）。
 
 ## D-7 错误边界与渲染兜底
 
@@ -117,6 +116,6 @@ Shell 与 LoginPage 双处消费防闪烁。锚点：session.test.tsx。
 REST 响应形状唯一锚定点 = `api/client.ts` 类型化端层；UI 组件只允许消费该层类型。
 历史上 20 处散落 `as` 手写形状曾让 `ProjectsPage res.dir` 死链路存活三个版本（ADR-203 实证）。
 配套机制：
-- 静态守卫：页面/组件目录禁止 `as {` 形状断言（guard.sh G-01）；
+- 静态守卫：~~页面/组件目录禁止 `as {` 形状断言~~——**guard.sh 无此检查**（G-01 实为禁止整模块 mock api/client）；as-cast 收敛是渐进纪律（P-03），残余靠代码评审，B5 修正此前虚构的守卫表述；
 - 契约测试：clientContract.test.ts 逐条锚定 E-xx 请求/响应形状；
 - 变异检验：改动形状处理逻辑时 mutation-check.sh 证明测试会红（见 regression-guard.md）。

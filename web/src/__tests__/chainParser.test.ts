@@ -1,12 +1,12 @@
 // ADR-195 回归锁：AI 结论 Source→Sink 链路普适解析器。
-// 主用例=人类指令实例原文（gw-0fb985799a00ab4ba3995b98-sbx-1 ai_reasoning，逐字）。
+// 主用例=真实实例原文（gw-0fb985799a00ab4ba3995b98-sbx-1 ai_reasoning，逐字）。
 import { describe, expect, it } from 'vitest';
 import { baseName, parseChain } from '../findings/chainParser';
 
 const USER_CASE =
   '[DSH-sandbox] MqttHttpApiListener.java:49 `private final HttpFilter authFilter;` 由 Builder 传入且默认 null；config() 第 93-95 行 `if (authFilter != null) { httpRouter.filter(authFilter); }` —— 为 null 时整个 router 无任何认证。MqttServerCreator.java:594-596 `enableMqttHttpApi()` 使用 `MqttHttpApiListener.Builder::build`，不设置 authFilter；starter/mica-mqtt-server-spring-boot-starter MqttServerProperties.java:261-265 `HttpBasicAuth.enable` 默认 false，MqttServerConfiguration.java:172-174 仅在 enable 时调用 `builder.basicAuth(...)`。而 MqttHttpApi.java 暴露的端点可直接操纵 broker：publish（153-167）、deleteClients 踢人（379-389）、subscribe 注入订阅（222-241）、getClients 列出全部客户端（365-369）。';
 
-describe('parseChain——人类指令实例原文', () => {
+describe('parseChain——真实实例原文', () => {
   const r = parseChain(USER_CASE);
 
   it('hops 按原文顺序：file:line → 中文行引用 → 括号区间（挂接最近文件）', () => {

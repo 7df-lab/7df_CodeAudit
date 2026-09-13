@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	codeauditcfg "github.com/codeaudit/go-config"
@@ -74,7 +75,7 @@ type SASTAdapterHandler struct {
 	store        map[string]*pb.UnifiedFinding // taskID-scoped finding id → entity
 	byTask       map[string]map[string]bool    // taskID → toolID → 已执行过扫描（进度按 task+tool 口径, ADR-133）
 	byTaskOrder  []string                       // R69: byTask 插入序（FIFO 容量驱逐）
-	idemCount    int                            // R69: 幂等缓存计数（容量护栏）
+	idemCount    atomic.Int64                   // R69: 幂等缓存计数（容量护栏）；R81: 改 atomic（原裸 int++ 并行扫描下为数据竞争）
 	idempotency  sync.Map                      // request_id → cached response
 	resultAddr   string                        // result-service 地址（落盘用；09 §2 行）
 	scanTimeout  time.Duration                 // 单工具扫描超时（07 §8 正式口径 20m 的本地映射；值在全局配置 sast_adapter.scan_timeout_s）
@@ -390,9 +391,11 @@ func (h *SASTAdapterHandler) RunSASTScan(ctx context.Context, req *pb.RunSASTSca
 	}
 
 	// 09 §2 行 sast-adapter→result 落盘 finding
+	var persistErr error
 	if len(protoFindings) > 0 && h.resultAddr != "" {
 		n, perr := persistToResult(h.resultAddr, req.GetTaskId(), reqID+"-"+req.GetToolId(), protoFindings)
 		if perr != nil {
+			persistErr = perr
 			log.Printf("[sast-adapter][%s] persist %d findings FAILED: %v", req.GetToolId(), len(protoFindings), perr)
 		} else {
 			log.Printf("[sast-adapter][%s] persisted %d findings to result-service", req.GetToolId(), n)
@@ -400,15 +403,22 @@ func (h *SASTAdapterHandler) RunSASTScan(ctx context.Context, req *pb.RunSASTSca
 	}
 
 	resp := &pb.RunSASTScanResponse{Result: tsr}
-	h.idempotency.Store(reqID, resp)
-	// R69: 幂等缓存容量护栏——超限整体重置（语义=重启遗忘；ADR-149b 每尝试独立键
-	// 令该表天然随任务数增长，长生命周期需上界）
-	h.idemCount++
-	if h.idemCount > 10_000 {
-		h.idempotency.Range(func(k, _ any) bool { h.idempotency.Delete(k); return true })
-		h.idemCount = 0
+	// R81: 落盘失败不进幂等缓存——否则同 request_id 重试永远拿缓存，本批 findings
+	// 对下游永久丢失；不缓存则重试重走扫描+落盘（result 侧 (request_id, finding_id) 幂等保证不重复）。
+	if persistErr == nil {
+		h.idempotency.Store(reqID, resp)
+		h.bumpIdemGuard()
 	}
 	return resp, nil
+}
+
+// bumpIdemGuard — R69: 幂等缓存容量护栏（超限整体重置=重启遗忘语义；ADR-149b 每
+// 尝试独立键令该表天然随任务数增长，长生命周期需上界）。R81: atomic 计数。
+func (h *SASTAdapterHandler) bumpIdemGuard() {
+	if h.idemCount.Add(1) > 10_000 {
+		h.idempotency.Range(func(k, _ any) bool { h.idempotency.Delete(k); return true })
+		h.idemCount.Store(0)
+	}
 }
 
 // RunMultipleScans — 多工具扫描汇总（04 §3.2 阶段2a）。
@@ -467,8 +477,10 @@ func (h *SASTAdapterHandler) RunMultipleScans(ctx context.Context, req *pb.RunMu
 	}
 
 	// 落盘（04 §6: 单工具失败不 fail 整体；落盘失败必须告警——ADR-133）
+	var persistErr error
 	if len(allFindings) > 0 && h.resultAddr != "" {
 		if _, perr := persistToResult(h.resultAddr, req.GetTaskId(), reqID+"-multi", allFindings); perr != nil {
+			persistErr = perr
 			log.Printf("[sast-adapter][multi] persist %d findings FAILED: %v", len(allFindings), perr)
 		}
 	}
@@ -478,7 +490,11 @@ func (h *SASTAdapterHandler) RunMultipleScans(ctx context.Context, req *pb.RunMu
 		TotalFindings:   total,
 		TotalDurationMs: time.Since(totalStart).Milliseconds(),
 	}}
-	h.idempotency.Store("multi:"+reqID, resp)
+	// R81: 同 RunSASTScan——落盘失败不缓存（multi: 键此前还完全在 R69 护栏之外）
+	if persistErr == nil {
+		h.idempotency.Store("multi:"+reqID, resp)
+		h.bumpIdemGuard()
+	}
 	return resp, nil
 }
 

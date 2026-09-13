@@ -8,6 +8,7 @@ import {
   getProject,
   getProjectConfig,
   getProjects,
+  listAllProjects,
   getReportContent,
   getSourceFile,
   getTools,
@@ -16,7 +17,7 @@ import {
 } from '../api/client';
 import { httpError, useFakeGateway, type HandlerCtx } from '../testsupport/fakeGateway';
 
-const gateway = useFakeGateway({
+const routes: Record<string, unknown> = {
   'GET /v1/projects': { projects: [], pagination: { next_cursor: '', has_next: false, total: 0 } },
   'POST /v1/projects': { project_id: 'p-new', name: 'A', repo_url: '', default_branch: 'main', default_scan_mode: 'SCAN_MODE_AI_ONLY', created_at: null },
   'GET /v1/projects/p1': { project_id: 'p1', name: 'Demo', repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null },
@@ -31,7 +32,8 @@ const gateway = useFakeGateway({
     if (ctx.query.get('path') === 'missing.py') httpError(404, { error: 'source root unavailable' });
     return { path: 'app.py', content: 'a\nb', total_lines: 2, bytes: 3, root_via: 'upload_link', resolved_via: 'exact' };
   },
-});
+};
+const gateway = useFakeGateway(routes);
 
 describe('E-12 getProjects 分页参数（E-00a JSON 序列化 + 空游标保留）', () => {
   it('缺省分页：不发 pagination；给 page_size：cursor 缺省补空串', async () => {
@@ -39,6 +41,59 @@ describe('E-12 getProjects 分页参数（E-00a JSON 序列化 + 空游标保留
     expect(gateway.requests[0].query).toBe('');
     await getProjects({ page_size: 10 });
     expect(gateway.requests[1].query).toBe(`pagination=${encodeURIComponent('{"page_size":10,"cursor":""}')}`);
+  });
+});
+
+// B5-P2-7（web-audit-2026-09-12）：项目下拉/索引全量获取——此前 getProjects() 缺省页
+// 只拿最新 20 条（服务端缺省 20 上限 100），项目 >20 后旧项目在下拉/筛选/深链预选中
+// 永远不可达。listAllProjects 循环翻页（服务端 project handler 恒发精确 has_next，循环
+// 可靠终止；10 页熔断防异常 has_next 恒真打爆）。fakeGateway 每文件单 adapter——
+// 覆写文件级 routes 条目（B3AuditFixes 同法），用后还原。
+describe('B5-P2-7 listAllProjects 循环翻页', () => {
+  const projectOf = (i: number) => ({
+    project_id: `p${i}`, name: `P${i}`, repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null,
+  });
+
+  it('两页合并 101 条：恰 2 次请求，第二发携带 page_size=100 + cursor=100', async () => {
+    const saved = routes['GET /v1/projects'];
+    routes['GET /v1/projects'] = (ctx: HandlerCtx) => {
+      const { cursor } = JSON.parse(ctx.query.get('pagination') ?? '{"cursor":""}');
+      if (cursor === '') {
+        return {
+          projects: Array.from({ length: 100 }, (_, i) => projectOf(i + 1)),
+          pagination: { next_cursor: '100', has_next: true, total: 101 },
+        };
+      }
+      return { projects: [projectOf(101)], pagination: { next_cursor: '', has_next: false, total: 101 } };
+    };
+    try {
+      const before = gateway.requests.length;
+      const all = await listAllProjects();
+      expect(all).toHaveLength(101);
+      expect(all[99].project_id).toBe('p100');
+      expect(all[100].project_id).toBe('p101');
+      const hits = gateway.requests.slice(before).filter((r) => r.url === '/v1/projects');
+      expect(hits).toHaveLength(2);
+      expect(hits[1].query).toContain(encodeURIComponent('"page_size":100'));
+      expect(hits[1].query).toContain(encodeURIComponent('"cursor":"100"'));
+    } finally {
+      routes['GET /v1/projects'] = saved;
+    }
+  });
+
+  it('has_next 恒真 → 10 页熔断（防异常服务端打爆）', async () => {
+    const saved = routes['GET /v1/projects'];
+    routes['GET /v1/projects'] = () => ({
+      projects: [projectOf(999)],
+      pagination: { next_cursor: '1', has_next: true, total: 999999 },
+    });
+    try {
+      const before = gateway.requests.length;
+      await listAllProjects();
+      expect(gateway.requests.slice(before).filter((r) => r.url === '/v1/projects')).toHaveLength(10);
+    } finally {
+      routes['GET /v1/projects'] = saved;
+    }
   });
 });
 
@@ -72,7 +127,7 @@ describe('E-14/E-15 响应裸形直传（无包装）', () => {
 });
 
 describe('E-11 uploadArchive multipart 契约', () => {
-  it('FormData 字段名 file；timeout 300s（B4-3 慢速上行大包）；响应 UploadArchiveResponse 直传', async () => {
+  it('FormData 字段名 file；timeout 300s（慢速上行大包）；响应 UploadArchiveResponse 直传', async () => {
     const file = new File(['PK'], 'src.zip', { type: 'application/zip' });
     const resp = await uploadArchive(file);
     const req = gateway.requests.find((r) => r.url === '/v1/uploads/archive')!;

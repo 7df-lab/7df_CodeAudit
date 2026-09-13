@@ -50,7 +50,7 @@ type Task struct {
 	Timeout      time.Duration
 	// PatchFixRound — 补丁失败反馈再生成回合（ADR-183 补遗②）：结果契约是
 	// submit_patches 工具参数/正文 {"patches":[...]}，Run 按 patches 语义解析
-	// （缺省 false=审计回合，按 findings 语义解析）。gw-d331089f 实证：再生成回合
+	// （缺省 false=审计回合，按 findings 语义解析）。实证：再生成回合
 	// 曾被套用 findings 解析——模型合规调用 submit_patches 后正文无 findings JSON，
 	// Run 报 "no JSON in DSH output" 判废，工具参数提取（ADR-184）永远轮不到执行。
 	PatchFixRound bool
@@ -101,9 +101,16 @@ type Config struct {
 	ManagerConfig     string // 共享 config.json 路径（空=兄弟布局 ../openshell-manager/config.json）
 	Workspace         string // 网关工作区（沙箱归属）
 	Image             string // DSH 沙箱镜像（dsh-pentest-sse，事实源 CD/dsh-pentest-sse/）
-	WaitReadyTimeoutS int    // wait-ready 上限（07 §8）
-	ExecTimeoutS      int    // 单次沙箱执行上限（07 §8 OpenShell 沙箱执行 30m 的本地映射）
-	DSHMaxTokens      int    // bridge DSH_MAX_TOKENS（provider 上限覆盖，ADR-166 补遗同源）
+	WaitReadyTimeoutS int           // wait-ready 上限（07 §8）
+	// HTTPClientTimeout — manager/bridge 响应头兜底超时（R76，R85 复审修正挂点）：
+	// 撤步骤超时（ADR-191）后整链无 deadline，manager/bridge 死而不应即永久挂起。
+	// 挂 Transport 层 ResponseHeaderTimeout 而非 http.Client.Timeout——后者连 body
+	// 读取一起计时，会把 SSE 长回合整体腰斩（07 §8:111 ADR-191：30m+ 健康流实测）；
+	// ResponseHeaderTimeout 只封"连接+响应头挂起"，已开流的 body 不截断。
+	// 须大于单会话合法时长（07 §8:126 沙箱会话 30m 上界）→ 缺省 2100s，
+	// yaml dsh_runtime.sandbox.http_client_timeout_s。
+	HTTPClientTimeout time.Duration
+	DSHMaxTokens      int           // bridge DSH_MAX_TOKENS（provider 上限覆盖，ADR-166 补遗同源）
 	// GatewayDialAddr — 网关服务路由拨号地址（host:port）。沙箱服务域
 	// {workspace}--{sandbox}--{service}.openshell.internal 无 DNS 通配（实测解析到
 	// 无关地址），须对网关 IP 直拨并以 Host 头路由；空=由 manager URL host 推导 :8080。
@@ -158,7 +165,9 @@ type ManagerRunner struct {
 }
 
 func NewManagerRunner(cfg Config) *ManagerRunner {
-	return &ManagerRunner{cfg: cfg, hc: &http.Client{}}
+	// R76/R85: 兜底挂 Transport 响应头层（不截断 SSE body 流——挂点论证见 Config 注释）
+	hc := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: cfg.HTTPClientTimeout}}
+	return &ManagerRunner{cfg: cfg, hc: hc}
 }
 
 // Enabled — mode=openshell 即启用（manager 不可达在 Run 时 fail-loud 并降级）。
@@ -291,11 +300,21 @@ type sandboxRef struct {
 	PhaseName string `json:"phase_name"`
 }
 
+// withDeadline — R76: d>0 时在 ctx 上派生 deadline（07 §8 超时矩阵）；<=0 原样透传
+// （模式 B/C ADR-191 不设外层时限，挂起由 HTTPClientTimeout 兜底）。Run/RunSession
+// 同构超时块收敛于此。
+func withDeadline(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, d)
+}
+
 // Run — 完整生命周期一次调用（ADR-168 bridge 通道，ADR-187 项目上传式）：
 // launch → 整项目 tar 上传 /sandbox/project → 单轮路径告知 prompt →
 // 收敛提取 findings → 恒 teardown。与 RunSession（ADR-173 多轮会话）共享
 // launch/uploadProject/turn 通道。代码全文不进 prompt（旧 _inline_workspace
-// 链路已废除：大型项目受 prompt 字节上限约束，根本不可行——人类指令 2026-09-03）。
+// 链路已废除：大型项目受 prompt 字节上限约束，根本不可行）。
 func (r *ManagerRunner) Run(ctx context.Context, t Task) (*Result, error) {
 	if !r.Enabled() {
 		return nil, ErrDisabled
@@ -303,6 +322,9 @@ func (r *ManagerRunner) Run(ctx context.Context, t Task) (*Result, error) {
 	if t.WorkspaceDir == "" {
 		return nil, fmt.Errorf("workspace dir is empty")
 	}
+	// R76: Task.Timeout 施加 deadline（07 §8；<=0 不施加——模式 B/C ADR-191 不设外层时限，挂起由 HTTPClientTimeout 兜底）
+	ctx, cancel := withDeadline(ctx, t.Timeout)
+	defer cancel()
 
 	ls, err := r.launch(ctx, t.TaskID)
 	if err != nil {
@@ -333,7 +355,7 @@ func (r *ManagerRunner) Run(ctx context.Context, t Task) (*Result, error) {
 	res.FinalText = finalText
 	res.ToolCalls = calls
 
-	// ADR-183 补遗②/gw-d331089f（R34）：补丁再生成回合按 patches 语义解析——
+	// ADR-183 补遗②/（R34）：补丁再生成回合按 patches 语义解析——
 	// 审计回合的 findings 解析对此类回合必然失败（契约是 submit_patches 工具调用，
 	// 正文无 findings JSON）。
 	if t.PatchFixRound {
@@ -386,7 +408,7 @@ func LastToolCallArgs(calls []ToolCall, name string) (string, bool) {
 // 含补丁 ≤4 条/大补丁单条）连续多次调用 submit_findings（单批巨型参数=数万 token
 // 长流，实测连续断流），此处合并全部批次并按 title+file+line 去重（模型自纠重试
 // 可能重发同批）。
-// 空列表陷阱（gw-5a96f1f7 实证修复）：submit_findings 提交 {"findings":[]} 是合法
+// 空列表陷阱（实证修复）：submit_findings 提交 {"findings":[]} 是合法
 // 产出（模型完整审计后判定无漏洞）——判定依据须是"至少一批参数解析成功"，而不是
 // len(merged)>0；后者把干净零发现误判为"两代通道皆空"→ "no JSON in DSH output"
 // 整轮报废，上游降级 RuleScan。
@@ -635,7 +657,7 @@ func (b *bridgeSession) stream(ctx context.Context, onRaw func([]byte), onHuman 
 //
 // 会话分流（ADR-181）：bridge 把沙箱内 DSH 主会话与其派生的子智能体（Task 工具）
 // 事件复用到同一 SSE 流，每帧顶层带 sessionId（main=主会话，UUID=子任务）。子任务
-// 的流式增量与主会话逐字交错曾致日志乱码（gw-3b0b9ebf 实证）——因此只有主会话
+// 的流式增量与主会话逐字交错曾致日志乱码（实证）——因此只有主会话
 // 流式渲染思考/输出正文；子任务仅渲染"启动/任务全文/回报"骨架，正文不倾倒。
 // 收敛投影（idle/assistantText/turn 错误）同样只认主会话：子任务回合错误不得
 // 误伤整体收敛判定。
@@ -713,7 +735,7 @@ func (p *sseParser) consume(kind, data string) *bridgeEvent {
 				// 会话运行中=过程噪音，静默（ADR-181）
 			case "idle":
 				// ADR-190：idle 收敛只认主会话——子任务（后台子代理）会话的 idle
-				// 不是回合终态（gw-391b10f1 实证：子代理 idle 曾被误判收敛 → 主会话
+				// 不是回合终态（实证：子代理 idle 曾被误判收敛 → 主会话
 				// 尚未产出 submit_findings 即拆沙箱 → "no JSON in DSH output"）。
 				if sid != "" && sid != mainSessionID {
 					p.emitLine(fmt.Sprintf("🤖 [子任务 %s] 空闲", agentShort(sid)))
@@ -1007,7 +1029,7 @@ func sandboxRefFrom(m map[string]any) sandboxRef {
 // ---------------------------------------------------------------------------
 // prompt 组装（ADR-187 路径告知式：项目整包上传沙箱 /sandbox/project，DSH 自行
 // 读盘分析；代码全文不进 prompt。旧 runner _inline_workspace 内联链路已废除——
-// 人类指令 2026-09-03：大型项目内联不可行，上传后告知路径才是正解）
+// 大型项目内联不可行，上传后告知路径才是正解）
 // ---------------------------------------------------------------------------
 
 var walkExcludes = map[string]bool{
@@ -1048,7 +1070,7 @@ const assignmentTemplate = `# CodeAudit 代码安全分析任务
 title/description/severity/cwe_id/file_path/start_line/confidence/reasoning/
 fix_suggestion/diff_patch）。正文只写简短结论摘要，不要在正文里另写 JSON。
 **分批提交（强制，ADR-194/ADR-211/ADR-220）**：单次提交的参数流越长，推理流中断风险越高
-（gw-7f06fe5d 实证：单批巨型提交连续 4 次断流；分批上线后大补丁单批仍断流——
+（实证：单批巨型提交连续 4 次断流；分批上线后大补丁单批仍断流——
 按补丁体量分层控制每批条数：
 - 不含 diff_patch（补丁为空字符串）的发现：每批最多 8 条；
 - 含 diff_patch 的发现：每批最多 4 条；补丁涉及多个文件或超过约 40 行时，该批只提交这 1 条；

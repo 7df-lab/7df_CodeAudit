@@ -6,7 +6,7 @@
 
 ## 前置
 
-1. 人类指令在案（账本记一行引用）。
+1. 在案（账本记一行引用）。
 2. `make status` + `make pull`：全部子仓干净且同步（生产从源码树构建，脏树不可复现）。
 3. 只读全链检查（不改任何东西）：
 
@@ -33,7 +33,7 @@ bash deploy/sandbox-deploy.sh codeaudit deploy
 ```
 
 codeaudit 单独入口：`bash deploy/prod/deploy.sh deploy`（tar 同步 → 远端 compose 构建
-7 Go 服务+4 中间件 → 等 postgres → 建空库 → 等 health）。首次部署拉镜像+9 次构建耗时长。
+7 Go 服务+4 中间件 → 等 postgres → 建空库 → 等 health）。首次部署拉镜像+7 次 Go 构建耗时长。
 
 ## 验证
 
@@ -45,7 +45,7 @@ curl -s http://gateway.internal:8090/health | head -1    # API 网关健康（80
 
 ## DoD
 
-- 四项目 `check`/`status` 全部就位，codeaudit 漂移已收敛（in sync）；
+- 五项目 `check`/`status` 全部就位，codeaudit 漂移已收敛（in sync）；
 - `/health` 返回 ok（原始输出留证 `.agent/evidence/`）；
 - 关键链路抽查：e2e 01/02（健康+认证）对生产端点手工过一遍，或说明为何跳过。
 

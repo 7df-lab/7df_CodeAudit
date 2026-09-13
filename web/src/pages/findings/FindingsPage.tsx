@@ -5,14 +5,11 @@ import { Button, Input, Select, Space, Table, Tag, Tooltip, Typography, message 
 import { DownloadOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { api, errStatus } from '../../api/client';
-import FindingDetailBody, { extractDataflowTrace, isAIReasoning, VERDICT_COLOR } from './FindingDetailBody';
+import FindingDetailBody, { extractDataflowTrace, isAIReasoning } from './FindingDetailBody';
 import { buildFindingsCsv, downloadCsv } from '../../findings/csv';
 import type { PaginationResponse, UnifiedFinding } from '../../api/types';
 import { AI_VERDICT, SEVERITY, zh } from '../../dict';
-
-const SEVERITY_COLOR: Record<string, string> = {
-  SEVERITY_CRITICAL: 'volcano', SEVERITY_HIGH: 'red', SEVERITY_MEDIUM: 'orange', SEVERITY_LOW: 'gold',
-};
+import { MONO_FONT, SEVERITY_COLOR, VERDICT_COLOR } from '../../dict/tokens';
 
 // AI 降级判定（2026-09-11 用户报障：RuleScan 兜底任务仍 COMPLETED、时间线全绿，用户无从
 // 得知 AI 推理未生效）。降级痕迹只在发现级：source_rule_id 带 rulescan-fallback: 前缀，
@@ -32,9 +29,9 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
   // 纯客户端过滤（inherited_from_task_id 空/非空），与结论/严重级筛选同链路
   const [sourceFilter, setSourceFilter] = useState<'all' | 'new' | 'inherited'>('all');
 
-  // B3-1（审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询——
+  // （审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询——
   // "加载更多"翻页后前页保留（pages 累积），不再是整表替换。
-  // 过滤条件不进 queryKey（审计 B3-1 复核结论）：结论/严重级/路径/来源筛选全是纯客户端行为
+  // 过滤条件不进 queryKey（审计 复核结论）：结论/严重级/路径/来源筛选全是纯客户端行为
   // （服务端 ListFindings 未接线 filter——result-service repo.List 第 4 参硬编码空串，proto
   // FilterRequest 只认 conditions 形状且网关 DiscardUnknown 静默丢弃未知字段，发 {filter:…}
   // 等于没发）。筛选在渲染层对已累计页过滤，游标分页序列不受影响，无"过滤后翻页错位"面；
@@ -62,13 +59,13 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
     onSuccess: () => {
       message.success('结论已回写');
       qc.invalidateQueries({ queryKey: ['findings', taskId] });
-      // B4-3（审计修复）：任务详情 Tabs 里本页与融合/审核视图并列——裁决改写 ai_verdict，
+      // （审计修复）：任务详情 Tabs 里本页与融合/审核视图并列——裁决改写 ai_verdict，
       // 融合去重分区/审核视图列读同一字段，不联动失效则切换 Tab 停留旧结论（前缀失效覆盖
       // ['fusion-findings', taskId] / ['review-findings', taskId]）。
       qc.invalidateQueries({ queryKey: ['fusion-findings'] });
       qc.invalidateQueries({ queryKey: ['review-findings'] });
     },
-    // B3-3（审计修复）：此前失败静默——补页面现有 message.error 通道，携带状态码
+    // （审计修复）：此前失败静默——补页面现有 message.error 通道，携带状态码
     onError: (e) => {
       const status = errStatus(e);
       message.error(`结论回写失败${status ? `（HTTP ${status}）` : ''}：${(e as Error).message}`);
@@ -105,7 +102,7 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
       render: (loc: UnifiedFinding['location']) => {
         if (!loc) return '—';
         const base = loc.file_path.split('/').pop();
-        return <Tooltip title={`${loc.file_path}:${loc.start_line}`}><span>{base}:{loc.start_line}</span></Tooltip>;
+        return <Tooltip title={`${loc.file_path}:${loc.start_line}`}><span style={{ fontFamily: MONO_FONT }}>{base}:{loc.start_line}</span></Tooltip>;
       },
     },
     // ADR-153 方案A: V1 契约 AI/人工共用 ai_verdict（proto L78/L1240），列头如实标注并悬停说明
@@ -163,7 +160,9 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
       title: '人工复核',
       render: (_: unknown, rec: UnifiedFinding) => (
         <Space>
-          <Button size="small" type="primary"
+          {/* 行内快捷 triage 不用 primary：表格里每行一个主色按钮会稀释真正的主操作
+              ；与"误报"同级，仅语义文字区分 */}
+          <Button size="small"
             onClick={() => quickTriage.mutate({ id: rec.finding_id, verdict: 'AI_VERDICT_TRUE_POSITIVE' })}>
             确认
           </Button>
@@ -179,7 +178,7 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
   // ADR-152: 复核可见性客户端过滤（已判定/未判定分组）+ 具体结论精确匹配
   // （修复：此前 onChange 走 else 分支恒 setVerdictFilter('')——下拉选任何具体结论都被清空，
   // 且 filter 参数形状不契约被网关丢弃，结论筛选整条链路从未生效过）
-  // B3-1：pages 累积（flatMap 保序拼接）后客户端过滤（结论分组/严重级/路径/来源）
+  // pages 累积（flatMap 保序拼接）后客户端过滤（结论分组/严重级/路径/来源）
   const rows = (data?.pages.flatMap((p) => p.findings) ?? []).filter((f) => {
     const reviewed = f.ai_verdict && f.ai_verdict !== 'AI_VERDICT_UNSPECIFIED';
     if (localFilter === 'reviewed') return reviewed;
@@ -226,13 +225,24 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
             { value: '__unreviewed', label: '未判定' }]}
         />
         <Typography.Text type="secondary">严重程度：</Typography.Text>
+        {/*  筛选选项带色阶点——色觉与列上 Tag 同源（SEVERITY_COLOR） */}
         <Select
           style={{ width: 130 }}
           allowClear
           placeholder="全部"
           value={severityFilter || undefined}
           onChange={(v) => setSeverityFilter(v ?? '')}
-          options={Object.entries(SEVERITY).map(([value, label]) => ({ value, label }))}
+          options={Object.entries(SEVERITY).map(([value, label]) => ({
+            value,
+            label: (
+              <span>
+                <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: SEVERITY_COLOR[value] ?? '#d9d9d9', marginRight: 6 }} />
+                {label}
+              </span>
+            ),
+            // ReactNode label 下 antd 不再自动生成 title——显式给出（测试选择器与无障碍名都依赖它）
+            title: label,
+          }))}
         />
         <Input
           style={{ width: 180 }}

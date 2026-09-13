@@ -390,7 +390,7 @@ func (s *ReportServiceImpl) generateReportContent(taskID string, templateName st
 }
 
 // renderHTMLReport — 服务端 HTML 报告（手写拼接，逐字段 htmlEsc 转义）。
-// 内容全部来自真实聚合（P4）；含代码片段列（ADR-141）——code 字段来自被扫源码
+// 内容全部来自真实聚合；含代码片段列（ADR-141）——code 字段来自被扫源码
 // （攻击者可控），漏转义即存储型 XSS（web 报告窗口渲染，R42）。
 func renderHTMLReport(payload map[string]interface{}, items []map[string]interface{}) string {
 	var b strings.Builder

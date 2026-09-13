@@ -1,7 +1,7 @@
 // archive.go — 上传件从 storage 拉回并解包（ADR-200）。
 //
-// 依据: 人类指令「gateway 直接上传原始压缩包到 storage（不在 gateway 落盘），
-// task 从 storage 拉回解包扫描；无法解压导致无法扫描时抛出对应的压缩包错误」。
+// 依据: gateway 直接上传原始压缩包到 storage（不在 gateway 落盘），
+// task 从 storage 拉回解包扫描；无法解压导致无法扫描时抛出对应的压缩包错误。
 // 09 §2 矩阵 task → storage 的 DownloadFile 通道承载。
 // 安全: safeJoin 穿越防护 + 软链/硬链拒绝 + 解包总量/文件数上限（口径与
 // ADR-145 原 gateway 解包一致，实现随通道迁至扫描发起方）。
@@ -38,7 +38,7 @@ const (
 
 // FetchUploadArchive — 从 storage 下载上传件并解包到 dest 根下，返回解包目录。
 // 错误一律携带阶段语义（"压缩包下载失败"/"压缩包解压失败"），由编排器
-// 原样写入 task.error_message（ADR-200 人类指令：解不开就报对应的错）。
+// 原样写入 task.error_message（ADR-200：解不开就报对应的错）。
 func FetchUploadArchive(ctx context.Context, storageAddr, fileID, dest string) (string, error) {
 	archivePath, err := downloadArchive(ctx, storageAddr, fileID, dest)
 	if err != nil {
@@ -74,7 +74,7 @@ func FetchUploadArchive(ctx context.Context, storageAddr, fileID, dest string) (
 const resolveRootDescentCap = 3
 
 // archiveExt — 归一化压缩包扩展名。.tar.gz 是双段后缀，filepath.Ext 只会取到
-// ".gz"（R33，gw-e295b637 实证：按 Ext 落盘 → archive-<ts>.gz 不满足自家解包
+// ".gz"（R33，实证：按 Ext 落盘 → archive-<ts>.gz 不满足自家解包
 // switch → .tar.gz 上传任务 prepare 必挂；.zip/.tgz 单段幸存故 ADR-200 起
 // E2E 未暴露）。白名单与落盘命名必须同源于此，不得各写一套后缀判断。
 func archiveExt(name string) string {
@@ -90,7 +90,7 @@ func archiveExt(name string) string {
 
 // ResolveProjectRoot — 解析真实项目根：解包目录内只有唯一子目录时逐层降入
 // （GitHub/常见发布压缩包带 "<repo>-<ver>/" 顶层壳，剥壳前后端/校验/沙箱三方
-// 才能共享同一相对路径口径——gw-f6a3523 实证：不剥壳时 fixpatch 校验、
+// 才能共享同一相对路径口径——实证：不剥壳时 fixpatch 校验、
 // source-file 解析、沙箱内模型视角三者根错位，7/7 补丁被误杀）。
 // 纯函数：非"唯一子目录"形态原样返回，不猜测；跨服务消费方（gateway
 // sourcefile.go 同名 helper）以本文件语义为口径基准。

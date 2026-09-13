@@ -18,11 +18,11 @@
 | openshell-gateway 8081 health curl 不通 | 已知实测口径：发布但不可达（仅绑 loopback）。探测改用 TCP 8080 或 manager `GET /api/v1/gateway/health`——不是故障，别"修"它 |
 | 缺 gitignored 文件（token/config/二进制） | 按 [dev-prod-map §4](../dev-prod-map.md) 重建表逐项处理（含 opengrep 的 sha256 校验方式与 manager token 的拉回命令） |
 | 沙箱镜像构建失败 | [pb-C](pb-C-sandbox-image.md) 失败出口（stage1=sha256 不符重跑 fetch；pnpm 阶段=dsh-runtime 未 commit） |
-| 并行会话互相覆写文件 | 立即停写；`git status` 核对归属；以时间上更后的人类指令为准，**禁止机械回滚**对方改动（LESSONS #9）；恢复后在账本记事件与裁决 |
+| 并行会话互相覆写文件 | 立即停写；`git status` 核对归属；以时间上更后的为准，**禁止机械回滚**对方改动（LESSONS #9）；恢复后在账本记事件与裁决 |
 | 我不确定某行为是不是 bug | 先查 LESSONS.md 是否已知问题；再查对应子仓 README/决策日志；仍不明 → 账本记 blocked + 疑点描述，提请人类 |
 
 ## 恢复后
 
 - 处置成功 → 回原 playbook 从失败步骤续跑，不要从头重做已过的步骤；
-- 涉及生产 / 删除数据 / 改密钥的处置 → 必须有人类指令（U5）；
+- 涉及生产 / 删除数据 / 改密钥的处置 → 必须有（U5）；
 - 每次真实故障与处置在账本记一行；新模式（表里没有的症状）→ 提请补进本表（同 commit 更新）。

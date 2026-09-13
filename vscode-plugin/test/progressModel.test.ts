@@ -202,7 +202,7 @@ describe('progressModel：格式化辅助', () => {
     assert.strictEqual(taskStatusLabel('TASK_STATUS_CANCELLED'), '已取消');
   });
 
-  it('STATUS_LABELS / STAGE_LABELS 键集 golden：与 proto TaskStatus 11 键 / StageType 7 键全等（伞仓 parity 闸门同口径，B2-4）', () => {
+  it('STATUS_LABELS / STAGE_LABELS 键集 golden：与 proto TaskStatus 11 键 / StageType 7 键全等（伞仓 parity 闸门同口径）', () => {
     assert.deepStrictEqual(Object.keys(STATUS_LABELS), [
       'TASK_STATUS_UNSPECIFIED',
       'TASK_STATUS_CREATED',

@@ -9,9 +9,11 @@ import { api } from '../../api/client';
 import FindingDetailBody from '../findings/FindingDetailBody';
 import type { UnifiedFinding } from '../../api/types';
 import { AI_VERDICT, zh } from '../../dict';
+import { VERDICT_COLOR } from '../../dict/tokens';
+import { PageLoading, QueryError } from '../../components/states';
 
 export default function ReviewView({ taskId }: { taskId: string }) {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['review-findings', taskId],
     queryFn: async () =>
       (await api.get('/v1/findings', { params: { task_id: taskId, pagination: { page_size: 100 } } })).data as {
@@ -20,9 +22,11 @@ export default function ReviewView({ taskId }: { taskId: string }) {
       },
   });
 
-  if (isLoading) return <Typography.Text type="secondary">加载中…</Typography.Text>;
+  //  补错误分支——此前查询失败永远停在加载文案（与 FusionView 同病）
+  if (isLoading) return <PageLoading />;
+  if (isError) return <QueryError error={error} onRetry={() => refetch()} />;
   const findings = data?.findings ?? [];
-  // B3-4（审计修复）：视图单页拉 100 条截断——has_next=true 时如实提示，不再静默丢剩余
+  // （审计修复）：视图单页拉 100 条截断——has_next=true 时如实提示，不再静默丢剩余
   const truncated = data?.pagination?.has_next === true;
 
   return (
@@ -65,7 +69,7 @@ export default function ReviewView({ taskId }: { taskId: string }) {
             {
               title: '已落盘结论', dataIndex: 'ai_verdict', width: 140,
               // 空值显式归一"未判定"（zh 已无枚举特判，B3-5；展示行为不变）
-              render: (v: string) => <Tag>{zh(AI_VERDICT, v || 'AI_VERDICT_UNSPECIFIED')}</Tag>,
+              render: (v: string) => <Tag color={VERDICT_COLOR[v]}>{zh(AI_VERDICT, v || 'AI_VERDICT_UNSPECIFIED')}</Tag>,
             },
             {
               title: '结论理由（原文）', dataIndex: 'ai_reasoning',

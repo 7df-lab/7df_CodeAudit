@@ -21,7 +21,7 @@ import (
 // helpers
 
 func setupProjectHandler() *handler.ProjectHandler {
-	store := repo.NewMemoryStore()
+	store := repo.NewMemoryStore(true)
 	idm := idempotency.New()
 	svc := service.NewProjectService(store)
 	return handler.NewProjectHandler(svc, idm)
@@ -30,10 +30,18 @@ func setupProjectHandler() *handler.ProjectHandler {
 func setupUserHandler(t *testing.T) *handler.UserHandler {
 	t.Helper()
 	t.Setenv("CODEAUDIT_JWT_SECRET", "test-secret-r65") // R65: jwtSecret fail-fast 后测试须显式供密钥
-	store := repo.NewMemoryStore()
+	store := repo.NewMemoryStore(true)
 	idm := idempotency.New()
 	svc := service.NewUserService(store)
 	return handler.NewUserHandler(svc, idm)
+}
+
+// wantCode — 断言 err 携带期望的 gRPC 错误码（status.FromError 样板收敛）。
+func wantCode(t *testing.T, err error, want codes.Code) {
+	t.Helper()
+	if status.Code(err) != want {
+		t.Fatalf("want %v, got %v (err=%v)", want, status.Code(err), err)
+	}
 }
 
 // ---- ProjectService Tests ----
@@ -132,14 +140,7 @@ func TestIdempotency_SameKeyDifferentBody_ReturnsAlreadyExists(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ALREADY_EXISTS error, got nil")
 	}
-
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("expected gRPC status error, got: %v", err)
-	}
-	if st.Code() != codes.AlreadyExists {
-		t.Errorf("expected ALREADY_EXISTS(9), got %s(%d)", st.Code(), st.Code())
-	}
+	wantCode(t, err, codes.AlreadyExists)
 }
 
 func TestMissingMetadata_ReturnsInvalidArgument(t *testing.T) {
@@ -156,14 +157,7 @@ func TestMissingMetadata_ReturnsInvalidArgument(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected INVALID_ARGUMENT error, got nil")
 	}
-
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("expected gRPC status error, got: %v", err)
-	}
-	if st.Code() != codes.InvalidArgument {
-		t.Errorf("expected INVALID_ARGUMENT(3), got %s(%d)", st.Code(), st.Code())
-	}
+	wantCode(t, err, codes.InvalidArgument)
 }
 
 func TestMissingMetadataRequestId_ReturnsInvalidArgument(t *testing.T) {
@@ -182,14 +176,7 @@ func TestMissingMetadataRequestId_ReturnsInvalidArgument(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected INVALID_ARGUMENT error, got nil")
 	}
-
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("expected gRPC status error, got: %v", err)
-	}
-	if st.Code() != codes.InvalidArgument {
-		t.Errorf("expected INVALID_ARGUMENT(3), got %s(%d)", st.Code(), st.Code())
-	}
+	wantCode(t, err, codes.InvalidArgument)
 }
 
 func TestGetProject_NotFound(t *testing.T) {
@@ -201,14 +188,7 @@ func TestGetProject_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected NotFound error, got nil")
 	}
-
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("expected gRPC status error, got: %v", err)
-	}
-	if st.Code() != codes.NotFound {
-		t.Errorf("expected NotFound, got %s", st.Code())
-	}
+	wantCode(t, err, codes.NotFound)
 }
 
 func TestCreateAndGetProject(t *testing.T) {
@@ -394,14 +374,7 @@ func TestLogin_InvalidCredentials(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected Unauthenticated error, got nil")
 	}
-
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("expected gRPC status error, got: %v", err)
-	}
-	if st.Code() != codes.Unauthenticated {
-		t.Errorf("expected Unauthenticated, got %s", st.Code())
-	}
+	wantCode(t, err, codes.Unauthenticated)
 }
 
 func TestLogin_NonexistentUser(t *testing.T) {
@@ -502,7 +475,6 @@ func TestListProjects_NewestFirst(t *testing.T) {
 	}
 }
 
-
 // R-32 锁定测试：CreateProject 缺 project 包装键/空 name 必须 400（InvalidArgument），
 // 禁止静默创建全空项目（dind 全新环境实测：裸 {"name":...} 顶层载荷 201 空壳）。
 // 校验先于 idm/svc 触达，零值 handler 即可离线验证。
@@ -533,3 +505,86 @@ func TestCreateProjectRejectsMissingProject(t *testing.T) {
 	}
 }
 
+// R74 锁定测试：repo_url scheme 白名单 + 选项注入拒绝——git `ext::<command>` 外置
+// 传输会在 task-service 容器内执行任意命令（认证后 RCE）；前导 '-' 会被 git 当作
+// 选项（参数走私）。空 repo_url 合法（上传模式）。校验先于依赖触达，零值 handler 可离线验证。
+func TestCreateProject_RejectsUnsafeRepoURL(t *testing.T) {
+	h := &handler.ProjectHandler{}
+	cases := []struct{ desc, repoURL string }{
+		{"git ext:: 外置传输 RCE", "ext::sh -c touch /tmp/pwned"},
+		{"前导空白使 parse 短路", " ext::sh -c id"},
+		{"前导 '-' 选项走私", "-oProxyCommand=evil"},
+		{"白名单外 scheme", "ftp://example.com/x.git"},
+	}
+	for _, tc := range cases {
+		_, err := h.CreateProject(context.Background(), &v1.CreateProjectRequest{
+			Metadata: &v1.RequestMetadata{RequestId: "req-r74-" + tc.desc},
+			Project:  &v1.Project{Name: "p", RepoUrl: tc.repoURL},
+		})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("%s: repoURL=%q 错误码=%v, 期望 InvalidArgument", tc.desc, tc.repoURL, status.Code(err))
+		}
+		if !strings.Contains(status.Convert(err).Message(), "repo_url") {
+			t.Fatalf("%s: 错误未锚定 repo_url 校验本体: %v", tc.desc, err)
+		}
+	}
+	// default_branch 前导 '-' 同面拒绝（clone -b <branch> 选项走私）
+	_, err := h.CreateProject(context.Background(), &v1.CreateProjectRequest{
+		Metadata: &v1.RequestMetadata{RequestId: "req-r74-branch"},
+		Project:  &v1.Project{Name: "p", RepoUrl: "https://git.example/x.git", DefaultBranch: "-u exec"},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("default_branch 前导 '-': 错误码=%v, 期望 InvalidArgument", status.Code(err))
+	}
+}
+
+// R74: 合法 scheme（http/https/ssh/git/file，file 为 V1 凭据边界声明支持的形态）放行。
+func TestCreateProject_AllowedRepoURLSchemes(t *testing.T) {
+	h := setupProjectHandler()
+	for i, u := range []string{
+		"https://git.example/x.git",
+		"http://git.internal/x.git",
+		"ssh://git@git.example/x.git",
+		"git@host:x.git",
+		"file:///data/repos/x",
+	} {
+		resp, err := h.CreateProject(context.Background(), &v1.CreateProjectRequest{
+			Metadata: &v1.RequestMetadata{RequestId: fmt.Sprintf("req-r74-ok-%d", i)},
+			Project:  &v1.Project{Name: fmt.Sprintf("p-%d", i), RepoUrl: u},
+		})
+		if err != nil {
+			t.Fatalf("scheme %q 被误拒: %v", u, err)
+		}
+		if resp.GetRepoUrl() != u {
+			t.Fatalf("repo_url 回读不一致: %q", resp.GetRepoUrl())
+		}
+	}
+}
+
+// R74: UpdateProject 通道同样过白名单（存量项目被改写为 ext:: 不得绕过）。
+func TestUpdateProject_RejectsUnsafeRepoURL(t *testing.T) {
+	h := &handler.ProjectHandler{}
+	_, err := h.UpdateProject(context.Background(), &v1.UpdateProjectRequest{
+		Project: &v1.Project{ProjectId: "proj-x", Name: "p", RepoUrl: "ext::sh -c id"},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("UpdateProject ext:: 错误码=%v, 期望 InvalidArgument", status.Code(err))
+	}
+}
+
+// R85（复审）: UpdateUser 对缺省 state（UNSPECIFIED）保全存量——网关非 admin self
+// 剥离 state 后依赖此语义（防被停用户自复活），且修复"未带 state 字段的更新把
+// state 写成 0"的既有清零面。
+func TestUpdateUser_PreservesStateWhenUnspecified(t *testing.T) {
+	store := repo.NewMemoryStore(true)
+	svc := service.NewUserService(store)
+	// 种子 user-001 state=ACTIVE；模拟"只改 email、不带 state"的更新
+	_, ok := svc.UpdateUser(&v1.User{UserId: "user-001", Email: "new@x"})
+	if !ok {
+		t.Fatal("UpdateUser failed")
+	}
+	rec, _ := store.GetUser("user-001")
+	if rec.User.GetState() != v1.User_USER_STATE_ACTIVE {
+		t.Fatalf("state 被缺省更新清零: %v, want ACTIVE（R85 保全缺失）", rec.User.GetState())
+	}
+}

@@ -52,7 +52,7 @@ export function backoffMs(retryAfterS: number | undefined, nowMs: number): numbe
   return nowMs + s * 1000;
 }
 
-// REST 超时（B2-7）：模块级常量 + export（可测试、可被调用方引用）。
+// REST 超时：模块级常量 + export（可测试、可被调用方引用）。
 // 经 AbortSignal.timeout 注入 fetch——网关挂死时请求不再无限悬挂（轮询/watcher
 // 会堆积在途请求）。Node ≥17.3 / 现代浏览器原生支持。
 export const REQUEST_TIMEOUT_MS = 60_000; // 普通 JSON 请求
@@ -96,7 +96,7 @@ export class CodeAuditClient {
     try {
       await this.requestJson('POST', '/v1/auth/logout', { access_token: this.tokens.getAccessToken() }, { skipAuth: true });
     } finally {
-      this.tokens.clear(true); // 用户主动登出：静默清凭据，不触发"会话失效"告警（B5-2）
+      this.tokens.clear(true); // 用户主动登出：静默清凭据，不触发"会话失效"告警
     }
   }
 
@@ -234,7 +234,7 @@ export class CodeAuditClient {
     }
     this.markOffline(false);
     if (!resp.ok) {
-      // 仅 401 = 服务端明确拒绝该 refresh token（会话失效）才清凭据（B2-3）：
+      // 仅 401 = 服务端明确拒绝该 refresh token（会话失效）才清凭据：
       // 502/429 等瞬态失败保留缓存 token——网关抖动/限流不该把用户登出，
       // 离线态下凭据仍在（isLoggedIn 保持 true，恢复后可自动续期）
       if (resp.status === 401) this.tokens.clear();
@@ -262,7 +262,7 @@ export class CodeAuditClient {
           method,
           headers,
           body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body),
-          // 超时档位按请求形态区分（B2-7）：multipart 上传走 600s 长档，其余 60s
+          // 超时档位按请求形态区分：multipart 上传走 600s 长档，其余 60s
           signal: AbortSignal.timeout(body instanceof FormData ? UPLOAD_TIMEOUT_MS : REQUEST_TIMEOUT_MS),
         });
       } catch (e) {

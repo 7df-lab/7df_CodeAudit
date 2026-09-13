@@ -38,7 +38,7 @@
 ### 1.3 `POST /v1/auth/logout`
 
 - **输入**：`{ access_token: string }`（跳过鉴权）。
-- **预期输出**：无论请求成败（finally），本地会话清空（`tokens.clear(true)` 静默——用户主动登出不触发 onCleared 的"会话失效"告警，logout 命令自己出"已退出"提示，B5-2）；函数正常返回。
+- **预期输出**：无论请求成败（finally），本地会话清空（`tokens.clear(true)` 静默——用户主动登出不触发 onCleared 的"会话失效"告警，logout 命令自己出"已退出"提示）；函数正常返回。
 - **锁定测试**：代码路径 `logout`；静默口径：`extension.test.ts › 主动登出静默：清凭据但不弹"登录会话已失效"…（回归锁 B5-2）`；UI 侧命令注册守卫 `guards.test.ts › 命令注册守卫`。
 
 ### 1.4 `GET /v1/projects`
@@ -119,7 +119,7 @@ ws(s)://<gateway>/v1/tasks/{taskId}/ws?token=<encodeURIComponent(accessToken)>
 | onerror | `onWsEvent('error', detail)` → 回退轮询 → 5s 重连 | 同上 |
 | 无 WebSocket 环境（makeSocket 抛异常） | 纯 10s 快照轮询兜底至终态 | `taskWatcher.test.ts › WS 无环境…纯轮询兜底至终态` |
 | 轮询遇 429 限流窗口 | 本轮跳过，10s 后重试 | `taskWatcher.test.ts › 429 限流窗口内跳过本轮轮询` |
-| 轮询遇 404 "not found" | `close()` 收束（await 后先复查 closed——B5-1 归属守卫）+ `onTaskGone` + 终止轮询 | `taskWatcher.test.ts › 轮询快照 404 not found…`、`› 轮询在途 404 返回前 watcher 已被 close…（B5-1）` |
+| 轮询遇 404 "not found" | `close()` 收束（await 后先复查 closed——归属守卫）+ `onTaskGone` + 终止轮询 | `taskWatcher.test.ts › 轮询快照 404 not found…`、`› 轮询在途 404 返回前 watcher 已被 close…` |
 | close() 后到达的 WS 消息帧（已缓冲/在途） | `settle` 入口复查 closed，不再 emit（防 terminal 双发、上层收尾重跑） | `taskWatcher.test.ts › WS 在途终态帧在 close 后到达…` |
 
 - **`onTaskGone` 的上层语义**（extension）：本地 progress 落终态 `TASK_STATUS_DEAD`、`taskRunning/taskPaused` 上下文清位、释放扫描互斥、警告通知「已在平台删除或归档——已停止进度同步」。
@@ -169,7 +169,7 @@ ws(s)://<gateway>/v1/tasks/{taskId}/ws?token=<encodeURIComponent(accessToken)>
 | `codeaudit.rollbackFix` | `UnifiedFinding`/树节点包装 / 无参（→QuickPick 列出可回滚项） | 见回滚链路 data-flows.md §4.3；无已应用修复→信息通知；写盘段纳入 fixing 写盘互斥 |
 | `codeaudit.copyFindingId` / `copyFilePath` | 树节点包装或 finding | 写剪贴板 + 状态栏提示 3s |
 | `codeaudit.openConsole` | 无参 | `openExternal(consoleUrl || serverUrl 剥离端口(→:80) + /tasks/{lastTaskId})` |
-| `codeaudit.selectTask` | 无参；QuickPick 单选 | 列平台该项目任务（时间倒序）→ 有任务进行中先弹确认（B2-5）→ bindTask 拉历史结果；findings 拉取失败回滚绑定态 |
+| `codeaudit.selectTask` | 无参；QuickPick 单选 | 列平台该项目任务（时间倒序）→ 有任务进行中先弹确认→ bindTask 拉历史结果；findings 拉取失败回滚绑定态 |
 
 - 树菜单（view/item/context）传的是 `TreeNode` 包装，命令入口经 `asFinding` 解包——回归锁：`extension.test.ts › asFinding 解包`（经由 rollbackFix/fixFinding 命令驱动）。
 

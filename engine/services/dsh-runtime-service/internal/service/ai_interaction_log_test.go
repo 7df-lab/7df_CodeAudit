@@ -217,7 +217,7 @@ func TestWireAILog_DisabledModeNoEntry(t *testing.T) {
 	}
 }
 
-// R36 回归锁（gw-d331089f 实证）：interaction_dir 的部署覆盖口——容器化后
+// R36 回归锁（实证）：interaction_dir 的部署覆盖口——容器化后
 // task-service 对账探针（ADR-196）与本服务各持 CWD 相对路径，互不可见 → 探针恒
 // miss，长审计任务被误判 TIMEOUT。修复=CODEAUDIT_INTERACTION_DIR env 优先，
 // compose 注入共享卷路径；yaml 相对路径仅本地开发缺省。

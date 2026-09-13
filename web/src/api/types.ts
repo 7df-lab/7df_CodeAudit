@@ -142,7 +142,7 @@ export interface ComparisonReport {
 export interface ReportRow {
   report_id: string;
   task_id: string;
-  format: number;
+  format: string; // B5-P1-1: protojson 枚举名直出（如 REPORT_FORMAT_JSON）——网关 transcode 未开 UseEnumNumbers，数值形状是假契约
   url: string;
   generated_at: string | null;
 }

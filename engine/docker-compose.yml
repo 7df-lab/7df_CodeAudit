@@ -220,7 +220,7 @@ services:
       CODEAUDIT_STORAGE_ADDR: "storage:50055"
       CODEAUDIT_TASK_PG_DSN: postgres://postgres:postgres@postgres:5432/codeaudit_task?sslmode=disable # R-31: 任务实体落库
       # ADR-196 对账探针：AI 交互日志目录须与 dsh-runtime 同指共享卷——相对路径在
-      # 各容器 CWD 下互不可见，探针恒 miss → 长审计任务被误判 TIMEOUT（gw-d331089f 实证）
+      # 各容器 CWD 下互不可见，探针恒 miss → 长审计任务被误判 TIMEOUT（实证）
       CODEAUDIT_INTERACTION_DIR: /data/repos/ai-interaction
     # 本服务原缺失此挂载（仓库内 volumes 块缩进错位挂到了上一服务），
     # 无配置即 panic（ADR-137 fail-loud）。2026-08-31 补齐。

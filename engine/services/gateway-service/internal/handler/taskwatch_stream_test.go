@@ -9,6 +9,8 @@ package handler
 // 本文件用真实流式假体钉住修复。
 
 import (
+	"net/http"
+	"github.com/codeaudit/services/gateway-service/internal/middleware"
 	"context"
 	"encoding/json"
 	"net"
@@ -131,7 +133,10 @@ func startStreamBackends(t *testing.T, fake *fakeStreamTask) *httptest.Server {
 		TaskAddr:    lis.Addr().String(),
 		CallTimeoutS: 5,
 	})
-	srv := httptest.NewServer(tr.Handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN") // R89: 机制测试按 admin 走门禁
+			tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+		}))
 	t.Cleanup(func() {
 		tr.Close()
 		srv.Close()
@@ -157,7 +162,10 @@ func startStreamBackendsBoth(t *testing.T, fake *fakeStreamTask, dshFake *fakeDS
 		DSHRuntimeAddr: lis.Addr().String(),
 		CallTimeoutS:  5,
 	})
-	srv := httptest.NewServer(tr.Handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN") // R89: 机制测试按 admin 走门禁
+			tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+		}))
 	t.Cleanup(func() {
 		tr.Close()
 		srv.Close()

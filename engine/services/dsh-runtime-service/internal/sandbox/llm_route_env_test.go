@@ -5,6 +5,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -18,6 +19,12 @@ func newInferenceManager(t *testing.T, routeJSON string, providerJSON map[string
 		routeJSON:    routeJSON,
 		providerJSON: providerJSON,
 	}
+}
+
+// newRouteRunner — llmRouteEnv 分派用例共用的最小 runner（固定 token/workspace，指向给定 manager）。
+func newRouteRunner(t *testing.T, managerURL string) *ManagerRunner {
+	t.Helper()
+	return NewManagerRunner(Config{Mode: "openshell", ManagerURL: managerURL, ManagerToken: "tok-1", Workspace: "default"})
 }
 
 func anthropicRouteJSON() string {
@@ -34,9 +41,9 @@ func TestLLMRouteEnv_AnthropicRoute(t *testing.T) {
 	fm := newInferenceManager(t, anthropicRouteJSON(), anthropicProviderJSON())
 	srv := httptest.NewServer(fm.handler())
 	defer srv.Close()
-	r := NewManagerRunner(Config{Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1", Workspace: "default"})
+	r := newRouteRunner(t, srv.URL)
 	got := r.llmRouteEnv(context.Background())
-	want := "DSH_PROVIDER=anthropic-relay DSH_MODEL=glm-5.3-flash ANTHROPIC_API_KEY=openshell-injected"
+	want := "DSH_PROVIDER=anthropic-relay DSH_MODEL='glm-5.3-flash' ANTHROPIC_API_KEY=openshell-injected"
 	if got != want {
 		t.Fatalf("anthropic route env:\n got %q\nwant %q", got, want)
 	}
@@ -53,7 +60,7 @@ func TestLLMRouteEnv_OpenAITypeKeepsDeepseekEnv(t *testing.T) {
 		})
 	srv := httptest.NewServer(fm.handler())
 	defer srv.Close()
-	r := NewManagerRunner(Config{Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1", Workspace: "default"})
+	r := newRouteRunner(t, srv.URL)
 	if got := r.llmRouteEnv(context.Background()); got != defaultLLMEnv {
 		t.Fatalf("openai-type route:\n got %q\nwant %q", got, defaultLLMEnv)
 	}
@@ -63,7 +70,7 @@ func TestLLMRouteEnv_UnsetRouteFallsBack(t *testing.T) {
 	fm := newInferenceManager(t, `{"provider":"","model":"","version":0}`, nil)
 	srv := httptest.NewServer(fm.handler())
 	defer srv.Close()
-	r := NewManagerRunner(Config{Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1", Workspace: "default"})
+	r := newRouteRunner(t, srv.URL)
 	if got := r.llmRouteEnv(context.Background()); got != defaultLLMEnv {
 		t.Fatalf("unset route:\n got %q\nwant %q", got, defaultLLMEnv)
 	}
@@ -74,7 +81,7 @@ func TestLLMRouteEnv_RouteFetchFailureFallsBack(t *testing.T) {
 	fm := &fakeManager{token: "tok-1"}
 	srv := httptest.NewServer(fm.handler())
 	defer srv.Close()
-	r := NewManagerRunner(Config{Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1", Workspace: "default"})
+	r := newRouteRunner(t, srv.URL)
 	if got := r.llmRouteEnv(context.Background()); got != defaultLLMEnv {
 		t.Fatalf("route fetch failure:\n got %q\nwant %q", got, defaultLLMEnv)
 	}
@@ -86,7 +93,7 @@ func TestLLMRouteEnv_ProviderFetchFailureFallsBack(t *testing.T) {
 		map[string]string{"other": `{"name":"other","type":"anthropic","config":{}}`})
 	srv := httptest.NewServer(fm.handler())
 	defer srv.Close()
-	r := NewManagerRunner(Config{Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1", Workspace: "default"})
+	r := newRouteRunner(t, srv.URL)
 	if got := r.llmRouteEnv(context.Background()); got != defaultLLMEnv {
 		t.Fatalf("provider fetch failure:\n got %q\nwant %q", got, defaultLLMEnv)
 	}
@@ -112,7 +119,7 @@ func TestRun_AnthropicRouteLaunchScript(t *testing.T) {
 	r := NewManagerRunner(Config{
 		Mode: "openshell", ManagerURL: srv.URL, ManagerToken: "tok-1",
 		Workspace: "codeaudit", Image: "dsh-pentest-sse:1.2.2",
-		WaitReadyTimeoutS: 5, ExecTimeoutS: 30, DSHMaxTokens: 131072,
+		WaitReadyTimeoutS: 5, DSHMaxTokens: 131072,
 		GatewayDialAddr: strings.TrimPrefix(bridgeSrv.URL, "http://"),
 		OnHumanLog:      human.writeString,
 		OnRawLog:        raw.write,
@@ -128,7 +135,7 @@ func TestRun_AnthropicRouteLaunchScript(t *testing.T) {
 	fm.mu.Unlock()
 	for _, part := range []string{
 		"DSH_PROVIDER=anthropic-relay",
-		"DSH_MODEL=glm-5.3-flash",
+		"DSH_MODEL='glm-5.3-flash'",
 		"ANTHROPIC_API_KEY=openshell-injected",
 	} {
 		if !strings.Contains(script, part) {
@@ -137,5 +144,52 @@ func TestRun_AnthropicRouteLaunchScript(t *testing.T) {
 	}
 	if strings.Contains(script, "DEEPSEEK_BASE_URL") {
 		t.Fatalf("anthropic route script must not carry deepseek env: %.200s", script)
+	}
+}
+
+// R80: 读路径兜底——存量/直写 manager 的路由值不经白名单，拼入 launchScript 前
+// 必须单引号包裹+内嵌单引号转义（bash -c 不再裸拼）。
+func TestLLMRouteEnv_ModelValueShellQuoted(t *testing.T) {
+	fm := newInferenceManager(t,
+		`{"provider":"zhipu-anthropic","model":"m'; id","version":47}`,
+		anthropicProviderJSON())
+	srv := httptest.NewServer(fm.handler())
+	defer srv.Close()
+	r := newRouteRunner(t, srv.URL)
+	got := r.llmRouteEnv(context.Background())
+	want := "DSH_MODEL='m'\\''; id'"
+	if !strings.Contains(got, want) {
+		t.Fatalf("model 值未单引号转义:\n got %q\nwant contains %q", got, want)
+	}
+	// R85（复审）: 单引号包裹下反引号/$()/换行均为字面量——防未来"优化"为双引号或去引号
+	for _, hostile := range []string{"`id`", "$(id)", "a\nb"} {
+		routeJSON, merr := json.Marshal(map[string]any{"provider": "zhipu-anthropic", "model": hostile, "version": 47})
+		if merr != nil {
+			t.Fatal(merr)
+		}
+		fm2 := newInferenceManager(t, string(routeJSON), anthropicProviderJSON())
+		srv2 := httptest.NewServer(fm2.handler())
+		got2 := newRouteRunner(t, srv2.URL).llmRouteEnv(context.Background())
+		srv2.Close()
+		if !strings.HasPrefix(got2[strings.Index(got2, "DSH_MODEL="):], `DSH_MODEL='`) {
+			t.Fatalf("hostile model %q 未被单引号包裹: %q", hostile, got2)
+		}
+	}
+}
+
+// R80: provider type 大小写口径与写入口对齐（EqualFold）——"Anthropic" 型应走
+// anthropic-relay 而非静默降级 deepseek。
+func TestLLMRouteEnv_ProviderTypeCaseInsensitive(t *testing.T) {
+	fm := newInferenceManager(t,
+		`{"provider":"zhipu-anthropic","model":"glm-5.3-flash","version":47}`,
+		map[string]string{
+			"zhipu-anthropic": `{"name":"zhipu-anthropic","type":"Anthropic","config":{"BASE_URL":"https://open.bigmodel.cn/api/anthropic"}}`,
+		})
+	srv := httptest.NewServer(fm.handler())
+	defer srv.Close()
+	r := newRouteRunner(t, srv.URL)
+	got := r.llmRouteEnv(context.Background())
+	if !strings.Contains(got, "DSH_PROVIDER=anthropic-relay") {
+		t.Fatalf("type=Anthropic 被静默降级 deepseek（大小写口径漂移）: %q", got)
 	}
 }

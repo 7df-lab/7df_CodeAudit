@@ -46,7 +46,7 @@ const (
 	wsPingEvery     = 20 * time.Second
 	wsReadIdleLimit = 90 * time.Second // 未收到任何客户端帧（含 pong）即拆线
 	// 连接硬上限（防极端泄漏的最后防线）：读限 90s+无条件 ping/pong 已保证半开连接
-	// 必被拆除，前端对其他关闭路径自带 5s 重连续订。gw-f6a3523 实证：32.5 分钟的
+	// 必被拆除，前端对其他关闭路径自带 5s 重连续订。实证：32.5 分钟的
 	// AI 审计撞上 30min 旧值 → 强制重连窗口与 30min access token TTL 竞态，长任务
 	// 观测页中途断流。上调至 6h（> 最长审计任务），仅作泄漏兜底而非活性机制。
 	wsMaxLifetime = 6 * time.Hour

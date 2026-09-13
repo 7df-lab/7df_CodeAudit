@@ -22,7 +22,7 @@
 | I-03 | `saveRefreshToken / readRefreshToken` | string ↔ string；键 `codeaudit.refresh_token`（`TOKEN_KEY` 导出） | 经 `globalThis.localStorage?.` 可选访问（node 测试环境可注入桩） | client.test.ts |
 | I-04 | `clearSession` | — → void | 同时清内存 access 与 localStorage refresh | client.test.ts「refresh 失败」 |
 | I-05 | `noteRateLimit(retryAfterS?) / pollIntervalMs(base)` | number → void / number | clamp [5,60]s；退避期内返回剩余毫秒（ceil），否则原样 base | clientInterceptors.test.ts「429」 |
-| I-06 | `uploadArchive(file: File)` | File → `UploadArchiveResponse{upload_id, file_id, file_path, size_bytes}` | FormData 字段名 `file`；`Content-Type: multipart/form-data` 显式；timeout 300_000（B4-3：120s→300s，慢速上行大包与 nginx 反代窗对齐） | clientContract.test.ts |
+| I-06 | `uploadArchive(file: File)` | File → `UploadArchiveResponse{upload_id, file_id, file_path, size_bytes}` | FormData 字段名 `file`；`Content-Type: multipart/form-data` 显式；timeout 300_000（120s→300s，慢速上行大包与 nginx 反代窗对齐） | clientContract.test.ts |
 | I-07 | `getProjects(pagination?)` | `{page_size, cursor?}?` → `ListProjectsResponse` | cursor 缺省补 `''`（首屏语义，E-00a JSON 内空游标保留） | clientParams.test.ts |
 | I-08 | `getProject(id)` / `getProjectConfig(id)` | string → `Project` / `ProjectConfigResponse` | 响应**裸形**（E-14/E-15） | clientContract.test.ts |
 | I-09 | `updateProjectConfig(id, config)` | `(string, Record<string,string>)` → `ProjectConfigResponse` | 请求体**双层包装** `{config:{project_id, config}}`（E-16——扁平体被 protojson 丢字段） | clientContract.test.ts |
@@ -58,7 +58,7 @@
 |----|------|-------------|----------|------|
 | I-40 | `ALLOWED_ACTIONS / allowedActions(status?)` | 状态枚举串 → `TaskAction[]` | **客户端展示镜像**：只决定按钮可见性；服务端才是转换权威。未知状态 → `[]`（不自造动作）。2026-09-01 审批流废除后 CREATED=[start]、RUNNING=[pause,cancel]、PAUSED=[resume,cancel]、DEAD=[retry,cancel] | stateMachine.test.ts（全状态分支） |
 | I-41 | `isTerminal(status?)` | 状态 → boolean | 终态四值 COMPLETED/CANCELLED/TIMEOUT/DEAD（与服务端 IsTerminal 同源口径） | stateMachine.test.ts |
-| I-42 | `progressRefetchInterval(status?)` | 状态 → `3000 \| false` | 非终态恒 3s（ADR-156 QUEUED 也轮询）；终态 false 自停 | stateMachine.test.ts |
+| I-42 | ~~progressRefetchInterval~~（已删除） | — | 生产轮询=TaskDetailPage 内联 `pollIntervalMs(10_000)`（10s+429 退避接线，2026-09-01 口径）；旧 3s 死导出与 I-42 漂移已随 B5 清理 | — |
 | I-43 | `actionLabel(a)` | TaskAction → 中文 | 启动/取消/人工重试/暂停任务/恢复任务 | — |
 | I-44 | `dispatchAction(task, a)` | `(ScanTask, TaskAction)` → task_id | 动作→端点映射：start/cancel/retry/pause/resume → `POST /v1/tasks/{id}/<动作>`（E-21）；非法提交交后端拒绝 | TaskDetailSnapshot.test.tsx |
 | I-45 | `autoRunTask(taskId)` | string → void | `POST /v1/tasks/{id}/start`（创建后自动启动；失败上抛由调用方 warning） | ProjectsPage.test.tsx（行为级） |
@@ -67,7 +67,7 @@
 
 | ID | 导出 | 输入 → 输出 | 契约要点 | 锚点 |
 |----|------|-------------|----------|------|
-| I-50 | `parseChain(text?: string \| null)` | 自由文本 → `{hops: ChainHop[], files: string[]}` | 六类引用形态（file:line / 行区间 / 中文行引用 / L 前缀 / lines 英文 / 全角括号数字区间）；反引号段置零抑制噪声；hops 按原文顺序去重；行引用挂接最近文件；role 仅关键词命中（sink 优先），**不推测**；行引用先于文件→丢弃 | chainParser.test.ts（人类指令实例逐字 + 普适形态） |
+| I-50 | `parseChain(text?: string \| null)` | 自由文本 → `{hops: ChainHop[], files: string[]}` | 六类引用形态（file:line / 行区间 / 中文行引用 / L 前缀 / lines 英文 / 全角括号数字区间）；反引号段置零抑制噪声；hops 按原文顺序去重；行引用挂接最近文件；role 仅关键词命中（sink 优先），**不推测**；行引用先于文件→丢弃 | chainParser.test.ts（真实实例逐字 + 普适形态） |
 | I-51 | `baseName(p)` | 路径 → 末段 | 文件选择器基名对齐 | chainParser.test.ts |
 | I-52 | `ChainHop` | `{path, line?, endLine?, snippet, role?}` | path 为**原文写法**（裸文件名/截断路径），消费方交服务端回退解析（E-24） | codeContext.test.tsx |
 
@@ -84,7 +84,7 @@
 
 | ID | 组件 | Props 输入 | 行为契约 | 锚点 |
 |----|------|------------|----------|------|
-| I-70 | `TaskLogPanel` | `{logs: TaskLogEntry[], terminal, onRefresh, refreshing, live?}` | 级别过滤（all/warn/error）；warn/err 徽标；`hhmmss(Number(ts_ms))`（int64 字符串防御，E-00c）；**滚底跟随**：新数据滚底、用户上翻 40px 阈值停跟随；空态文案；**导出 `MAX_LOG_ROWS=1000`**（B4-3：任务详情页日志保尾上限，窗口满时顶部渲染「仅显示最近 1000 条」提示——完整内容下载入口延后） | TaskLogPanel.test.tsx |
+| I-70 | `TaskLogPanel` | `{logs: TaskLogEntry[], terminal, onRefresh, refreshing, live?}` | 级别过滤（all/warn/error）；warn/err 徽标；`hhmmss(Number(ts_ms))`（int64 字符串防御，E-00c）；**滚底跟随**：新数据滚底、用户上翻 40px 阈值停跟随；空态文案；**导出 `MAX_LOG_ROWS=1000`**（任务详情页日志保尾上限，窗口满时顶部渲染「仅显示最近 1000 条」提示——完整内容下载入口延后） | TaskLogPanel.test.tsx |
 | I-71 | `AIInteractionLogPanel` | `{text, totalBytes, complete, onRefresh, refreshing, live?}` | `parseTimeline` 标记行解析（💭/✍/📋/🤖/──/══/■/⚠/▶ 六类条目）；思考流式展开（未收束）/折叠（归档）；任务下发/子任务折叠块（字节数+首行预览）；渐进回看窗口 400 条；下载完整日志；整页 Modal 辅入口；**内联与 Modal 各持 ref**（共享 ref 被 Modal 抢占致滚底永久失效——2026-09-06 修复，变异 M8 锁定） | AIInteractionLogPanel.test.tsx（7 例） |
 | I-72 | `ErrorPage({code: 403\|404\|501})` | code | 403/404 Result 页 + 501 灰卡（诚实降级话术，非故障话术） | errors.test.tsx |
 | I-73 | `ApiErrorOverlay()` | 无 props（事件驱动） | 订阅 I-20/I-21；503 横幅可关闭；403/501 整页可关闭返回项目页 | errors.test.tsx |
@@ -103,10 +103,10 @@
 
 | ID | queryKey | 写入方 | 失效方（必须成对） | 锚点 |
 |----|----------|--------|--------------------|------|
-| I-90 | `['task-snapshot', taskId]` | 快照轮询 + **WS 帧 setQueryData**（同构吸收） | 动作成功后 invalidate；`['tasks']` 前缀同刷 | TaskDetailSnapshot.test.tsx |
+| I-90 | `['task-snapshot', taskId]` | 快照轮询 + **WS 帧 setQueryData**（同构吸收） | 动作成功后 invalidate；`['tasks-page']` 前缀同刷（B5 修正：旧 ['tasks'] 与真实键 ['tasks-page',…] 前缀失配恒 no-op） | TaskDetailSnapshot.test.tsx |
 | I-91 | `['task-reports', taskId]` / `['report-content', id]` | 任务详情报告卡 | regenerate 成功必须失效 `['task-reports', taskId]`（**只失效 `['reports']` 前缀不覆盖此键**——2026-09-06 修复） | TaskDetailPage.test.tsx |
 | I-92 | `['reports', taskFilter, page, cursor]` / `['reports-index']` | 报告中心 / 任务列表索引 | regenerate 失效 `['reports']` 前缀 | ReportsTasksPaging.test.tsx |
-| I-93 | `['findings', taskId, cursor]` / `['finding', id]` / `['fusion-findings', taskId]` / `['review-findings', taskId]` | 列表 / 详情 / 融合视图 / 审核视图 | triage 成功失效**四者**（只刷详情则列表行停留旧标签，ADR-152；B4-3 起融合/审核视图同键失效——它们读 ai_verdict，漏刷则切 Tab 停留旧结论） | FindingDetailPage.test.tsx；FindingsPage.test.tsx |
+| I-93 | `['findings', taskId]`（无限查询无 cursor 段，B5 键形修正） / `['finding', id]` / `['fusion-findings', taskId]` / `['review-findings', taskId]` | 列表 / 详情 / 融合视图 / 审核视图 | triage 成功失效**四者**（只刷详情则列表行停留旧标签，ADR-152；起融合/审核视图同键失效——它们读 ai_verdict，漏刷则切 Tab 停留旧结论） | FindingDetailPage.test.tsx；FindingsPage.test.tsx |
 | I-94 | `['notify-unread', uid]` / `['notifications', uid]` | App 角标 / 通知页 | markRead / markAllRead（E-31a）失效**两者**（ADR-156 角标即时消失） | pages2.test.tsx |
 | I-95 | `['projects', page]` / `['project', id]` / `['project-config', id]` / `['project-tasks', id]` / `['projects-index']` / `['tasks-index']` | 项目页群 / 任务与报告页项目名列 | 建项目/删项目后 invalidate `['projects']`；`upload_file_name`（config 键，2026-09-09）随 upload_file_id 一并写入——storage 对象键不含原始文件名，展示名只认此键，存量项目无键回落 ID/文件占位 | ProjectsPage.test.tsx；TasksPage.test.tsx；ReportsTasksPaging.test.tsx |
 | I-96 | `['tasks-page', project, mode, page]` | 任务列表 | 自动建任务后 invalidate（**禁用死键** `['tasks-infinite']`——无限滚动时代遗物，invalidate 是 no-op，2026-09-06 修复；guard.sh 禁复活） | ProjectsPage.test.tsx |
@@ -122,7 +122,7 @@
 | I-A0 | `FindingDetailBody({findingId})` | 路由薄壳 FindingDetailPage（深链 `/findings/:fid`）+ FindingsPage 行展开 + ReviewView 行展开 | 同一 props；内嵌态随外层缓存失效联动（I-93） |
 | I-A1 | `FindingsPage({taskId})` | 任务详情终态 Tabs 内嵌 | 内嵌时不带路由（taskId 直传） |
 | I-A2 | `FusionView / ComparisonView / ReviewView({taskId})` | Tabs 内嵌 + 对比路由页 | ComparisonView 仅模式E入口（E-21 完成态按钮） |
-| I-A3 | `TaskDetailPage({taskId})` | 路由经 `TaskDetailWithParams` 从 useParams 取 id | **`key={id}` 随任务重建实例**（B4-1：同路由 `/tasks/:id` 切换任务不复用旧实例——增量游标 refs 与已吸收日志/AI 正文不得跨任务残留）；空串 id → 快照 404 专页（内存存储重启语义） | AppRouting.test.tsx |
+| I-A3 | `TaskDetailPage({taskId})` | 路由经 `TaskDetailWithParams` 从 useParams 取 id | **`key={id}` 随任务重建实例**（同路由 `/tasks/:id` 切换任务不复用旧实例——增量游标 refs 与已吸收日志/AI 正文不得跨任务残留）；空串 id → 快照 404 专页（内存存储重启语义） | AppRouting.test.tsx |
 
 ## 11. 测试台接口（testsupport/fakeGateway.ts —— 测试代码的公共内部契约）
 

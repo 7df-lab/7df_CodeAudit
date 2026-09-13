@@ -18,6 +18,7 @@ import {
 } from '../../api/client';
 import type { InferenceProvider } from '../../api/types';
 import { useSession } from '../../auth/session';
+import { usePageTitle } from '../../hooks/usePageTitle';
 
 // 键值对表单行（credentials/config 两个 map<string,string> 的编辑形态）
 interface KVRow {
@@ -82,6 +83,7 @@ function KVEditor({ name, keyPlaceholder, valueLabel, password }:
 }
 
 export default function ProvidersPage() {
+  usePageTitle('推理 Provider');
   const qc = useQueryClient();
   const { user: me } = useSession();
   const isAdmin = me?.role === 'ROLE_ADMIN';

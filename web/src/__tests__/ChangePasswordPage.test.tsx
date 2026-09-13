@@ -11,10 +11,13 @@ const routes: Record<string, unknown> = {
 };
 const gateway = useFakeGateway(routes);
 
+const refreshUserMock = vi.fn().mockResolvedValue(undefined);
+const logoutMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../auth/session', () => ({
   useSession: () => ({
     user: { user_id: 'u-2', username: 'dev1', email: '', role: 'ROLE_DEVELOPER', must_change_password: true },
-    refreshUser: vi.fn().mockResolvedValue(undefined),
+    refreshUser: (...args: unknown[]) => refreshUserMock(...(args as [])),
+    logout: (...args: unknown[]) => logoutMock(...(args as [])),
   }),
 }));
 
@@ -52,5 +55,24 @@ describe('ChangePasswordPage（ADR-205）', () => {
     fireEvent.change(screen.getByLabelText('新密码'), { target: { value: 'onlyletters' } });
     fireEvent.click(screen.getByRole('button', { name: '确认修改' }));
     await waitFor(() => expect(screen.getByText('须同时包含字母与数字')).toBeTruthy());
+  });
+
+  // (P3-j)：改密 POST 成功后 refreshUser 失败不再误报"旧密码不正确"——密码已改成功，
+  // 误报会引导用户拿旧密码重试必败；应直接放行导航由守卫接管
+  it('B5: 改密成功但会话刷新失败——不显示"旧密码不正确"，仍导航离开', async () => {
+    refreshUserMock.mockRejectedValueOnce(new Error('me 503'));
+    renderPage();
+    fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'temp-ab12' } });
+    fireEvent.change(screen.getByLabelText('新密码'), { target: { value: 'newpass99-Y' } });
+    fireEvent.change(screen.getByLabelText('确认新密码'), { target: { value: 'newpass99-Y' } });
+    fireEvent.click(screen.getByRole('button', { name: '确认修改' }));
+    await waitFor(() =>
+      expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/users/me/password')).toBe(true),
+    );
+    await waitFor(() => expect(refreshUserMock).toHaveBeenCalled());
+    expect(screen.queryByText(/旧密码不正确/)).toBeNull();
+    // 复审 R：放行 /projects 会被守卫弹回改密页（旧 user 缓存仍 must_change_password）——
+    // 改走登出（清 user/缓存）落登录页，用户以新密码重登自愈
+    await waitFor(() => expect(logoutMock).toHaveBeenCalled());
   });
 });

@@ -1,5 +1,5 @@
 // CodeAudit VS Code 插件入口（薄胶水层：全部业务逻辑在可单测的纯模块中）。
-// 设计依据：2026-09-02 人类批准的插件设计方案——原生扩展 + gateway REST/WS +
+// 设计依据：2026-09-02 的插件设计方案——原生扩展 + gateway REST/WS +
 // Diagnostics/CodeAction/TreeView 展示 + diff 审批落盘 + checkpoint 回滚。
 import * as fs from 'fs';
 import * as path from 'path';
@@ -175,14 +175,14 @@ class FindingDetailProvider implements vscode.WebviewViewProvider {
 const asFinding = (arg: unknown): UnifiedFinding | undefined =>
   arg && typeof arg === 'object' && 'finding' in arg ? (arg as { finding: UnifiedFinding }).finding : (arg as UnifiedFinding | undefined);
 
-// fire-and-forget 命令收口（B2-6）：async 命令体内未被自身 try/catch 吸收的异常，
+// fire-and-forget 命令收口：async 命令体内未被自身 try/catch 吸收的异常，
 // 不再变成无声的 unhandled rejection，统一以错误通知浮出（各 do* 正常失败路径
 // 已自行弹错，此处是最后兜底）。
 const guardCmd = (p: Promise<void>): void => {
   p.catch((err: unknown) => vscode.window.showErrorMessage(`CodeAudit 操作失败：${err instanceof Error ? err.message : String(err)}`));
 };
 
-// 打包清单文件数上限（B5-2）：findFiles 的 max 参数。命中上限=清单被截断，超出
+// 打包清单文件数上限：findFiles 的 max 参数。命中上限=清单被截断，超出
 // 部分静默不进审计——必须显式告知，由用户收紧 excludes 或确认按当前清单继续。
 const PACK_FILE_CAP = 20_000;
 
@@ -536,10 +536,10 @@ export function activate(context: vscode.ExtensionContext): void {
     await cfg().update('projectId', picked.project.project_id, vscode.ConfigurationTarget.Workspace);
     setCtx('codeaudit.boundProject', true);
     vscode.window.showInformationMessage(`已绑定项目：${picked.label}（写入工作区 .vscode/settings.json）`);
-    // 绑定即自动同步平台已有风险（人类指令 2026-09-12）：该项目有已完成任务时拉取其
+    // 绑定即自动同步平台已有风险：该项目有已完成任务时拉取其
     // 发现（bindTask 带轻通知），空面板立即可见；无完成任务/拉取失败静默仅日志——绑定
     // 流程不被打扰。仅在空闲时触发：扫描发起中/活跃非终态任务时同步会撞 bindTask 的
-    // 切换确认门（B2-5），跳过不打扰。
+    // 切换确认门，跳过不打扰。
     if (!scanning && !(watcher && progress && !isTerminalTaskStatus(progress.status))) {
       void (async () => {
         try {
@@ -568,7 +568,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // 扫描互斥：运行中禁止重复发起——每次扫描都会让平台创建沙箱执行任务（真实资源消耗）
   let scanning = false;
-  // 修复互斥（B2-6，同 scanning 模式）：补丁应用含多步 await（开文档/applyEdit/fs 落盘），
+  // 修复互斥（同 scanning 模式）：补丁应用含多步 await（开文档/applyEdit/fs 落盘），
   // 并发两发会交叠改盘/互相踩 checkpoint——同一时刻只放行一个 applyMachinePatch
   let fixing = false;
   // 本次扫描是否经用户选择走增量（ADR-225：完成态口径与降级提示的展示开关）
@@ -579,7 +579,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showWarningMessage(`代码审计进行中（任务 ${lastTaskId.slice(0, 8)}…），完成后方可再次发起；进度见状态栏`);
       return;
     }
-    // 互斥立即置位（B2-1）：原先 scanning=true 在 listTools 网络往返之后才置位，
+    // 互斥立即置位：原先 scanning=true 在 listTools 网络往返之后才置位，
     // 并发第二次调用可穿过守卫造成双上传/双沙箱消耗。预检失败/用户取消/中途异常
     // 的全部早退路径经 finally 统一复位；唯一例外是任务成功启动（started=true）——
     // 互斥保持，交由 watcher 终态/onTaskGone 释放。
@@ -608,7 +608,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // 基线探测失败 → 诚实降级全量（warn 日志），绝不阻塞扫描主路径。
       incrementalRequested = false;
       // 本次扫描的增量口径先落局部变量：watchTask 入口会按"新任务"复位
-      // incrementalRequested（B5-2 防跨任务串口径），启动 watcher 后再回填
+      // incrementalRequested（防跨任务串口径），启动 watcher 后再回填
       let incRequested = false;
       let incrementalPayload: { baseline_task_id?: string; git_anchor?: GitAnchor | null; diff_hint?: string } | undefined;
       try {
@@ -625,7 +625,7 @@ export function activate(context: vscode.ExtensionContext): void {
               { modal: true },
               '仍然扫描',
             );
-            if (go !== '仍然扫描') return; // 复位收敛进 finally（B2-1）
+            if (go !== '仍然扫描') return; // 复位收敛进 finally
           }
           // F18 变更预告（非 git 工作区无此行，布局不塌陷）
           const preview = anchor ? previewText(await countNewCommits(baseline.git_anchor?.commit ?? ''), changes) : '';
@@ -662,14 +662,14 @@ export function activate(context: vscode.ExtensionContext): void {
       const excludes = cfg().get<string[]>('excludeGlobs', []);
       const uris = await vscode.workspace.findFiles('**/*', `{${excludes.join(',')}}`, PACK_FILE_CAP);
       log.info(`打包清单：findFiles 命中 ${uris.length} 个文件（排除规则 ${excludes.length} 条，根 ${root.uri.fsPath}）`);
-      // 命中上限（B5-2）：清单被截断（超出 PACK_FILE_CAP 的文件静默不进审计）——
+      // 命中上限：清单被截断（超出 PACK_FILE_CAP 的文件静默不进审计）——
       // 弹警告让用户收紧 codeaudit.excludeGlobs 重试，或显式确认按当前清单继续
       if (uris.length >= PACK_FILE_CAP) {
         const go = await vscode.window.showWarningMessage(
           `打包清单已达 ${PACK_FILE_CAP} 个文件上限——超出部分不会进入本次审计。建议收紧 codeaudit.excludeGlobs（如排除依赖/构建产物目录）后重试，或按当前清单继续`,
           '继续打包',
         );
-        if (go !== '继续打包') return; // 取消：零上传零建任务（复位收敛进 finally，B2-1）
+        if (go !== '继续打包') return; // 取消：零上传零建任务（复位收敛进 finally）
       }
       const files = uris.map((u) => ({ relPath: path.relative(root.uri.fsPath, u.fsPath).replace(/\\/g, '/'), absPath: u.fsPath }));
       // 防空包：曾实测 VS Code 冷启动后短窗内 findFiles 返回不全（3900→1 个文件），
@@ -717,7 +717,7 @@ export function activate(context: vscode.ExtensionContext): void {
       phase = ''; // 任务已建立：状态栏切到 percent 驱动
       vscode.window.showInformationMessage(`代码审计已开始（任务 ${task.task_id.slice(0, 8)}）——进度见状态栏与“CodeAudit-任务进度”面板，AI 交互上下文可实时查看`);
       watchTask(task.task_id, blob.size);
-      // watchTask 入口已复位 incrementalRequested（B5-2 防跨任务串口径），此处按本次
+      // watchTask 入口已复位 incrementalRequested（防跨任务串口径），此处按本次
       // 扫描实际选定的口径回填——顺序不得颠倒，否则增量完成口径通知丢失（R58）
       incrementalRequested = incRequested;
       started = true; // 任务已建立：互斥保持，由 watcher 终态/onTaskGone 释放
@@ -737,7 +737,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const watchTask = (taskId: string, expectedUploadBytes = 0, resumeState = false): void => {
     watcher?.close();
     cancelRequested = false;
-    // 增量口径不得跨任务串用（B5-2）：新任务跟踪开始即复位——上一任务若在增量完成
+    // 增量口径不得跨任务串用：新任务跟踪开始即复位——上一任务若在增量完成
     // 通知展示前被切走（早退路径不经过 `incrementalRequested = false` 收尾），
     // 残留的 true 会让历史/新任务完成时误弹"增量扫描完成"。doScan 在启动 watcher
     // 后按本次实际选定的口径回填。
@@ -777,7 +777,7 @@ export function activate(context: vscode.ExtensionContext): void {
         else log.info(`WS 关闭：${detail || '(正常)'}`);
       },
       onTaskGone: (detail) => {
-        // 归属守卫（B5-1，R58/B2-2 同族）：回调到达时任务可能已切走——本 watcher 被
+        // 归属守卫（R58 同族）：回调到达时任务可能已切走——本 watcher 被
         // watchTask/bindTask 替换关闭（close）前，其轮询在途 404 / WS 在途 1011 close 帧
         // 仍会走到这里。旧任务的"已删除"不得把新任务的 progress 标 DEAD、误释 scanning
         // 互斥（新扫描进行中会被解锁 → 重复沙箱消耗）或误清 taskRunning 上下文。
@@ -825,7 +825,7 @@ export function activate(context: vscode.ExtensionContext): void {
     watcher.on('terminal', (taskStatus: string) => {
       log.info(`任务终态 ${taskStatus}：logs=${progress?.logs.length ?? 0} ai=${progress?.aiCursor ?? 0}B wsLive=${progress?.wsLive ?? false}`);
       void (async () => {
-        // 竞态守卫（B2-2）：任务已切走（lastTaskId 变更）时，在途收尾既不得覆盖新绑定
+        // 竞态守卫：任务已切走（lastTaskId 变更）时，在途收尾既不得覆盖新绑定
         // 任务的结果，也不得误释新任务的扫描互斥/运行态上下文
         if (taskId !== lastTaskId) return;
         scanning = false; // 终态（完成/失败/超时/死亡/取消）一律释放互斥
@@ -844,7 +844,7 @@ export function activate(context: vscode.ExtensionContext): void {
         setPhase('拉取结果…');
         try {
           const findings = await client.listFindings(taskId);
-          // await 后复查（B2-2 TOCTOU）：拉取期间用户可能已切换绑定到其他任务，
+          // await 后复查（TOCTOU）：拉取期间用户可能已切换绑定到其他任务，
           // 旧任务的收尾不得 renderFindings/clearTaskUi 覆盖/误清新任务的 UI 与互斥
           if (taskId !== lastTaskId || progress?.taskId !== taskId) return;
           findingsSource = 'scan';
@@ -861,7 +861,7 @@ export function activate(context: vscode.ExtensionContext): void {
             let metaUnavailable = false;
             try {
               const snap = await client.taskSnapshot(taskId);
-              // 二次 await 后复查（B2-2）：增量元数据不得写进已切换的其他任务。
+              // 二次 await 后复查：增量元数据不得写进已切换的其他任务。
               // 只查 lastTaskId——本任务收尾已走 clearTaskUi（progress 置 null 是预期），
               // 若再查 progress?.taskId 会恒真早退，完成口径通知永不显示（R58）。
               if (taskId !== lastTaskId) return;
@@ -892,7 +892,7 @@ export function activate(context: vscode.ExtensionContext): void {
             vscode.window.showInformationMessage(`CodeAudit 扫描完成：${findings.length} 条发现`);
           }
         } catch (e) {
-          // 失败收尾同样先复查归属（B2-2）：旧任务的拉取失败不得清掉新任务 UI
+          // 失败收尾同样先复查归属：旧任务的拉取失败不得清掉新任务 UI
           if (taskId !== lastTaskId || progress?.taskId !== taskId) return;
           clearTaskUi();
           vscode.window.showErrorMessage(`拉取结果失败：${(e as Error).message}`);
@@ -1056,7 +1056,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     const fixed = result.lines;
     const fuzzNote = result.fuzz > 0 ? ` [容错匹配 fuzz=${result.fuzz}]` : '';
-    // 写盘互斥（B2-6 扩展）：兜底路径改盘段与 applyMachinePatch/回滚共用同一互斥
+    // 写盘互斥（扩展）：兜底路径改盘段与 applyMachinePatch/回滚共用同一互斥
     // ——并发交叠会互相踩 checkpoint/登记；进行中直接拒绝（不改盘、不建 checkpoint）
     if (fixing) {
       vscode.window.showWarningMessage('另一个修复/回滚正在写盘，请稍候再试');
@@ -1065,7 +1065,7 @@ export function activate(context: vscode.ExtensionContext): void {
     fixing = true;
     try {
     // 一键修复（无确认门）：checkpoint → 落盘 → 展示变更 diff → 告知（可随时回滚）
-    // checkpoint 落盘失败不炸主流程（B2-6）：修复仍可应用，但须让用户知道没有回滚点
+    // checkpoint 落盘失败不炸主流程：修复仍可应用，但须让用户知道没有回滚点
     const beforeContent = doc.getText();
     let cpId: string | null = null;
     try {
@@ -1089,7 +1089,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const bp = buildFilePatch(beforeContent, fixedContent);
         const patches: Record<string, FilePatch> | undefined =
           bp && bp.hunks.length > 0 ? { [uri.fsPath]: { oldPath: relPath, newPath: relPath, hunks: bp.hunks } } : undefined;
-        // 登记写盘失败不炸主流程（B2-6）：修复已落盘是事实，但须告知回滚入口可能不可用
+        // 登记写盘失败不炸主流程：修复已落盘是事实，但须告知回滚入口可能不可用
         try {
           fixRegistry.recordApplied({
             findingId: f.finding_id,
@@ -1183,7 +1183,7 @@ export function activate(context: vscode.ExtensionContext): void {
       else snapshot[e.abs] = null; // Add 目标
       if (e.moveAbs) snapshot[e.moveAbs] = null; // Move 目标
     }
-    // 创建失败不炸主流程（B2-6）：修复仍可应用，但必须让用户知道本次没有回滚点
+    // 创建失败不炸主流程：修复仍可应用，但必须让用户知道本次没有回滚点
     let cpId: string | null = null;
     try {
       cpId = checkpoints.save(snapshot);
@@ -1234,7 +1234,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // fs 阶段失败（Windows EBUSY/EACCES 等）：先用 checkpoint 把已执行的写入/删除
       // 尽力还原，再整体报败——绝不留下"半应用"状态。Update 文档的缓冲区已被
       // applyEdit 改写，仅还原磁盘会残留脏缓冲区（随手保存即复活补丁），所以对
-      // 这类文档用 WorkspaceEdit.replace 回写旧内容并保存（缓冲区+磁盘同还原，B2-6）
+      // 这类文档用 WorkspaceEdit.replace 回写旧内容并保存（缓冲区+磁盘同还原）
       const undo = new vscode.WorkspaceEdit();
       const undoDocs: vscode.TextDocument[] = [];
       for (const [abs, content] of Object.entries(snapshot)) {
@@ -1295,7 +1295,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // 回滚（跳回该修复前状态）时据此精确恢复行号
       const linesBefore: Record<string, Record<string, number>> = {};
       for (const e of plan) linesBefore[e.abs] = linesSnapshotForFile(e.rel);
-      // 登记写盘失败不炸主流程（B2-6）：修复已落盘是事实，但用户必须知道
+      // 登记写盘失败不炸主流程：修复已落盘是事实，但用户必须知道
       // "已修复"徽章/按发现回滚入口可能不可用
       try {
         fixRegistry.recordApplied({ findingId: f.finding_id, label, checkpointId: cpId, files: touchedFiles, appliedAt: Date.now(), state: 'applied', patches, linesBefore });
@@ -1315,7 +1315,7 @@ export function activate(context: vscode.ExtensionContext): void {
     return { ok: true, fileCount: plan.length, fuzz: computed.fuzz, saveFailures, saveTotal, diffs };
   };
 
-  // 修复互斥外壳（B2-6，同 scanning 模式）：进入即占坑，任何返回路径经 finally 复位；
+  // 修复互斥外壳（同 scanning 模式）：进入即占坑，任何返回路径经 finally 复位；
   // 并发第二发直接整体拒绝（不改盘、不建 checkpoint）
   const applyMachinePatch = async (f: UnifiedFinding, label: string): Promise<MachinePatchResult> => {
     if (fixing) return { ok: false, reason: '另一个修复正在应用中，请稍候再试' };
@@ -1378,7 +1378,7 @@ export function activate(context: vscode.ExtensionContext): void {
     let applied = 0;
     let skipped = 0;
     for (const p of picked) {
-      // 逐条 try/catch（B2-6）：单条异常（含 applyMachinePatch 之外的意外抛错）
+      // 逐条 try/catch：单条异常（含 applyMachinePatch 之外的意外抛错）
       // 跳过并记日志，绝不中断其余候选——"单条失败跳过继续"语义
       try {
         const r = await applyMachinePatch(p.finding, p.label);
@@ -1585,7 +1585,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.showInformationMessage(`${summary}——「${rec.label}」已回滚，可重新执行 AI 修复再次应用`);
   };
 
-  // 写盘互斥外壳（B2-6 扩展）：回滚与修复（applyMachinePatch/兜底路径）共用同一互斥——
+  // 写盘互斥外壳（扩展）：回滚与修复（applyMachinePatch/兜底路径）共用同一互斥——
   // 回滚的整文件覆盖/逆补丁应用也是多步 await 的改盘操作，与进行中的修复交叠会互相踩
   // checkpoint/登记；任一进行中直接拒绝另一路（不改盘、不消耗 checkpoint）
   const rollbackRecord = async (rec: FixRecord): Promise<void> => {
@@ -1642,7 +1642,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showInformationMessage('没有可回滚的修复 checkpoint');
       return;
     }
-    // 无登记兜底也走写盘互斥（B2-6 扩展）：writeRestored 与进行中的修复交叠会互相踩
+    // 无登记兜底也走写盘互斥（扩展）：writeRestored 与进行中的修复交叠会互相踩
     if (fixing) {
       vscode.window.showWarningMessage('另一个修复/回滚正在写盘，请稍候再试');
       return;
@@ -1662,7 +1662,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // 切换标志须在 lastTaskId 赋值前捕获：换绑任务=新发现集（行号跟踪清零），
     // 同任务重绑定（启动恢复/刷新兜底）保留本地校准，否则重载即丢修复后行号
     const isSwitch = taskId !== lastTaskId;
-    // 切换守卫（B2-5）：有扫描发起中或活跃跟踪的非终态任务时，切绑会停止本地进度
+    // 切换守卫：有扫描发起中或活跃跟踪的非终态任务时，切绑会停止本地进度
     // 跟踪——弹确认，取消则不动（恢复/刷新兜底是同任务重绑或空闲态，不触发）
     if (isSwitch && (scanning || (watcher && progress && !isTerminalTaskStatus(progress.status)))) {
       const go = await vscode.window.showWarningMessage(
@@ -1671,7 +1671,7 @@ export function activate(context: vscode.ExtensionContext): void {
       );
       if (go !== '确认切换') return;
     }
-    // 回滚快照（B2-5）：findings 拉取失败时复原绑定态，不留"进度已换、结果还是旧
+    // 回滚快照：findings 拉取失败时复原绑定态，不留"进度已换、结果还是旧
     // 任务"的半绑定状态
     const prev = { lastTaskId, progress, findingsSource, cancelRequested, phase, incrementalRequested };
     try {
@@ -1683,7 +1683,7 @@ export function activate(context: vscode.ExtensionContext): void {
       watcher = null;
       scanning = false;
       cancelRequested = false;
-      incrementalRequested = false; // 增量口径不跨任务串用（B5-2）：绑定历史任务=新口径上下文
+      incrementalRequested = false; // 增量口径不跨任务串用：绑定历史任务=新口径上下文
       phase = ''; // 扫描/收尾阶段文案不跨任务残留（旧任务 terminal 已 setPhase 而收尾被切绑打断的场景）
       progress = createProgressState(taskId);
       applyFrame(progress, snap);
@@ -1731,7 +1731,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       // findings 拉取失败（快照已成功、绑定态已换）：复原进度/绑定指针/来源并重建
-      // UI（B2-5）；原非终态任务重新续订跟踪，保持与切换前一致
+      // UI；原非终态任务重新续订跟踪，保持与切换前一致
       lastTaskId = prev.lastTaskId;
       void context.workspaceState.update('codeaudit.lastTaskId', prev.lastTaskId || undefined);
       progress = prev.progress;
@@ -2003,7 +2003,7 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // 事实口径（B2-8，原注释"watcher 由订阅机制随扩展停用关闭"失实）：
+  // 事实口径（原注释"watcher 由订阅机制随扩展停用关闭"失实）：
   // TaskWatcher 不进 context.subscriptions——其关闭时机为新任务 watchTask 替换、
   // 任务终态自关、bindTask 收口三条路径；扩展停用不做额外清理（定时器随宿主进程终止）。
 }

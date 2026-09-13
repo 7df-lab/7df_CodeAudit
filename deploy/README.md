@@ -1,6 +1,6 @@
 # deploy/ — 生产模拟环境（总体考虑）
 
-> 2026-09-05 人类指令：总体项目与各子项目的生产部署统一考虑；**后续不允许在宿主机
+> 总体项目与各子项目的生产部署统一考虑；**后续不允许在宿主机
 > 进行开发测试**——一律使用 docker 模拟生产部署实况，并在模拟生产环境内尽可能
 > 完成所有功能的测试。
 
@@ -49,7 +49,7 @@ cd codeaudit-umbrella
 cp deploy/env.sim.example deploy/env.sim   # 按需修改密钥/manager 地址
 make deploy-sim                            # 构建+启动+等健康+PG 库表种子
 make test-sim                              # e2e 功能测试套（11 个用例）
-make logs-sim [service]                    # 排障
+make logs-sim                              # 排障（全服务尾 200 行；按服务过滤用 bash deploy/sim.sh logs <service> [N]——make 目标不透传参数）
 make down-sim                              # 停栈（数据卷保留）；destroy 彻底重置
 ```
 
@@ -79,7 +79,10 @@ bash deploy/production-deploy.sh status | stop | down [-v]
   才全量拉取（需网络出口，离线主机按 sandbox-artifacts/README 手工补件）；`check` 命令只报
   在位性不下载。opengrep 同理（缺失自动按 PROVENANCE.md 来源拉取）。
 - 参数 `deploy/production.env`（gitignored）首跑自动生成：密钥随机、宿主 IP 探测、
-  端口/网段/Kafka 广播地址全部 env 化，改后重跑 deploy 即收敛。**联动键自动重算**：
+  端口/网段/Kafka 广播地址全部 env 化，改后重跑 deploy 即收敛。`CODEAUDIT_SEED_ADMIN`
+  缺省 true（prod overlay 注入）——R72 后 engine 种子 admin 缺省关闭，不开则全新栈
+  无任何可登录用户（用户档为内存存储，重启按本开关重播；登录后改密，重启回缺省是
+  既知边界）。**联动键自动重算**：
   manager→网关端点与沙箱拨号随 `OPENSHELL_PORT`、console `/v1` 反代随 `CODEAUDIT_HOST_GATEWAY`
   ——改一个端口键全链跟随（dind 实测的反代 404 手误由此根治）；**manager 是内部面非交互面**：
   `OPENSHELL_MANAGER_URL` 恒为内部常量 `http://host.docker.internal:18800`（带 scheme——引擎拿它当
@@ -129,6 +132,19 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\expose-lan.ps1          
 - 状态（U8 如实记）：bootstrap/expose-lan 为静态编写，尚未在真实 Windows 上实测
   （本机无 pwsh/Windows）；bash 入口的可移植性回退分支经本机可测面验证
   （netstat 正则实测命中、configure/deploy 全链回归绿），MSYS/WSL 分支待实机。
+- 2026-09-13 审计整改批（P1×4/P2×5/P3×4，代码审计发现全处置）：①双 ps1 加 UTF-8
+  BOM（PS5.1 无 BOM 按 ANSI 解码中文，乱码乃至解析破裂）；②原生命令探测统一走
+  Probe（局部降 EAP，stderr 合流不再触发 NativeCommandError 终止——原 4 处
+  `2>&1` 在 daemon 未启动/WSL 未装等主路径上抢先裸崩）；③CRLF 哨兵扩面为
+  deploy/windows/crlf_check.sh：伞仓+全部子仓跟踪 .sh/Dockerfile* 全扫+autocrlf
+  false 无条件落盘（伞仓+子仓）+修复前脏树拦截（合成仓三场景实测：哨兵命中/
+  修复归一/干净态零噪音）；④winget 缺失前置检查（19041 合法无 winget）+管理员
+  口径修正（缺 Docker 时安装需 UAC）；⑤商店占位 stub 以真实执行为判据；⑥全部
+  bash 调用改环境变量（CA_REPO_DIR/CA_ACTION/WSLENV）+单引号静态脚本，消除路径
+  引号断裂与 RepoUrl 插值面；⑦submodule update/autocrlf 落盘补退出码检查；
+  ⑧WSL 按 --help 特征检测分派（inbox 19041 无 --no-distribution 不再误报 BIOS）；
+  ⑨expose-lan 逐口核验退出码+防火墙限 Private/Domain+端口 ValidateRange。
+  crlf 哨兵/修复逻辑（crlf_check.sh）本机实测绿；ps1 整体仍待实机回归。
 
 ## 4. 功能测试覆盖面（deploy/tests/run.sh）
 

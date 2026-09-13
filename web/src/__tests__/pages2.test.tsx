@@ -11,7 +11,7 @@ import { useFakeGateway } from '../testsupport/fakeGateway';
 
 const gateway = useFakeGateway({
   'GET /v1/reports': {
-    reports: [{ report_id: 'r-1', task_id: 't1', format: 3, url: '', generated_at: '2026-08-29T00:00:00Z' }],
+    reports: [{ report_id: 'r-1', task_id: 't1', format: 'REPORT_FORMAT_JSON', url: '', generated_at: '2026-08-29T00:00:00Z' }], // B5-P1-1：真实网关形状=protojson 枚举名（transcode.go 无 UseEnumNumbers，非数值）
   },
   'GET /v1/notifications': {
     notifications: [

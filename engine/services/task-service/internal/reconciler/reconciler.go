@@ -90,7 +90,7 @@ func WithInterval(d time.Duration) Option {
 
 // WithActivityLookup sets the AI-interaction-log activity probe (ADR-196).
 // 依据: 人类裁决 2026-09-04——updated_at 与 AI 交互日志写入活跃度任一活跃即视为任务仍在 RUNNING
-// （gw-3a2a52330 实证：AI 回合正常收敛前 3 秒被 updated_at 陈旧误杀）。
+// （实证：AI 回合正常收敛前 3 秒被 updated_at 陈旧误杀）。
 func WithActivityLookup(fn func(taskID string) (time.Time, bool)) Option {
 	return func(r *Reconciler) {
 		r.activityLookup = fn

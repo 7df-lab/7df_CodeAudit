@@ -190,6 +190,7 @@ func (s *UserService) ChangePassword(userID, oldPassword, newPassword string) er
 	rec.Password = hash
 	rec.User.MustChangePassword = false
 	s.store.UpdateUser(rec)
+	s.invalidateSessions(userID) // R87: 改密成功=旧会话纪元推进（被盗 refresh 即刻失效）
 	return nil
 }
 
@@ -211,6 +212,7 @@ func (s *UserService) ResetPassword(userID string) (string, error) {
 	rec.Password = hash
 	rec.User.MustChangePassword = true
 	s.store.UpdateUser(rec)
+	s.invalidateSessions(userID) // R87: 管理员重置=受害者全部既有 refresh 即刻失效
 	return temp, nil
 }
 

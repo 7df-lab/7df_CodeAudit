@@ -16,6 +16,7 @@ import (
 	"time"
 
 	pb "github.com/codeaudit/proto-gen"
+	"github.com/codeaudit/services/gateway-service/internal/middleware"
 	"github.com/gorilla/websocket"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -271,9 +272,21 @@ func startBackends(t *testing.T) *Transcoder {
 	return tr
 }
 
-func httpJSON(t *testing.T, tr *Transcoder, method, path, body string) (int, map[string]interface{}) {
+// httpJSONWithClaims — 转码器 HTTP 请求核心：非空 role/userID 以中间件同款 context key
+// 注入 claims（生产链路由 JWTMiddleware 写入）。httpJSON / httpJSONAsAdmin / httpJSONAsUser
+// 三个入口共用本管道，仅注入的 claims 不同；全空即无 claims 裸请求。
+func httpJSONWithClaims(t *testing.T, tr *Transcoder, role, userID, method, path, body string) (int, map[string]any) {
 	t.Helper()
-	srv := httptest.NewServer(tr.Handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		if role != "" {
+			ctx = context.WithValue(ctx, middleware.UserRoleKey, role)
+		}
+		if userID != "" {
+			ctx = context.WithValue(ctx, middleware.UserIDKey, userID)
+		}
+		tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+	}))
 	defer srv.Close()
 	var req *http.Request
 	var err error
@@ -293,10 +306,12 @@ func httpJSON(t *testing.T, tr *Transcoder, method, path, body string) (int, map
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	out := map[string]interface{}{}
-	_ = json.Unmarshal(raw, &out)
-	return resp.StatusCode, out
+	return resp.StatusCode, decodeJSONBody(t, resp)
+}
+
+func httpJSON(t *testing.T, tr *Transcoder, method, path, body string) (int, map[string]interface{}) {
+	t.Helper()
+	return httpJSONWithClaims(t, tr, "", "", method, path, body)
 }
 
 func TestTP12T0_UsersMeAndPermissions(t *testing.T) {
@@ -319,16 +334,21 @@ func TestTP12T0_UsersMeAndPermissions(t *testing.T) {
 	if resp.StatusCode != 200 || out["user_id"] != "u-1" {
 		t.Fatalf("users/me: code=%d out=%v", resp.StatusCode, out)
 	}
+	// R85: /v1/users/{id}/permissions 收紧为 admin|self——裸请求（无 claims）查他人
+	// 权限矩阵必须 403；self 语义由 httpJSONAsUser 版本用例覆盖（users_gate_test.go）。
 	code, out = httpJSON(t, tr, "GET", "/v1/users/u-1/permissions", "")
-	if code != 200 || out["user_id"] != "u-1" {
-		t.Fatalf("permissions: code=%d out=%v", code, out)
+	if code != 403 {
+		t.Fatalf("permissions（无 claims 查他人）: want 403, got %d out=%v", code, out)
 	}
 }
 
 // ADR-172: WebSocket 秒级推送——升级成功、首帧同构 snapshot、终态任务推完即关
 func TestTP12T0_TaskWatchFirstFrame(t *testing.T) {
 	tr := startBackends(t)
-	srv := httptest.NewServer(tr.Handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN") // R89: 机制测试按 admin 走门禁
+		tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+	}))
 	defer srv.Close()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/tasks/t-1/ws"
 	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -362,7 +382,10 @@ func TestTP12T0_TaskWatchFirstFrame(t *testing.T) {
 
 func TestTP12T0_TaskWatchSettledCloses(t *testing.T) {
 	tr := startBackends(t)
-	srv := httptest.NewServer(tr.Handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN") // R89: 机制测试按 admin 走门禁
+		tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+	}))
 	defer srv.Close()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/tasks/t-done/ws"
 	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -388,7 +411,10 @@ func TestTP12T0_TaskWatchSettledCloses(t *testing.T) {
 
 func TestTP12T0_TaskWatchUnknownTask(t *testing.T) {
 	tr := startBackends(t)
-	srv := httptest.NewServer(tr.Handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN") // R89: 机制测试按 admin 走门禁
+		tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+	}))
 	defer srv.Close()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/tasks/none/ws"
 	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -420,14 +446,14 @@ func TestTP12T0_ApprovalRoutesRemoved(t *testing.T) {
 
 func TestTP12T0_VerdictRoutes(t *testing.T) {
 	tr := startBackends(t)
-	code, out := httpJSON(t, tr, "PUT", "/v1/findings/f-1/verdict", `{"verdict":"AI_VERDICT_TRUE_POSITIVE","reasoning":"ok"}`)
+	code, out := httpJSONAsAdmin(t, tr, "PUT", "/v1/findings/f-1/verdict", `{"verdict":"AI_VERDICT_TRUE_POSITIVE","reasoning":"ok"}`)
 	if code != 200 {
 		t.Fatalf("put verdict: code=%d out=%v", code, out)
 	}
 	if f, ok := out["finding"].(map[string]interface{}); !ok || f["finding_id"] != "f-1" {
 		t.Fatalf("put verdict body: %v", out)
 	}
-	code, out = httpJSON(t, tr, "POST", "/v1/findings/verdict:batch", `{"finding_ids":["f-1","f-2"],"verdict":"AI_VERDICT_FALSE_POSITIVE"}`)
+	code, out = httpJSONAsAdmin(t, tr, "POST", "/v1/findings/verdict:batch", `{"finding_ids":["f-1","f-2"],"verdict":"AI_VERDICT_FALSE_POSITIVE"}`)
 	if code != 200 || out["updated_count"] != float64(2) {
 		t.Fatalf("batch verdict: code=%d out=%v", code, out)
 	}
@@ -435,17 +461,21 @@ func TestTP12T0_VerdictRoutes(t *testing.T) {
 
 func TestTP12T0_ReportGenerateAndDownload(t *testing.T) {
 	tr := startBackends(t)
-	code, out := httpJSON(t, tr, "POST", "/v1/tasks/t-1/report", "")
+	code, out := httpJSONAsAdmin(t, tr, "POST", "/v1/tasks/t-1/report", "")
 	if code != 200 {
 		t.Fatalf("generate report: code=%d out=%v", code, out)
 	}
 	if rr, ok := out["result"].(map[string]interface{}); !ok || rr["report_id"] != "report_t-1" {
 		t.Fatalf("generate report body: %v", out)
 	}
-	// 下载：服务端流聚合
-	srv := httptest.NewServer(tr.Handler())
+	// 下载：服务端流聚合（R89: 带 admin 身份过归属门禁；机制测试语义不变）
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN")
+		tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+	}))
 	defer srv.Close()
-	resp, err := http.Get(srv.URL + "/v1/reports/r-1/download")
+	req, _ := http.NewRequest("GET", srv.URL+"/v1/reports/r-1/download", nil)
+	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +491,7 @@ func TestTP12T0_ReportGenerateAndDownload(t *testing.T) {
 
 func TestTP12T0_FindingsByTask(t *testing.T) {
 	tr := startBackends(t)
-	code, out := httpJSON(t, tr, "GET", "/v1/findings?task_id=t-77", "")
+	code, out := httpJSONAsAdmin(t, tr, "GET", "/v1/findings?task_id=t-77", "")
 	if code != 200 {
 		t.Fatalf("findings?task_id: code=%d out=%v", code, out)
 	}
@@ -469,10 +499,15 @@ func TestTP12T0_FindingsByTask(t *testing.T) {
 	if !ok || len(arr) != 1 {
 		t.Fatalf("findings body: %v", out)
 	}
-	// 缺 task_id → 400（任务维度查询的诚实约束）
+	// 缺 task_id：非 admin 裸列表=全量枚举面 → 403（R90）；admin 裸列表 → 后端 400
+	//（任务维度查询的诚实约束，契约不变）
 	code, _ = httpJSON(t, tr, "GET", "/v1/findings", "")
+	if code != 403 {
+		t.Fatalf("findings without task_id (non-admin): want 403, got %d", code)
+	}
+	code, _ = httpJSONAsAdmin(t, tr, "GET", "/v1/findings", "")
 	if code != 400 {
-		t.Fatalf("findings without task_id: want 400, got %d", code)
+		t.Fatalf("findings without task_id (admin): want 400, got %d", code)
 	}
 }
 
@@ -495,7 +530,7 @@ func TestTP12T0_NotificationsAndSkillsAndTools(t *testing.T) {
 	if code != 200 || out["tools"] == nil {
 		t.Fatalf("tools: code=%d out=%v", code, out)
 	}
-	code, out = httpJSON(t, tr, "GET", "/v1/tasks/t-1/metrics", "")
+	code, out = httpJSONAsAdmin(t, tr, "GET", "/v1/tasks/t-1/metrics", "")
 	if code != 200 || out["total_unique"] != float64(3) {
 		t.Fatalf("metrics: code=%d out=%v", code, out)
 	}

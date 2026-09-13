@@ -9,15 +9,15 @@
 //   User += role=6、must_change_password=7；新增 enum Role（admin/developer/viewer）。
 //   均为 additive（字段号新增不复用，06 兼容策略 §6）。
 //
-// V2.0 变更记录（相对 V1.x，见《设计体系综合评估报告.md》R1-R7）：
-//   [R1] 确立本文件为唯一契约源；V1.x 中接口文档内嵌的冲突定义全部作废
-//   [R4] ScanMode 补 SAST_REVIEW=4；TaskStatus 补 TIMEOUT=7、CREATED=8；
-//        枚举编号基准统一为 AI_ONLY=1（工作流文档旧版 AI_ONLY=0 作废）
-//   [R5] 新增 StorageService、NotificationService 服务定义（兑现"补充8接口"声明）
-//   [R7] DSHRuntimeService 定版 11 个 RPC
-//   [3.1] 新增服务定义段：14 个 logical service ↔ 9 个部署服务的映射见
-//        《01 总体架构设计.md》；CompareResults 并入 SASTFusionService（N7），
-//        KnowledgeGraphService 新增 GetKGQuality（评审缺口补齐）
+// V2.0 变更记录（相对 V1.x）：
+//   确立本文件为唯一契约源
+//   ScanMode 补 SAST_REVIEW=4；TaskStatus 补 TIMEOUT=7、CREATED=8；
+//        枚举编号基准统一为 AI_ONLY=1
+//   新增 StorageService、NotificationService 服务定义
+//   DSHRuntimeService 定版 11 个 RPC
+//   新增服务定义段：14 个 logical service ↔ 9 个部署服务的映射见
+//        《01 总体架构设计.md》；CompareResults 并入 SASTFusionService，
+//        KnowledgeGraphService 新增 GetKGQuality
 //   修正：LanguageInfo 字段号 1/2/3（原从 2 起编）；
 //        REVIEW_CONJECTION_FAIL → REVIEW_CONCLUSION_FAIL（拼写）；
 //        FindingReview.confidence 由 int32 百分制改为 float 0.0-1.0（全局统一）；
@@ -1964,7 +1964,7 @@ type ResultServiceClient interface {
 	GetFindingsByVerdict(ctx context.Context, in *GetFindingsByVerdictRequest, opts ...grpc.CallOption) (*ListFindingsResponse, error)
 	GetTaskResultStats(ctx context.Context, in *GetTaskResultStatsRequest, opts ...grpc.CallOption) (*ResultStats, error)
 	ExportFindings(ctx context.Context, in *ExportFindingsRequest, opts ...grpc.CallOption) (*ExportFindingsResponse, error)
-	// 误报反馈闭环（评审整合项）
+	// 误报反馈闭环
 	SubmitFindingFeedback(ctx context.Context, in *SubmitFindingFeedbackRequest, opts ...grpc.CallOption) (*SubmitFindingFeedbackResponse, error)
 	// 增量扫描继承（ADR-225）：复制基线任务中"未变更文件"的 findings 到新任务
 	// （写路径物化，连带 verdict/AI 建议终态；变更∪删除文件的旧 findings 不继承）
@@ -2139,7 +2139,7 @@ type ResultServiceServer interface {
 	GetFindingsByVerdict(context.Context, *GetFindingsByVerdictRequest) (*ListFindingsResponse, error)
 	GetTaskResultStats(context.Context, *GetTaskResultStatsRequest) (*ResultStats, error)
 	ExportFindings(context.Context, *ExportFindingsRequest) (*ExportFindingsResponse, error)
-	// 误报反馈闭环（评审整合项）
+	// 误报反馈闭环
 	SubmitFindingFeedback(context.Context, *SubmitFindingFeedbackRequest) (*SubmitFindingFeedbackResponse, error)
 	// 增量扫描继承（ADR-225）：复制基线任务中"未变更文件"的 findings 到新任务
 	// （写路径物化，连带 verdict/AI 建议终态；变更∪删除文件的旧 findings 不继承）

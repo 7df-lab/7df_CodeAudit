@@ -48,6 +48,15 @@ def load(path):
         return yaml.safe_load(f) or {}
 
 
+def read_src(path, gate):
+    """读子仓源文件；缺失/迁移时记 bad 并返回 None（防锚点漂移炸成 traceback）"""
+    if not os.path.exists(path):
+        bad(f"{gate} 锚点文件缺失（子仓移动/改名后本闸未跟）：{os.path.relpath(path, root)}")
+        return None
+    with open(path) as f:
+        return f.read()
+
+
 def no_dup_keys(path):
     """A6: 重复键检测（yaml.safe_load 静默 last-wins，须用成对钩子扫描）"""
     import yaml as _y
@@ -143,6 +152,16 @@ if "codeaudit-engine-net" in str((prod.get("networks") or {})):
 else:
     bad("A3 prod 网络未显式命名")
 
+print("== A11 生产档 restart 策略（base+prod overlay 合并后全服务 unless-stopped）==")
+# 2026-09-13 审计：base 为开发宽容档零 restart，prod overlay 漏补中间件时
+# 宿主/daemon 重启后中间件不自起、应用服务空转（两条生产链同用本 overlay）。
+for svc in svcs:
+    restart = (psvcs.get(svc, {}) or {}).get("restart") or (svcs.get(svc, {}) or {}).get("restart")
+    if restart == "unless-stopped":
+        ok(f"{svc} restart=unless-stopped")
+    else:
+        bad(f"A11 {svc} 缺 restart=unless-stopped（宿主/daemon 重启后不自起）")
+
 print("== A4 模拟档位（deploy/docker-compose.sim.yml）==")
 sim = load(os.path.join(root, "deploy", "docker-compose.sim.yml"))
 ssvcs = sim.get("services", {})
@@ -160,17 +179,20 @@ else:
     bad("A4 sim 网络未显式命名")
 
 print("== A5 代码侧 env 出口（dsh-runtime 两处历史缺口）==")
-tl = os.path.join(engine, "services", "dsh-runtime-service", "internal", "service", "task_log.go")
-if 'cfg.Str("addresses.task", "CODEAUDIT_TASK_ADDR")' in open(tl).read():
-    ok("task_log.go addresses.task 可 env 覆盖")
-else:
-    bad("A5 task_log.go addresses.task 不接受 env（执行日志容器内部署必丢）")
-sa = os.path.join(engine, "services", "dsh-runtime-service", "internal", "service",
-                  "sandbox_analysis.go")
-if 'cfg.Str("dsh_runtime.sandbox.gateway_dial_addr", "CODEAUDIT_GATEWAY_DIAL_ADDR")' in open(sa).read():
-    ok("sandbox_analysis.go gateway_dial_addr 可 env 覆盖")
-else:
-    bad("A5 gateway_dial_addr 不接受 env（任意宿主沙箱路由不可注入）")
+tl = read_src(os.path.join(engine, "services", "dsh-runtime-service", "internal", "service",
+                           "task_log.go"), "A5")
+if tl is not None:
+    if 'cfg.Str("addresses.task", "CODEAUDIT_TASK_ADDR")' in tl:
+        ok("task_log.go addresses.task 可 env 覆盖")
+    else:
+        bad("A5 task_log.go addresses.task 不接受 env（执行日志容器内部署必丢）")
+sa = read_src(os.path.join(engine, "services", "dsh-runtime-service", "internal", "service",
+                           "sandbox_analysis.go"), "A5")
+if sa is not None:
+    if 'cfg.Str("dsh_runtime.sandbox.gateway_dial_addr", "CODEAUDIT_GATEWAY_DIAL_ADDR")' in sa:
+        ok("sandbox_analysis.go gateway_dial_addr 可 env 覆盖")
+    else:
+        bad("A5 gateway_dial_addr 不接受 env（任意宿主沙箱路由不可注入）")
 
 print("== A7 宿主端口出口 ==")
 minio = svcs.get("minio", {})
@@ -197,7 +219,9 @@ PARITY = [
 
 
 def proto_enum_keys(name):
-    src = open(os.path.join(engine, "proto", "codeaudit_common.proto")).read()  # D4: SSOT=proto/（根副本已删）
+    src = read_src(os.path.join(engine, "proto", "codeaudit_common.proto"), "A8")  # D4: SSOT=proto/（根副本已删）
+    if src is None:
+        return None
     m = re.search(rf"enum {name} \{{([^}}]*)\}}", src)
     if not m:
         return None
@@ -205,7 +229,9 @@ def proto_enum_keys(name):
 
 
 def ts_table_keys(path, table):
-    src = open(path).read()
+    src = read_src(path, "A8")
+    if src is None:
+        return None
     m = re.search(rf"(?:export\s+)?const {table}[^=]*=\s*\{{(.*?)\n\}};", src, re.S)
     if not m:
         return None
@@ -259,34 +285,71 @@ for rel, required in DEPLOY_SCRIPTS:
         ok(f"{rel} REMOTE=`-` 形态（空串=本机契约）×{len(lines)}")
 
 print("== A10 ADR-225 S5 数据面出口（F15：trees 桶/回收器/sourcefile 缓存）==")
-ts_src = open(os.path.join(engine, "services", "task-service", "internal",
-                           "service", "task_service.go")).read()
+ts_src = read_src(os.path.join(engine, "services", "task-service", "internal",
+                               "service", "task_service.go"), "A10")
 CACHE_ENV = ["CODEAUDIT_TASK_REPO_CACHE_GC_ENABLED", "CODEAUDIT_TASK_REPO_CACHE_GC_INTERVAL_S",
              "CODEAUDIT_TASK_REPO_CACHE_TTL_S", "CODEAUDIT_TASK_REPO_CACHE_ORPHAN_TTL_S",
              "CODEAUDIT_TASK_REPO_CACHE_MAX_BYTES"]
-missing_env = [k for k in CACHE_ENV if k not in ts_src]
-if not missing_env:
-    ok("task-service 卷缓存回收器 5 配置键均可 env 覆盖")
-else:
-    bad(f"A10 task-service 缺 env 出口: {missing_env}")
-sf_src = open(os.path.join(engine, "services", "gateway-service", "internal",
-                           "handler", "sourcefile_rehydrate.go")).read()
-if "CODEAUDIT_SOURCEFILE_CACHE_MAX_BYTES" in sf_src:
-    ok("gateway source-file 重物化缓存上限可 env 覆盖")
-else:
-    bad("A10 gateway 缺 CODEAUDIT_SOURCEFILE_CACHE_MAX_BYTES 出口")
-mini_src = open(os.path.join(engine, "services", "storage-service", "internal",
-                             "repo", "minio.go")).read()
-if '"trees"' in mini_src:
-    ok("storage 侧 trees 域桶已声明（源码树 tar 持久 SSOT）")
-else:
-    bad("A10 storage 未声明 trees 桶")
+if ts_src is not None:
+    missing_env = [k for k in CACHE_ENV if k not in ts_src]
+    if not missing_env:
+        ok("task-service 卷缓存回收器 5 配置键均可 env 覆盖")
+    else:
+        bad(f"A10 task-service 缺 env 出口: {missing_env}")
+sf_src = read_src(os.path.join(engine, "services", "gateway-service", "internal",
+                               "handler", "sourcefile_rehydrate.go"), "A10")
+if sf_src is not None:
+    if "CODEAUDIT_SOURCEFILE_CACHE_MAX_BYTES" in sf_src:
+        ok("gateway source-file 重物化缓存上限可 env 覆盖")
+    else:
+        bad("A10 gateway 缺 CODEAUDIT_SOURCEFILE_CACHE_MAX_BYTES 出口")
+mini_src = read_src(os.path.join(engine, "services", "storage-service", "internal",
+                                 "repo", "minio.go"), "A10")
+if mini_src is not None:
+    if '"trees"' in mini_src:
+        ok("storage 侧 trees 域桶已声明（源码树 tar 持久 SSOT）")
+    else:
+        bad("A10 storage 未声明 trees 桶")
 for tpl in (os.path.join(root, "deploy", "prod", "env.template"),
             os.path.join(root, "deploy", "env.sim.example")):
     if os.path.exists(tpl) and "CODEAUDIT_TASK_REPO_CACHE_TTL_S" in open(tpl).read():
         ok(f"{os.path.relpath(tpl, root)} 含回收器配置出口注释")
     else:
         bad(f"A10 {os.path.relpath(tpl, root)} 缺卷缓存配置出口（overlay 不可调）")
+
+print("== A12 部署清单 TOML parse（sandbox-deploy.toml，U6/LESSONS #8 在 TOML 上的门禁）==")
+toml_path = os.path.join(root, "deploy", "sandbox-deploy.toml")
+try:
+    import tomllib
+    with open(toml_path, "rb") as f:
+        manifest = tomllib.load(f)
+except ModuleNotFoundError:
+    manifest = None
+    bad("A12 python 缺 tomllib（<3.11），清单 parse 门禁不可用")
+except Exception as e:
+    manifest = None
+    bad(f"A12 TOML parse 失败：{e}")
+if manifest is not None:
+    projs = manifest.get("project") or []
+    if len(projs) >= 5:
+        ok(f"清单 parse OK（{len(projs)} 项目）")
+    else:
+        bad(f"A12 清单项目数异常：{len(projs)}（<5）")
+    seen_names = set()
+    for p in projs:
+        name = p.get("name", "<noname>")
+        if name in seen_names:
+            bad(f"A12 项目名重复：{name}")
+        seen_names.add(name)
+        miss = [k for k in ("dir", "target") if not p.get(k)]
+        if miss:
+            bad(f"A12 项目 {name} 缺必填字段 {miss}")
+        elif not os.path.isdir(os.path.join(root, p["dir"])):
+            bad(f"A12 项目 {name} dir 不存在：{p['dir']}（LESSONS #2 清单 dir 失效型）")
+        if "vmid" in p and not isinstance(p["vmid"], int):
+            bad(f"A12 项目 {name} vmid 非整数：{p['vmid']!r}")
+        if "enabled" in p and not isinstance(p["enabled"], bool):
+            bad(f"A12 项目 {name} enabled 非布尔：{p['enabled']!r}")
 
 for f in (os.path.join(engine, "docker-compose.yml"),
           os.path.join(root, "deploy", "prod", "docker-compose.deploy.yml"),

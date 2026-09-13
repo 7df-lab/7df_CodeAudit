@@ -345,7 +345,7 @@ describe('doScan 入口分支（验收 A19）', () => {
     assert.strictEqual(uploadCalls(script), 0, '仍停在方式询问（Esc）：零上传');
   });
 
-  it('B5-2 增量口径不跨任务串用：增量任务未收尾即切绑他任务，其完成弹全量口径（不误弹"增量扫描完成"）', async () => {
+  it('增量口径不跨任务串用：增量任务未收尾即切绑他任务，其完成弹全量口径（不误弹"增量扫描完成"）', async () => {
     const script = new FetchScript().install();
     const TASK_B = 'gw-hist222-222222222222222';
     const summaryB = { task_id: TASK_B, project_id: 'p1', scan_mode: 'SCAN_MODE_PARALLEL', sast_tools: [], status: 'TASK_STATUS_RUNNING', created_at: '', updated_at: null, error_message: '' };
@@ -367,13 +367,13 @@ describe('doScan 入口分支（验收 A19）', () => {
     m().state().pickQueue = [{ label: '增量扫描（基于 gw-base0…）', incremental: true }];
     void vscode.commands.executeCommand('codeaudit.scanWorkspace');
     await until(() => hasMsg('info', '代码审计已开始'), 4000);
-    // 增量任务 A 运行中即切绑历史任务 B（A 非终态 → B2-5 确认门）
+    // 增量任务 A 运行中即切绑历史任务 B（A 非终态 → 确认门）
     m().state().pickQueue = [{ label: 'B', description: '', task: summaryB }];
     m().state().buttonQueue = ['确认切换'];
     void vscode.commands.executeCommand('codeaudit.selectTask');
     await until(() => hasMsg('info', `已绑定任务 ${TASK_B.slice(0, 8)}`), 4000);
     // B（从未走过增量选择）终态完成：必须是全量口径通知——A 残留的 incrementalRequested
-    // 若不被入口复位，会让这里误弹「增量扫描完成」（B5-2）
+    // 若不被入口复位，会让这里误弹「增量扫描完成」
     wsInstances[1].onmessage?.({ data: JSON.stringify(snapshot(TASK_B, 'TASK_STATUS_COMPLETED', 100)) });
     await until(() => hasMsg('info', '扫描完成：0 条发现'), 4000);
     assert.ok(!messages().some((x) => /增量扫描完成/.test(x.msg)), '非增量任务的完成通知不得带增量口径');

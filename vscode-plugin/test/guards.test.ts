@@ -65,7 +65,7 @@ describe('guards（结构守卫：无声漂移类缺陷的门禁）', () => {
     assert.deepStrictEqual(imported, srcModules, 'src 模块 ⇄ 测试引用必须互为全集（新模块必须带测试，见 docs/regressions.md 纪律 3）');
   });
 
-  it('相似度实现单一来源：applyPatch 复用 diffParse 导出，不得自带 Levenshtein 副本（回归锁：双副本阈值漂移，B2-8）', () => {
+  it('相似度实现单一来源：applyPatch 复用 diffParse 导出，不得自带 Levenshtein 副本（回归锁：双副本阈值漂移）', () => {
     const applyPatchSrc = fs.readFileSync(path.join(ROOT, 'src', 'applyPatch.ts'), 'utf8');
     const diffParseSrc = fs.readFileSync(path.join(ROOT, 'src', 'diffParse.ts'), 'utf8');
     assert.ok(!/function\s+(levenshteinDistance|calculateSimilarity)/.test(applyPatchSrc), 'applyPatch 不得自带 levenshtein/similarity 副本');

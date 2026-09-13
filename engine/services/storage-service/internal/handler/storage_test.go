@@ -416,7 +416,7 @@ func TestListNotifications(t *testing.T) {
 	t.Log("ListNotifications + MarkNotificationRead OK")
 }
 
-// TestGetPresignedUrl — 诚实性契约（2026-08-27 编造审计）:
+// TestGetPresignedUrl — 诚实性契约:
 // MinIO 未接入时必须 Unimplemented, 且绝不返回拼凑的假 URL（必然 404 冒充可用）。
 func TestGetPresignedUrl(t *testing.T) {
 	sh, _ := newTestHandlers()

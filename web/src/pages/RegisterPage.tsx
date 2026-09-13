@@ -1,24 +1,26 @@
 // 注册页（14号 §3.2 / ADR-205）：公开路由；注册即登录（后端返回令牌对）。
 // 邀请码制为默认策略（configs auth.registration_mode）——字段保留，disabled 态由后端
 // FAILED_PRECONDITION 语义如实呈现，不前端臆测开关状态。
-import { Alert, Card, Form, Input, Button, Typography } from 'antd';
+import { Alert, Form, Input, Button } from 'antd';
 import { Link, useNavigate } from 'react-router-dom';
 import { useSession } from '../auth/session';
 import { useState } from 'react';
+import { usePageTitle } from '../hooks/usePageTitle';
+import AuthLayout from '../components/AuthLayout';
 
 interface ApiErrShape {
   response?: { status?: number; data?: { error?: string } };
 }
 
 export default function RegisterPage() {
+  usePageTitle('注册');
   const { register } = useSession();
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', background: '#f0f2f5' }}>
-      <Card style={{ width: 400 }} title={<Typography.Title level={4} style={{ margin: 0 }}>注册 CodeAudit 账号</Typography.Title>}>
+    <AuthLayout title="注册 CodeAudit 账号">
         {error && <Alert type="error" message={error} style={{ marginBottom: 16 }} showIcon />}
         <Form
           layout="vertical"
@@ -108,7 +110,6 @@ export default function RegisterPage() {
             <Link to="/login">已有账号？去登录</Link>
           </div>
         </Form>
-      </Card>
-    </div>
+    </AuthLayout>
   );
 }

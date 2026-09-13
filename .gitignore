@@ -1,5 +1,12 @@
 deploy/env.sim
 deploy/production.env
 deploy/.manager-stage/
-# AI 会话工作账本/证据/锁（人类指令 2026-09-13：.agent 整目录任何层级都不入库）
+# prod/README 曾把 deploy/prod/env 描述为 gitignored 密钥文件；现行部署链不消费它，
+# 防御性忽略——手工重建后不得入库
+deploy/prod/env
+# .agent/ 会话工作区（账本/证据/会话锁）不入库
 .agent/
+
+# ZCode 会话过程文件（plans 等）不入库
+.zcode/
+__pycache__/

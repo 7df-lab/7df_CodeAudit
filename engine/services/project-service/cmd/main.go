@@ -38,7 +38,13 @@ func main() {
 	}
 
 	// Shared infrastructure.
-	store := repo.NewMemoryStore()
+	// R72: 种子 admin 默认关闭（生产不得有默认凭据；bootstrap=invitation 注册）；
+	// sim/联调经 CODEAUDIT_SEED_ADMIN=true 显式开启。宽松读取，缺键不 fail-fast。
+	seedAdmin := false
+	if v, err := gcfg.Bool("auth.seed_admin", "CODEAUDIT_SEED_ADMIN"); err == nil {
+		seedAdmin = v
+	}
+	store := repo.NewMemoryStore(seedAdmin)
 	idm := idempotency.New()
 
 	// Business logic.

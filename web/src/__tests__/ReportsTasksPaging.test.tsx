@@ -8,7 +8,7 @@ import ReportsPage from '../pages/reports/ReportsPage';
 import TasksPage from '../pages/tasks/TasksPage';
 import { useFakeGateway, type HandlerCtx } from '../testsupport/fakeGateway';
 
-const REPORT_ROW = { report_id: 'r-1', task_id: 't-1', format: 3, url: '', generated_at: '2026-09-01T00:00:00Z' };
+const REPORT_ROW = { report_id: 'r-1', task_id: 't-1', format: 'REPORT_FORMAT_JSON', url: '', generated_at: '2026-09-01T00:00:00Z' };
 let lastReportsQuery = '';
 const routes: Record<string, unknown> = {
   'GET /v1/reports': (ctx: HandlerCtx) => {

@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	// Token expiry: access=30min, refresh=7d（B5-2/D2 裁决 2026-09-11：实现 1h/24h 与
+	// Token expiry: access=30min, refresh=7d（D2 裁决 2026-09-11：实现 1h/24h 与
 	// 契约三方冲突——03 §4、configs yaml access_ttl_min=30·refresh_ttl_day=7、gateway
 	// taskwatch wsMaxLifetime=6h 按 30min 推导——改代码对齐；现网影响仅 token 提前续期）
 	accessTokenExpiry  = 30 * time.Minute
@@ -35,13 +35,20 @@ type UserService struct {
 	// 30min，超窗撤销记录永不再命中；原 map[string]struct{} 无界增长）。
 	mu            sync.RWMutex
 	revokedTokens map[string]time.Time
+
+	// sessionsInvalidBefore — R87: 用户会话纪元（ userID → 时刻）。iat 早于纪元的
+	// refresh token 一律拒绝。触发点=Logout/改密成功/管理员重置/停用（停用即踢）。
+	// 惰性清扫阈值 8d 须 ≥refresh TTL 7d（R69 的 24h 是按 access 30min 定的，直接
+	// 沿用会让纪元比 refresh 先蒸发）；数值源 ADR-230。
+	sessionsInvalidBefore map[string]time.Time
 }
 
 // NewUserService creates a UserService backed by the given store.
 func NewUserService(store *repo.MemoryStore) *UserService {
 	return &UserService{
-		store:         store,
-		revokedTokens: make(map[string]time.Time),
+		store:                 store,
+		revokedTokens:         make(map[string]time.Time),
+		sessionsInvalidBefore: make(map[string]time.Time),
 	}
 }
 
@@ -108,6 +115,8 @@ func (s *UserService) Login(username, password string) (*v1.LoginResponse, error
 }
 
 // Logout blacklists the given access token.
+// R87: 同时推进该用户会话纪元——此前登出只影响 GetCurrentUser，被盗 refresh（7d）
+// 仍可持续换新 access 对；纪元使 iat 早于登出时刻的全部 refresh 即刻失效。
 func (s *UserService) Logout(accessToken string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -118,6 +127,29 @@ func (s *UserService) Logout(accessToken string) {
 			delete(s.revokedTokens, tok)
 		}
 	}
+	if uid, err := s.extractUserID(accessToken); err == nil { // 解析失败=无效令牌，纪元无从谈起
+		s.sessionsInvalidBefore[uid] = now
+		for u, at := range s.sessionsInvalidBefore { // R87: 惰性清扫（≥refresh TTL 7d，8d 足裕）
+			if now.Sub(at) > 8*24*time.Hour {
+				delete(s.sessionsInvalidBefore, u)
+			}
+		}
+	}
+}
+
+// invalidateSessions — R87: 推进用户会话纪元（改密/重置/停用通道；登出走 Logout 内联）。
+func (s *UserService) invalidateSessions(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionsInvalidBefore[userID] = time.Now()
+}
+
+// sessionInvalidated — R87: 该用户纪元是否已推进到 iat 之后（refresh 准入判定）。
+func (s *UserService) sessionInvalidated(userID string, iat time.Time) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	epoch, ok := s.sessionsInvalidBefore[userID]
+	return ok && iat.Before(epoch)
 }
 
 // IsRevoked checks if a token was revoked via Logout.
@@ -154,6 +186,14 @@ func (s *UserService) RefreshToken(refreshTokenStr string) (*v1.RefreshTokenResp
 	rec, exists := s.store.GetUser(sub)
 	if !exists {
 		return nil, fmt.Errorf("user not found: %s", sub)
+	}
+
+	// R87: 会话纪元守卫——iat 早于纪元（登出/改密/重置/停用之后签发）的 refresh
+	// 一律拒绝（03 §4 会话语义收紧，见 ADR-230）。
+	if iatF, ok := claims["iat"].(float64); ok {
+		if s.sessionInvalidated(sub, time.Unix(int64(iatF), 0)) {
+			return nil, fmt.Errorf("session has been invalidated, please login again")
+		}
 	}
 
 	// Issue new tokens
@@ -206,9 +246,21 @@ func (s *UserService) UpdateUser(u *v1.User) (*v1.User, bool) {
 	if u.GetRole() == v1.Role_ROLE_UNSPECIFIED {
 		u.Role = rec.User.GetRole()
 	}
+	// R85（复审修正）: state 缺省（UNSPECIFIED）同样保全存量——此前缺省直通会把
+	// 未带 state 字段的更新写成 0 值；网关侧非 admin self 更新剥离 state 后亦依赖
+	// 此保全（防被停用用户自助改回 ACTIVE）。
+	if u.GetState() == v1.User_USER_STATE_UNSPECIFIED {
+		u.State = rec.User.GetState()
+	}
 	u.MustChangePassword = rec.User.GetMustChangePassword()
 	rec.User = u
 	s.store.UpdateUser(rec)
+	// R87: 停用即踢——有效 state 离开 ACTIVE（管理员停用/锁定）推进会话纪元，已发
+	// refresh 即刻失效（state 不变更不触发；非 ACTIVE→ACTIVE 的恢复不踢旧会话）。
+	// 此处 u.State 已经过上文 UNSPECIFIED 保全，即为生效 state。
+	if u.GetState() != v1.User_USER_STATE_ACTIVE {
+		s.invalidateSessions(u.GetUserId())
+	}
 	return u, true
 }
 

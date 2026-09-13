@@ -28,7 +28,7 @@ run_remote() { $REMOTE "$@"; }  # intentional word splitting (command prefix)
 compose() { run_remote docker compose --project-directory "$DEPLOY_DIR" \
     -f "$DEPLOY_DIR/docker-compose.yml" "$@"; }
 
-EXCLUDES=(--exclude=.git --exclude=node_modules --exclude=dist --exclude='*.log')
+EXCLUDES=(--exclude=.git --exclude=node_modules --exclude=dist --exclude='.agent' --exclude='*.log') # B5: .agent 过程文档禁上行（同 2026-09-08 GitLab 退订口径）
 
 http_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/null || echo 000; }
 health_ok() { [ "$(http_code "$HEALTH_URL")" = "200" ]; }

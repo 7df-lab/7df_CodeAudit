@@ -38,10 +38,11 @@ check_block G-01 "vi.mock api/client 禁止" \
   "vi\.mock\(\s*['\"][^'\"]*api/client" src/__tests__
 
 echo "== G-02 死契约禁区（P-03/P-10：复活即红；警示注释属许可提及，须含标记词）=="
-g02() { # <ID> <说明> <ERE> <路径...> —— 命中行含许可标记词（已死/勿复活/禁复活/遗物/no-op）则豁免
+g02() { # <ID> <说明> <ERE> <路径...> —— 命中行含许可标记词（已死/勿复活/禁复活/遗物/no-op/不再）则豁免
+  # 注意：'不再' 为 G-06（注入面）承重豁免词，G-02a/b 的既有命中另有强标记兜底——新增禁区勿依赖'不再'做唯一防线
   local id="$1" desc="$2" pattern="$3"; shift 3
   local hits
-  hits=$(grep -rnE "$pattern" "$@" --include='*.ts' --include='*.tsx' 2>/dev/null | grep -vE '已死|勿复活|禁复活|遗物|no-op' || true)
+  hits=$(grep -rnE "$pattern" "$@" --include='*.ts' --include='*.tsx' 2>/dev/null | grep -vE '已死|勿复活|禁复活|遗物|no-op|不再' || true)
   if [[ -n "$hits" ]]; then
     echo "FAIL $id $desc"; echo "$hits" | head -8 | sed 's/^/     /'; fail=1
   else
@@ -58,7 +59,7 @@ check_anchor G-03c "503 重试上限计数（E-44）" "_retry503" src/api/client
 check_anchor G-03d "403/501/503 全局错误事件派发（E-45）" "API_ERROR_EVENT, \{ detail: status \}" src/api/client.ts
 check_anchor G-03e "refresh_token 键名（E-00c 本地存储契约）" "codeaudit\.refresh_token" src/api/client.ts
 check_anchor G-03f "上传 multipart + 300s 超时（E-11）" "multipart/form-data" src/api/client.ts
-check_anchor G-03g "上传 300s 超时（E-11，B4-3 由 120s 放宽——慢速上行大包）" "300_000" src/api/client.ts
+check_anchor G-03g "上传 300s 超时（E-11，由 120s 放宽——慢速上行大包）" "300_000" src/api/client.ts
 
 echo "== G-04 泄漏与 ref 抢占修复锚点（P-05/P-11：2026-09-06 六缺陷修复）=="
 check_anchor G-04a "WS 卸载必须 close" "ws\?\.close\(\)" src/pages/tasks/TaskDetailPage.tsx
@@ -68,6 +69,12 @@ check_anchor G-04c "测试台未建模路由响亮失败（禁静默空成功）
 echo "== G-05 客户端零直连（14号 P1：HTTP 调用只允许同源相对路径）=="
 check_block G-05 "api/fetch 直连绝对 URL 禁止" \
   "(api\.(get|post|put|delete|request)|fetch)\(\s*['\`\"]https?://" src
+
+echo "== G-06 报告窗注入面禁区（P-23：453b6bd 前曾 document.write 裸写同源 about:blank 窗口；B5 补录防线）=="
+g02 G-06 "document.write/dangerouslySetInnerHTML/insertAdjacentHTML/srcdoc（含 JSX 驼峰 srcDoc）禁止（许可=含'不再'的警示注释）" \
+  "document\.write|dangerouslySetInnerHTML|insertAdjacentHTML|[sS]rc[dD]oc\s*=" src
+check_anchor G-06b "报告窗 iframe sandbox 空 token（无 allow-scripts/allow-same-origin，B3AuditFixes 行为锁之外的第二道锚）" \
+  "setAttribute\('sandbox', ''\)" src/api/client.ts
 
 echo
 if [[ $fail -ne 0 ]]; then

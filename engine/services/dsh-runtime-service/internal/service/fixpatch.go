@@ -338,7 +338,7 @@ func safeWsPath(rel string) (string, error) {
 // sandboxPathPrefixes — 沙箱挂载视角的路径前缀（按前缀长度降序：先剥长前缀）。
 // 模型在沙箱内看到的项目根是 /sandbox/project，产出补丁时常把段路径写成该挂载视角
 // （"/sandbox/project/x" 经 sectionPath 清洗后形如 "sandbox/project/x"，或直接 "project/x"），
-// 而校验与消费两侧都按工作区根（=项目根）解析（gw-d331089f 实证 13/13 补丁因此被拒）。
+// 而校验与消费两侧都按工作区根（=项目根）解析（实证 13/13 补丁因此被拒）。
 var sandboxPathPrefixes = []string{"sandbox/project/", "project/"}
 
 // resolveSectionPath — 段路径的沙箱视角容错：原路径在工作区不存在且带挂载前缀时，
@@ -437,7 +437,7 @@ func anchorAndUpdate(sec patchSection, workspaceDir string) ([]patchHunk, error)
 		}
 		idx, best := findExactContext(fileLines, old, cursor)
 		if idx < 0 {
-			// 首行（@@ 锚点行）缩进漂移容错（gw-8bcf75e1 实证）：模型转写 "@@ <行>"
+			// 首行（@@ 锚点行）缩进漂移容错（实证）：模型转写 "@@ <行>"
 			// 时前导空白不可见且易丢——锚点丢 4 空格、其余行全部逐字（similarity 0.97）
 			// 仍被 fuzz=0 拒，触发一整轮再生成沙箱。容错仅限首行（其余行缩进漂移仍拒：
 			// 那是真改写风险）；命中后走下方逐字重建，@@ 行以工作区逐字行回写，产出
@@ -480,7 +480,7 @@ func anchorAndUpdate(sec patchSection, workspaceDir string) ([]patchHunk, error)
 		}
 		// 规范化重建（R37）：defStr 不再物化为上下文行后，纯 del/add hunk 无 ctx 首行，
 		// writeHunk 会丢 @@——分两形态：
-		//   a) 纯插入（无删除行）且新增行在显式上下文之前（gw-5a7393ed 实证形态）：语义=
+		//   a) 纯插入（无删除行）且新增行在显式上下文之前（实证形态）：语义=
 		//      紧邻锚定行插入，重建为 canonical "@@ 锚定真实行 + 新增"（消费端 seek 后
 		//      纯插入，落点一致；ctx 回声行随真实行重建不再重复）；
 		//   b) 其余（含删除行）：从真实文件取变更块上一行前置（消费端 seek 过该行恰落 idx）。
@@ -504,7 +504,7 @@ func anchorAndUpdate(sec patchSection, workspaceDir string) ([]patchHunk, error)
 				h.lines = ins
 			case idx == 0:
 				// 文件顶改动无"上一行"可前置：@@ 直接承载首条变更行本身
-				// （gw-2ff81ebf 实证形态；消费端插件 findContext 全文回扫兜底层覆盖）
+				// （实证形态；消费端插件 findContext 全文回扫兜底层覆盖）
 				h.anchorLine = fileLines[idx]
 			default:
 				h.lines = append([]patchLine{{kind: lineCtx, text: fileLines[idx-1]}}, h.lines...)

@@ -13,6 +13,10 @@ import type { ScanTask } from '../api/types';
 import { autoRunTask } from '../tasks/stateMachine';
 import { MODE_SPECS } from './tasks/TaskNewPage';
 import { SCAN_MODE, TASK_STATUS, zh } from '../dict';
+import { MONO_FONT, STATUS_COLOR } from '../dict/tokens';
+import PageHeader from '../components/PageHeader';
+import { PageLoading } from '../components/states';
+import { usePageTitle } from '../hooks/usePageTitle';
 
 export default function ProjectDetailPage() {
   const { id = '' } = useParams();
@@ -43,7 +47,7 @@ export default function ProjectDetailPage() {
       qc.invalidateQueries({ queryKey: ['projects'] });
       navigate('/projects');
     },
-    // B3-3（审计修复）：此前删除失败静默（Popconfirm 消失后无任何反馈）——补状态码
+    // （审计修复）：此前删除失败静默（Popconfirm 消失后无任何反馈）——补状态码
     onError: (e) => {
       const status = errStatus(e);
       message.error(`项目删除失败${status ? `（HTTP ${status}）` : ''}：${(e as Error).message}`);
@@ -79,14 +83,15 @@ export default function ProjectDetailPage() {
     onError: (e) => message.error(`任务创建失败：${(e as Error).message}`),
   });
 
-  if (isLoading) return <Typography.Text type="secondary">加载中…</Typography.Text>;
+  usePageTitle(project?.name ?? '项目详情');
+  if (isLoading) return <PageLoading />;
 
   return (
     <div>
-      <Typography.Title level={3}>{project?.name ?? id}</Typography.Title>
+      <PageHeader title={project?.name ?? id} />
       <Card style={{ marginBottom: 16 }}>
         <Descriptions column={2} size="small">
-          <Descriptions.Item label="项目 ID">{project?.project_id}</Descriptions.Item>
+          <Descriptions.Item label="项目 ID"><span style={{ fontFamily: MONO_FONT }}>{project?.project_id}</span></Descriptions.Item>
           <Descriptions.Item label="仓库">{project?.repo_url || '—'}</Descriptions.Item>
           <Descriptions.Item label="默认分支">{project?.default_branch}</Descriptions.Item>
           <Descriptions.Item label="创建时间">{project?.created_at ? dayjs(project.created_at).format('YYYY-MM-DD HH:mm:ss') : '—'}</Descriptions.Item>
@@ -112,7 +117,7 @@ export default function ProjectDetailPage() {
           <Form.Item name="scan_mode" label="扫描模式" rules={[{ required: true }]}>
             <Select
               options={Object.entries(SCAN_MODE)
-                .filter(([value]) => !MODE_SPECS[value]?.deprecated)
+                .filter(([value]) => !MODE_SPECS[value]?.deprecated && value !== 'SCAN_MODE_UNSPECIFIED') // R: UNSPECIFIED 不进新建入口
                 .map(([value, label]) => ({ value, label }))}
             />
           </Form.Item>
@@ -147,7 +152,7 @@ export default function ProjectDetailPage() {
             {
               title: '状态',
               dataIndex: 'status',
-              render: (v: string) => <Tag color={v === 'TASK_STATUS_COMPLETED' ? 'success' : v === 'TASK_STATUS_RUNNING' ? 'processing' : v === 'TASK_STATUS_FAILED' || v === 'TASK_STATUS_DEAD' ? 'error' : 'default'}>{zh(TASK_STATUS, v)}</Tag>,
+              render: (v: string) => <Tag color={STATUS_COLOR[v]}>{zh(TASK_STATUS, v)}</Tag>,
             },
             { title: '创建时间', dataIndex: 'created_at', render: (v: string | null) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '—') },
             { title: '重试', dataIndex: 'retry_count' },

@@ -62,8 +62,10 @@ type MemoryStore struct {
 	users map[string]*UserRecord
 }
 
-// NewMemoryStore creates a MemoryStore pre-seeded with a demo user.
-func NewMemoryStore() *MemoryStore {
+// NewMemoryStore creates a MemoryStore; seedAdmin=false 时不预置任何账号
+// （R72：生产默认无凭据，登录走 invitation 注册；admin/admin 种子仅供测试与
+// sim/联调显式开启——CODEAUDIT_SEED_ADMIN，默认关闭防默认凭据登入 ROLE_ADMIN）。
+func NewMemoryStore(seedAdmin bool) *MemoryStore {
 	s := &MemoryStore{
 		projects:       make(map[string]*ProjectRecord),
 		projectConfigs: make(map[string]*ProjectConfigRecord),
@@ -74,6 +76,9 @@ func NewMemoryStore() *MemoryStore {
 	// Seed a default admin user for login testing.
 	// V2.1 (ADR-205): 密码一律 bcrypt 存储（含种子账号，Login 侧 CompareHashAndPassword）；
 	// role 显式 ROLE_ADMIN——JWT role claim 由此签发，网关 admin 门禁依赖。
+	if !seedAdmin {
+		return s
+	}
 	adminHash, err := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
 	if err != nil {
 		panic(fmt.Sprintf("seed admin user: %v", err))

@@ -47,9 +47,11 @@ func sandboxCfg() (*sandbox.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	execS, err := cfg.Int("dsh_runtime.sandbox.exec_timeout_s")
-	if err != nil {
-		return nil, err
+	// R76: exec_timeout_s 死配置清除（ExecTimeoutS 装配后零消费）；改装配 HTTP 兜底
+	// 超时（挂起保险，缺省 2100s>07 §8:126 会话 30m 上界；宽松读取，缺键不 fail-fast）。
+	httpClientTimeoutS := 2100
+	if v, err := cfg.Int("dsh_runtime.sandbox.http_client_timeout_s", "CODEAUDIT_DSH_HTTP_CLIENT_TIMEOUT_S"); err == nil && v > 0 {
+		httpClientTimeoutS = v
 	}
 	maxTok, err := cfg.Int("dsh_runtime.sandbox.dsh_max_tokens")
 	if err != nil {
@@ -64,14 +66,15 @@ func sandboxCfg() (*sandbox.Config, error) {
 	return &sandbox.Config{
 		Mode: mode, ManagerURL: mgrURL, ManagerToken: mgrToken,
 		Workspace: workspace, Image: image,
-		WaitReadyTimeoutS: waitS, ExecTimeoutS: execS,
+		WaitReadyTimeoutS: waitS,
+		HTTPClientTimeout: time.Duration(httpClientTimeoutS) * time.Second,
 		DSHMaxTokens: maxTok, GatewayDialAddr: gatewayDial,
 	}, nil
 }
 
 // interactionDir — AI 交互日志落盘根目录（ADR-168；读失败=空 → 仅内存留存）。
 // CODEAUDIT_INTERACTION_DIR 部署覆盖口：容器化后 task-service 对账探针（ADR-196）
-// 与本服务须指向同一物理目录（相对路径在各容器 CWD 下互不可见，gw-d331089f 实证）。
+// 与本服务须指向同一物理目录（相对路径在各容器 CWD 下互不可见，实证）。
 func interactionDir() string {
 	cfg, err := codeauditcfg.Default()
 	if err != nil {
@@ -108,8 +111,8 @@ func analyzeViaSandbox(ctx context.Context, taskID, projectPath, assignment stri
 	res, err := r.Run(ctx, sandbox.Task{
 		TaskID:       taskID,
 		WorkspaceDir: projectPath,
-		Assignment:   assignment,
-		Timeout:      10 * time.Minute, // 07 §8 单次推理执行 10m 的沙箱映射
+		Assignment: assignment,
+		Timeout:    0, // 07 §8:117/ADR-191：模式 B/C 不设外层时限（R76 前为死值 10m，接线即预杀健康回合）；挂起由 HTTPClientTimeout 兜底
 	})
 	if err != nil {
 		return nil, err
@@ -117,7 +120,7 @@ func analyzeViaSandbox(ctx context.Context, taskID, projectPath, assignment stri
 	// ADR-183 补遗②：非空但校验失败的补丁走一轮失败反馈再生成（Cline 式自纠，
 	// 失败详情含相似度+上下文预览喂回模型）；全部干净/模型未产补丁时零开销。
 	// 再生成回合复用同一 runner（每 Run 独立沙箱生命周期）。
-	// gw-d331089f（R34）：PatchFixRound=true 让 Run 按 patches 语义解析——此前套用
+	// （R34）：PatchFixRound=true 让 Run 按 patches 语义解析——此前套用
 	// findings 解析，模型合规提交的 submit_patches 批次被 "no JSON in DSH output"
 	// 整轮判废，工具参数提取（ADR-184）从未生效。
 	res.Findings = retryFailedPatches(ctx, taskID, projectPath, res.Findings, emit, func(ctx context.Context, fixAssignment string) ([]sandbox.PatchFix, error) {
@@ -125,7 +128,7 @@ func analyzeViaSandbox(ctx context.Context, taskID, projectPath, assignment stri
 			TaskID:        taskID + "-fix",
 			WorkspaceDir:  projectPath,
 			Assignment:    fixAssignment,
-			Timeout:       10 * time.Minute, // 07 §8 单次推理执行 10m
+			Timeout:       0, // 07 §8:117/ADR-191：同主回合不设外层时限（R76）
 			PatchFixRound: true,
 		})
 		if fixErr != nil {

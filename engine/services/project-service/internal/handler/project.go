@@ -5,6 +5,7 @@ package handler
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"encoding/json"
 	"fmt"
@@ -19,6 +20,36 @@ import (
 	"github.com/codeaudit/services/project-service/internal/idempotency"
 	"github.com/codeaudit/services/project-service/internal/service"
 )
+
+// allowedRepoSchemes — R74: repo_url scheme 白名单。file 为 V1 凭据边界声明支持的
+// 形态（task-service repo_fetch.go 头注释）；scp 语法（git@host:path，无 scheme）放行。
+var allowedRepoSchemes = map[string]bool{
+	"http": true, "https": true, "ssh": true, "git": true, "file": true,
+}
+
+// validateRepoURL — R74: repo_url/default_branch 入口校验（两层防线的第一层，错误
+// 暴露给创建者；task-service cloneRepo 白名单 + GIT_ALLOW_PROTOCOL 为最后防线）。
+// git `ext::<command>` 外置传输会在 clone 执行侧容器内运行任意命令（认证后 RCE）；
+// 前导 '-' 会被 git 解析为选项（参数走私）。
+func validateRepoURL(repoURL, branch string) error {
+	if repoURL != "" {
+		if repoURL != strings.TrimSpace(repoURL) {
+			// R85（复审）: 前后空白会使 url.Parse 报错→跳过 scheme 校验（fail-open 短路）
+			return status.Error(codes.InvalidArgument, "repo_url must not contain leading/trailing whitespace")
+		}
+		if strings.HasPrefix(repoURL, "-") {
+			return status.Error(codes.InvalidArgument, "repo_url must not start with '-'")
+		}
+		if u, err := url.Parse(repoURL); err == nil && u.Scheme != "" && !allowedRepoSchemes[u.Scheme] {
+			return status.Errorf(codes.InvalidArgument,
+				"repo_url scheme %q not allowed (http/https/ssh/git/file)", u.Scheme)
+		}
+	}
+	if strings.HasPrefix(branch, "-") {
+		return status.Error(codes.InvalidArgument, "default_branch must not start with '-'")
+	}
+	return nil
+}
 
 // ProjectHandler implements v1.ProjectServiceServer.
 type ProjectHandler struct {
@@ -41,6 +72,10 @@ func (h *ProjectHandler) CreateProject(ctx context.Context, req *v1.CreateProjec
 	if req.GetProject() == nil || strings.TrimSpace(req.GetProject().GetName()) == "" {
 		return nil, status.Error(codes.InvalidArgument,
 			`project is required (wrapper shape: {"project":{"name":...}})`)
+	}
+	// R74: repo_url/branch 白名单（git ext:: RCE / 选项注入拒绝）
+	if err := validateRepoURL(req.GetProject().GetRepoUrl(), req.GetProject().GetDefaultBranch()); err != nil {
+		return nil, err
 	}
 	// R4: read RequestMetadata for idempotency
 	if req.GetMetadata() == nil || req.GetMetadata().GetRequestId() == "" {
@@ -85,6 +120,10 @@ func (h *ProjectHandler) GetProject(ctx context.Context, req *v1.GetProjectReque
 
 // UpdateProject — write RPC (no RequestMetadata in proto).
 func (h *ProjectHandler) UpdateProject(ctx context.Context, req *v1.UpdateProjectRequest) (*v1.Project, error) {
+	// R74: 改写通道同样过白名单（存量项目被改写为 ext:: 不得绕过创建侧防线）
+	if err := validateRepoURL(req.GetProject().GetRepoUrl(), req.GetProject().GetDefaultBranch()); err != nil {
+		return nil, err
+	}
 	proj, ok := h.svc.Update(req.GetProject())
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "project %s not found", req.GetProject().GetProjectId())

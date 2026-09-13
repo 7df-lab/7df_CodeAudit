@@ -7,9 +7,11 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	pb "github.com/codeaudit/proto-gen"
@@ -34,6 +36,32 @@ func (s *TaskServiceImpl) fetchProjectRepo(projectID string) (url string, branch
 	return resp.GetRepoUrl(), resp.GetDefaultBranch(), nil
 }
 
+// allowedCloneSchemes — R74: clone 侧 scheme 白名单（与 project-service 入口校验
+// 同口径；独立成最后一道防线：存量项目可早于校验存在，gRPC 直写可绕过网关）。
+var allowedCloneSchemes = map[string]bool{
+	"http": true, "https": true, "ssh": true, "git": true, "file": true,
+}
+
+// validateRepoTarget — R74: git `ext::<command>` 外置传输会在本容器执行任意命令
+// （认证后 RCE）；前导 '-' 会被 git 解析为选项。scp 语法（无 scheme）放行。
+func validateRepoTarget(repoURL, branch string) error {
+	if repoURL != "" {
+		if repoURL != strings.TrimSpace(repoURL) {
+			return fmt.Errorf("repo_url must not contain leading/trailing whitespace")
+		}
+		if strings.HasPrefix(repoURL, "-") {
+			return fmt.Errorf("repo_url must not start with '-'")
+		}
+		if u, err := url.Parse(repoURL); err == nil && u.Scheme != "" && !allowedCloneSchemes[u.Scheme] {
+			return fmt.Errorf("repo_url scheme %q not allowed (http/https/ssh/git/file)", u.Scheme)
+		}
+	}
+	if strings.HasPrefix(branch, "-") {
+		return fmt.Errorf("branch must not start with '-'")
+	}
+	return nil
+}
+
 // cloneRepo — git clone --depth 1 --single-branch 到 dest；失败清理半成品目录并携带
 // git 输出片段报错（诚实失败）。返回 dest 供编排作为 project_path。
 func cloneRepo(ctx context.Context, repoURL, branch, dest string, timeout time.Duration) (string, error) {
@@ -42,6 +70,9 @@ func cloneRepo(ctx context.Context, repoURL, branch, dest string, timeout time.D
 	}
 	if dest == "" {
 		return "", fmt.Errorf("clone dest is empty")
+	}
+	if err := validateRepoTarget(repoURL, branch); err != nil { // R74: ext:: RCE / 选项注入拒绝
+		return "", err
 	}
 	if err := os.RemoveAll(dest); err != nil { // 清上次失败/重试残留
 		return "", fmt.Errorf("clean stale clone dir: %w", err)
@@ -53,10 +84,13 @@ func cloneRepo(ctx context.Context, repoURL, branch, dest string, timeout time.D
 	if branch != "" {
 		args = append(args, "-b", branch)
 	}
-	args = append(args, repoURL, dest)
+	args = append(args, "--", repoURL, dest) // R74: 终止选项解析（URL/目录前导 '-' 双保险）
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	out, err := exec.CommandContext(cctx, "git", args...).CombinedOutput()
+	cmd := exec.CommandContext(cctx, "git", args...)
+	// R74: GIT_ALLOW_PROTOCOL 白名单（git 原生硬约束，封死 ext:: 及未来新传输协议）
+	cmd.Env = append(os.Environ(), "GIT_ALLOW_PROTOCOL=http:https:ssh:git:file")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		_ = os.RemoveAll(dest)
 		snippet := string(out)

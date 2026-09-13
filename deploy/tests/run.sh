@@ -92,7 +92,7 @@ PY
   check "发现数 ≥1（bandit 扫出样本漏洞，实际=$fcount）" test "${fcount:-0}" -ge 1
   check "发现标注 source_tool=bandit" contains "$(echo "$out" | tail -n +2)" '"bandit"'
 
-  # 源码全文端点冒烟（gw-f6a3523 实证防回归：ADR-200 拉包流布局迁移后 source-file
+  # 源码全文端点冒烟（实证防回归：ADR-200 拉包流布局迁移后 source-file
   # 解析链四流全死 → 发现详情"源码全文不可用/Sink 链路不可用"。上传流任务的源根
   # 必须 经 ①b uploads-<task_id>/unpacked 流解析命中）。
   out=$(http GET "/v1/tasks/$tid/source-file?path=app.py" "" "$ACCESS")
@@ -254,7 +254,7 @@ PY
 }
 
 # ---------- 09 可观测面（快照聚合：执行日志/AI 交互日志/通知）----------
-# 回归锚点（2026-09-05 GUI 实测暴露）：dsh-runtime→task 的 AppendTaskLog 地址缺口
+# 回归锚点：dsh-runtime→task 的 AppendTaskLog 地址缺口
 # （执行日志静默丢失）与 storage 通知 memory 降级档（通知恒空）——可观测通道必须
 # 真实可达，不许静默吞错。
 c09_observability() {
@@ -309,7 +309,10 @@ c10_inference_admin() {
   # 路由：存现场 → 切 fixture（no_verify 避开 LLM egress）→ 读回生效
   local orig_prov="" orig_model=""
   out=$(http GET /v1/inference/route "" "$ACCESS")
-  check "读当前路由（200）" eq "$(echo "$out" | head -1)" "200"
+  # 全新部署路由未配置=404（manager R30 契约口径，dind 七战实证裸 500 缺陷已修）；
+  # 200=已有路由。两态都算"读现场"成功
+  check "读当前路由（200=已配置/404=未配置，实际=$(echo "$out" | head -1)）" \
+    test "$(echo "$out" | head -1)" = "200" -o "$(echo "$out" | head -1)" = "404"
   orig_prov=$(jsonq "$(echo "$out" | tail -n +2)" "d.get('provider','')")
   orig_model=$(jsonq "$(echo "$out" | tail -n +2)" "d.get('model','')")
   out=$(http PUT /v1/inference/route "{\"provider\":\"$name\",\"model\":\"e2e-model\",\"no_verify\":true}" "$ACCESS")
@@ -319,9 +322,27 @@ c10_inference_admin() {
   check "路由生效指向 fixture" contains "$(echo "$out" | tail -n +2)" "$name"
 
   # 真实验证路径（2026-09-12 待办收尾，补"验证连通性"覆盖为零的盲区）：本地 stub 起
-  # openai 兼容端点（网关经 sim 网桥网关 10.10.210.1 回宿主，同 git_fixture 口径），
-  # no_verify=false 切路由 → 网关实测端点。stub 不可用（端口占用/python 缺失）则如实 SKIP。
-  local stub_pid="" stub_port=19419
+  # openai 兼容端点，no_verify=false 切路由 → 网关实测端点。stub 不可用（端口占用/
+  # python 缺失）则如实 SKIP。引擎容器经所在 compose 网络的网桥网关回宿主 stub——
+  # 网关 IP 从运行栈事实推导（模拟栈=10.10.210.1、生产=10.10.110.1，不钉死；
+  # docker 不可用或无栈时回退模拟值，可用 CODEAUDIT_E2E_STUB_HOST 显式覆盖）。
+  local stub_pid="" stub_port=19419 stub_host="${CODEAUDIT_E2E_STUB_HOST:-}"
+  if [ -z "$stub_host" ]; then
+    local stub_container stub_net
+    stub_container=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -m1 -E '^codeaudit(-sim)?-dsh-runtime$' \
+      || docker ps --format '{{.Names}}' 2>/dev/null | grep -m1 '^codeaudit' || true)
+    if [ -n "$stub_container" ]; then
+      # 七战实测：compose 只显式钉 Subnet 未钉 Gateway 时 IPAM.Config[0].Gateway
+      # 为空串——首选容器自身缺省路由（default via，运行态事实源），network inspect
+      # 退居兜底
+      stub_host=$(docker exec "$stub_container" sh -c 'ip route' 2>/dev/null | awk '$1=="default"{print $3; exit}')
+      if [ -z "$stub_host" ]; then
+        stub_net=$(docker inspect --format '{{range $k,$_ := .NetworkSettings.Networks}}{{$k}} {{end}}' "$stub_container" 2>/dev/null | awk '{print $1}')
+        [ -n "$stub_net" ] && stub_host=$(docker network inspect --format '{{(index .IPAM.Config 0).Gateway}}' "$stub_net" 2>/dev/null || true)
+      fi
+    fi
+  fi
+  stub_host="${stub_host:-10.10.210.1}"
   python3 - <<'PYSTUB' >/dev/null 2>&1 &
 import http.server, json, sys
 class H(http.server.BaseHTTPRequestHandler):
@@ -339,7 +360,7 @@ PYSTUB
   sleep 1
   if curl -sS -m 3 -o /dev/null -X POST "http://127.0.0.1:$stub_port/v1/chat/completions" 2>/dev/null; then
     out=$(http POST /v1/inference/providers \
-      "{\"name\":\"$name-stub\",\"type\":\"openai\",\"credentials\":{\"OPENAI_API_KEY\":\"sk-stub\"},\"config\":{\"OPENAI_BASE_URL\":\"http://10.10.210.1:$stub_port\"}}" "$ACCESS")
+      "{\"name\":\"$name-stub\",\"type\":\"openai\",\"credentials\":{\"OPENAI_API_KEY\":\"sk-stub\"},\"config\":{\"OPENAI_BASE_URL\":\"http://$stub_host:$stub_port\"}}" "$ACCESS")
     check "创建 stub provider（真实端点，大写约定键）" eq "$(echo "$out" | head -1)" "200"
     out=$(http PUT /v1/inference/route "{\"provider\":\"$name-stub\",\"model\":\"stub-model\",\"no_verify\":false}" "$ACCESS")
     check "真实验证路径：no_verify=false 切路由 200" eq "$(echo "$out" | head -1)" "200"
@@ -359,6 +380,8 @@ PYSTUB
     contains "$(echo "$out" | tail -n +2)" '"deleted":true'
 
   # 恢复现场：原路由存在且非 fixture → 先恢复再清理；否则路由已被上一步牵动，如实记录
+  # 注：GET /v1/inference/route 契约不透出 no_verify（proto InferenceRouteInfo 仅 provider/
+  # model/version），原值不可知——恢复恒 no_verify=true（保守跳验证，2026-09-13 审计登记局限）
   if [ -n "$orig_prov" ] && [ "$orig_prov" != "$name" ]; then
     out=$(http PUT /v1/inference/route "{\"provider\":\"$orig_prov\",\"model\":\"$orig_model\",\"no_verify\":true}" "$ACCESS")
     check "恢复原路由（$orig_prov）" eq "$(echo "$out" | head -1)" "200"
@@ -394,10 +417,10 @@ def q(uid):
     return cur.fetchone()
 PY
   cat > "$work/keep.py" <<'PY'
-TOKEN = "hunter2-keep-secret"  # B105（继承锚点：二扫后此 finding 必须带继承标记）
+TOKEN = "hunter2-keep-secret"  # （继承锚点：二扫后此 finding 必须带继承标记）
 PY
   cat > "$work/del.py" <<'PY'
-PWD = "hunter2-del-secret"  # B105（删除锚点：二扫后不得复活）
+PWD = "hunter2-del-secret"  # （删除锚点：二扫后不得复活）
 PY
   make_zip_multi "$work/v1.zip" "$work" mod.py keep.py del.py
 
@@ -420,11 +443,11 @@ PY
 import sqlite3
 def q(uid, name):
     cur = sqlite3.connect("a.db").cursor()
-    cur.execute("SELECT * FROM t WHERE id = '%s' AND n = '%s'" % (uid, name))  # B608（内容已变）
+    cur.execute("SELECT * FROM t WHERE id = '%s' AND n = '%s'" % (uid, name))  # （内容已变）
     return cur.fetchone()
 PY
   cat > "$work/new.py" <<'PY'
-API_SECRET = "hunter2-new-secret"  # B105（新发现锚点；注意 B105 默认词表=password/passwd/pwd/secret/token/secrete——不含 key，API_KEY 不会触发）
+API_SECRET = "hunter2-new-secret"  # （新发现锚点；注意 B105 默认词表=password/passwd/pwd/secret/token/secrete——不含 key，API_KEY 不会触发）
 PY
   rm -f "$work/del.py" "$work/v1.zip"
   make_zip_multi "$work/v2.zip" "$work" mod.py keep.py new.py

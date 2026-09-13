@@ -1,4 +1,4 @@
-// webview CSP 构造（fix-plan-0911 §14 纵深加固）：script-src 从 'unsafe-inline' 收紧为
+// webview CSP 构造：script-src 从 'unsafe-inline' 收紧为
 // nonce 形态——每次渲染生成随机 16 字节 hex nonce，页内 inline script 必须携带同值
 // nonce 才能执行（VS Code webview 官方推荐模式）。视图内容虽已全量 escapeHtml，
 // nonce 是第二道闸：即便未来漏出活体 <script> 也因无 nonce 被拒。

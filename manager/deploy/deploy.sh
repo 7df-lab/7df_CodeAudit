@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # `-` 而非 `:-`：REMOTE=""（空串）是显式"本机执行"契约（与 openshell-gateway
-# 两脚本同语义；`:-` 会在空串时静默触发 pct 缺省、打错目标宿主——B1-11 审计
+# 两脚本同语义；`:-` 会在空串时静默触发 pct 缺省、打错目标宿主——审计
 # 修复，2026-09-11 对齐伞仓 REMOTE 契约家族）。
 REMOTE="${REMOTE-pct exec 107 --}"
 VMID="${VMID:-107}"
@@ -53,7 +53,14 @@ sync_all() {
     tar -C "$SRC" --exclude='__pycache__' --exclude='.token' --exclude='manager.log' \
         -cf - $SYNC_TAR | run_remote tar -xf - -C "$DEPLOY_DIR"
     tar -C . -cf - $DEPLOY_TAR | run_remote tar -xf - -C "$DEPLOY_DIR"
-    pct push "$VMID" env "$DEPLOY_DIR/.env"
+    # pct push 只在 REMOTE 为 pct 形态时可用——
+    # pct 硬编码绕过 REMOTE 契约（REMOTE=""=本机执行时 LXC 内无 pct，set -e
+    # 必炸；REMOTE=ssh 形态时环境变量被打到错误宿主）。对齐 openshell-gateway
+    # 同族修复：非 pct 形态跳过并提示操作者自行确保 .env 在位。
+    case "$REMOTE" in
+        "pct exec"*) pct push "$VMID" env "$DEPLOY_DIR/.env" ;;
+        *) echo "note: REMOTE='$REMOTE' 非 pct 形态——跳过 env 推送，请自行确保 $DEPLOY_DIR/.env 在位" ;;
+    esac
     run_remote chmod 600 "$DEPLOY_DIR/.env"
     echo "synced: $SRC + 部署产物 + .env → $VMID:$DEPLOY_DIR"
 }
@@ -61,7 +68,7 @@ sync_all() {
 # 确定性内容哈希：排序 + 归一 owner/mtime 的 tar 流，本地与远端同参可比。
 # 排除项必须与 sync_all 一致，否则本地含 pyc/log、远端没有 → 假漂移。
 # 注意 --mtime 用 @epoch（无空格），经 run_remote 分词安全。
-# 2>/dev/null 已去（B1-14 审计修复）：tar 出错（路径缺失等）曾被静默吞掉、
+# 2>/dev/null 已去：tar 出错（路径缺失等）曾被静默吞掉、
 # 只剩哈希失配的间接症状——错误必须可见。
 dtar() {  # dtar <base> <paths...>
     local base="$1"; shift
@@ -75,6 +82,16 @@ rdtar() {  # 同参数的远端版
 }
 hashof() { md5sum | awk '{print $1}'; }
 
+# token 按行前缀剥离——的 `cut -d= -f2-`
+# 只修了行内 padding 截断，没修"作用于整个文件"：env 按 env.template 补全成
+# 多行后，cut 会把其他行也卷进 Authorization 头（网关可达性检查静默 WARN
+# 且报障指向网关）。2>/dev/null 仅静默"文件缺失"，配合 check 分支的显式
+# SKIPPED（env 缺失不假失败）。函数体多行展开（tests/deploy_cases.sh 以
+# /^manager_token_of()/,/^}/ 行范围提取本函数做剥离断言）。
+manager_token_of() {
+    grep -m1 '^OPENSHELL_MANAGER_TOKEN=' env 2>/dev/null | cut -d= -f2-
+}
+
 cmd="${1:-deploy}"
 case "$cmd" in
     deploy)
@@ -82,15 +99,14 @@ case "$cmd" in
         compose up -d --build
         wait_health
         echo "== gateway 可达性（经 manager，Bearer token）=="
-        # -f2-（B1-14 审计修复）：token 常见 base64 padding '='，-f2 从值内
-        # 第一个 = 截断 → Authorization 头残缺
-        if curl -fsS --max-time 8 -H "Authorization: Bearer $(cut -d= -f2- env)" \
+        # manager_token_of 按行前缀剥离（cut -f2- 保留 padding 口径）
+        if curl -fsS --max-time 8 -H "Authorization: Bearer $(manager_token_of)" \
             "${HEALTH_URL%/healthz}/api/v1/gateway/health"; then
             echo
         else
-                echo "WARN: gateway/health 未通（网关未起？../../openshell-gateway/deploy.sh start）"
+            echo "WARN: gateway/health 未通（网关未起？../../openshell-gateway/deploy.sh start）"
         fi
-        echo "hint: 宿主机引擎接入：export OPENSHELL_MANAGER_URL=http://gateway.internal:18800 OPENSHELL_MANAGER_TOKEN=\$(cut -d= -f2- deploy/env)"
+        echo "hint: 宿主机引擎接入：export OPENSHELL_MANAGER_URL=http://gateway.internal:18800 OPENSHELL_MANAGER_TOKEN=\$(grep -m1 '^OPENSHELL_MANAGER_TOKEN=' deploy/env | cut -d= -f2-)"
         ;;
     check)
         d=0
@@ -100,8 +116,13 @@ case "$cmd" in
         if [ "$(dtar . $DEPLOY_TAR | hashof)" != "$(rdtar $DEPLOY_TAR | hashof)" ]; then
             echo "drift: 部署产物"; d=1
         fi
-        if [ "$(md5sum env | awk '{print $1}')" != "$(run_remote md5sum "$DEPLOY_DIR/.env" 2>/dev/null | awk '{print $1}')" ]; then
-            echo "drift: .env"; d=1
+        if [ -f env ]; then
+            if [ "$(md5sum env | awk '{print $1}')" != "$(run_remote md5sum "$DEPLOY_DIR/.env" 2>/dev/null | awk '{print $1}')" ]; then
+                echo "drift: .env"; d=1
+            fi
+        else
+        # env 缺失显式 SKIPPED——树比对照常，.env 对比不假失败
+            echo "check: env 缺失 → .env 对比 SKIPPED（先补 deploy/env 再 deploy）"
         fi
         if [ "$d" = "0" ]; then echo "in sync"; else echo "^ 与本仓不一致，重新 deploy 收敛"; exit 1; fi
         ;;
@@ -109,9 +130,19 @@ case "$cmd" in
         compose ps || true
         if health_ok; then echo "healthz: OK ($HEALTH_URL)"; else echo "healthz: DOWN"; exit 1; fi
         ;;
-    start|stop|restart)
-        compose "$cmd" || compose up -d
-        [ "$cmd" = "stop" ] || wait_health
+    start)
+        compose start || compose up -d
+        wait_health
+        ;;
+    stop)
+        # stop 失败绝不回落 up——"停不下来反而拉起"
+        # 是语义反转（原 `|| compose up -d` 对 stop 同样生效）；失败随 set -e
+        # 退出如实报错。
+        compose stop
+        ;;
+    restart)
+        compose restart || compose up -d
+        wait_health
         ;;
     logs)
         shift || true

@@ -52,14 +52,14 @@ case "$cmd" in
             echo "in sync"
             exit 0
         fi
-        # B2-2（2026-09-11 审计）：漂移必须非零退出——伞仓 sandbox-deploy.sh check 按退出码
+        # 漂移必须非零退出——伞仓 sandbox-deploy.sh check 按退出码
         # 聚合，恒 0 令 CD↔LXC 漂移在门禁静默通过（正是本脚本自述要防的场景）
         echo "^ CD differs from LXC runtime; run deploy.sh to apply"
         exit 1
         ;;
     deploy)
         if [ "$drift" = "0" ]; then echo "openshell-gateway: in sync, ensure only"; fi
-        # REMOTE 空=本机模式（B1-5 审计修复）：mkdir/备份/pct push 都是宿主→LXC
+        # REMOTE 空=本机模式：mkdir/备份/pct push 都是宿主→LXC
         # 的远程动作，本机无 LXC 可推——push 路径此前未纳入 REMOTE 契约，空串
         # 时仍打真 pct 二进制。本机模式文件以仓内目录为事实源，跳过推送直接
         # ensure（production-deploy.sh 即 REMOTE='' 直跑 lifecycle 的同构路径）。

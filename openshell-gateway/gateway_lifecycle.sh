@@ -68,7 +68,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 configured_server_sans() {
     # stdout: the TOML value of the first `server_sans = ...` line, or "" when
     # absent (gateway then falls back to the default openshell.localhost).
-    # 首行用 `sed -n '1p'` 而非 `head -1`（B1-4 审计加固）：head 命中即退出，
+    # 首行用 `sed -n '1p'` 而非 `head -1`：head 命中即退出，
     # 双行场景上游 sed 收 SIGPIPE（pipefail 下 141），sed -n '1p' 读全输入无此险。
     run_remote sed -n -E \
         's/^server_sans[[:space:]]*=[[:space:]]*(.+)$/\1/p' \
@@ -90,7 +90,7 @@ esc_sed() { printf '%s' "$1" | sed -e 's/[\\|&/]/\\&/g'; }
 esc_line="$(esc_sed "$line")"
 [ -f "$toml" ] || { echo "missing $toml" >&2; exit 1; }
 backup="$toml.bak.$(date +%Y%m%d%H%M%S)"
-# 备份必须先于改写（B1-1 审计修复 2026-09-11）：cp 放在 sed/awk 之后备份的
+# 备份必须先于改写：cp 放在 sed/awk 之后备份的
 # 是改写后的新文件，.bak 的回滚语义尽失。失败不阻断钉域（|| true），但告警
 # 到 stderr，不得静默。
 cp "$toml" "$backup" 2>/dev/null \
@@ -114,7 +114,7 @@ PATCH
 # -- liveness ----------------------------------------------------------------
 
 tcp_ok() {
-    # timeout 5（B1-4 审计加固）：/dev/tcp 无内建超时，对 DROP/半开目标会挂死
+    # timeout 5：/dev/tcp 无内建超时，对 DROP/半开目标会挂死
     # 到 LIVENESS_TIMEOUT_SECS 整窗，拖垮 wait_liveness 轮询与 status/verify。
     # 单次探测上限 5s；pct 路径下 timeout 在 LXC 内执行（coreutils 标配）。
     # 位置参数传递（§14 加固）：host/port 经 "$1"/"$2" 进脚本文本零插值——
@@ -162,13 +162,18 @@ ensure_jwt_keys() {
     # 与 compose 同款 bind（同路径宿主目录），产物正好落在网关读取的位置。
     if run_remote test -f "$JWT_DIR/signing.pem"; then return 0; fi
     echo "JWT signing keys absent at $JWT_DIR — one-shot generate-certs ..."
-    # B2-3（2026-09-11 审计）：mount/output 由 $JWT_DIR 推导——原硬编码 /var/lib/openshell，
-    # JWT_DIR 覆盖后密钥落不到检查路径 → 每轮 ensure 重复 generate 且网关依旧无钥
+    # mount/output 由 $JWT_DIR 推导——原硬编码 /var/lib/openshell，
+    # JWT_DIR 覆盖后密钥落不到检查路径 → 每轮 ensure 重复 generate 且网关依旧无钥。
+    # （2026-09-13 dind 五战实测修正）：generate-certs 把 --output-dir 当 PKI 根、
+    # 在其下自建 jwt/server/client + ca.*（产物=根/jwt/signing.pem）——传 JWT_DIR
+    # 本身曾嵌套成 jwt/jwt/signing.pem，检查与网关读的都是 JWT_DIR/signing.pem → 全新
+    # 宿主网关 crash loop。107 现役布局（tls/{ca.*,client,jwt,server}）即 PKI 根=
+    # dirname(JWT_DIR) 的实证；的"随 JWT_DIR 推导"意图保留，只是根=父目录。
     jwt_parent="$(dirname "$JWT_DIR")"
     run_remote docker run --rm --user 0 \
         -v "$jwt_parent":"$jwt_parent" \
         "$GATEWAY_IMAGE" generate-certs \
-        --output-dir "$JWT_DIR" \
+        --output-dir "$jwt_parent" \
         --server-san host.openshell.internal
 }
 

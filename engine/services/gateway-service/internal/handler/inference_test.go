@@ -11,13 +11,10 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 
 	pb "github.com/codeaudit/proto-gen"
-	"github.com/codeaudit/services/gateway-service/internal/middleware"
 	"google.golang.org/grpc"
 )
 
@@ -96,30 +93,7 @@ func (b *inferenceCaptureBackend) SetInferenceRoute(ctx context.Context, req *pb
 // httpJSONAsAdmin — 注入 ROLE_ADMIN 后走转码器（生产链路由 JWTMiddleware 写入 claim）。
 func httpJSONAsAdmin(t *testing.T, tr *Transcoder, method, path, body string) (int, map[string]any) {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN")
-		tr.Handler().ServeHTTP(w, r.WithContext(ctx))
-	}))
-	defer srv.Close()
-	var req *http.Request
-	var err error
-	if body != "" {
-		req, err = http.NewRequest(method, srv.URL+path, strings.NewReader(body))
-	} else {
-		req, err = http.NewRequest(method, srv.URL+path, nil)
-	}
-	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
-	}
-	if body != "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := (&http.Client{}).Do(req)
-	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode, decodeJSONBody(t, resp)
+	return httpJSONWithClaims(t, tr, "ROLE_ADMIN", "", method, path, body)
 }
 
 // TestInference_AdminGate — 无 admin role 的任何 inference 路由 → 403（不触达后端）。

@@ -40,11 +40,11 @@
 `scanning` 布尔：doScan 入口检查（进行中→警告拒绝）→ 终态（`terminal` 事件）或 doScan 异常时释放。
 onTaskGone 也释放。锁定测试：extension.test.ts › 扫描互斥。
 
-`fixing` 布尔（B2-6 扩展）：工作区**写盘互斥**，统一覆盖三路改盘——
+`fixing` 布尔（扩展）：工作区**写盘互斥**，统一覆盖三路改盘——
 ①applyMachinePatch（机器补丁主路径，含低风险批量）②doFixFinding 围栏 diff 兜底路径的
 改盘段 ③回滚（rollbackRecord 外科/整文件覆盖 + doRollback 无登记 restoreLatest 兜底）。
 任一进行中其余路径直接拒绝（不改盘、不建 checkpoint、finally 复位）。
-锁定测试：extension.test.ts › 修复互斥（B2-6）+ 写盘互斥扩展 2 例。
+锁定测试：extension.test.ts › 修复互斥+ 写盘互斥扩展 2 例。
 
 ### 2.3 修复登记状态机
 
@@ -131,7 +131,7 @@ rollbackFix(发现) / rollbackFixes(最近 applied 记录‖最近 checkpoint)
 tokens.boot() 完成 → restoreLastTask：
   workspaceState.lastTaskId 存在 → bindTask(silent)
   否则 已登录+已绑定项目 → latestCompletedTask（listTasks 首个 COMPLETED）→ bindTask(silent)
-绑定项目（selectProject 成功）且空闲 → 自动同步（人类指令 2026-09-12）：
+绑定项目（selectProject 成功）且空闲 → 自动同步：
   latestCompletedTask(projectId) → 有则 bindTask（带轻通知）；无完成任务/失败静默（仅日志，不打扰绑定流程）；
   扫描发起中/活跃非终态任务时不触发（避免 bindTask 切换确认门打扰）
 bindTask：snapshot→进度重建→非终态则 watchTask(resumeState=true) 续订→findings→renderFindings
@@ -153,7 +153,7 @@ watchTask 携带 expectedUploadBytes（zip 字节数）→ 每次快照后（一
 WS 1011 "not found" 或快照 404 not found → onTaskGone（**双层归属守卫 B5-1**：pollOnce await 后复查
 watcher `closed`——已关闭的在途 404 不触发；extension 回调头部查 `taskId===lastTaskId`——迟到帧
 不污染新任务）→ 本地落 `TASK_STATUS_DEAD` + 上下文清位 + 互斥释放 + 警告。
-锁定测试：taskWatcher.test.ts 3 例（含 B5-1 在途 404 复查）+ extension.test.ts › onTaskGone 落终态
+锁定测试：taskWatcher.test.ts 3 例（含 在途 404 复查）+ extension.test.ts › onTaskGone 落终态
 + extension.test.ts › 旧 watcher 在途 404/迟到的 WS 1011（回归锁 B5-1）。
 
 ## 5. 宿主进程交互（扩展 → VS Code）

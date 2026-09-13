@@ -29,7 +29,7 @@
 #       联动键（manager 地址/网关端点/沙箱拨号/console 反代）每次运行按端口与
 #       访问 IP 自动重算回写，手改无效——改 OPENSHELL_PORT 即全链联动。
 #
-# 前置（check 会逐项核验；curl/python3/git/openssl/compose 插件/PyYAML 缺失时
+# 前置（check 会逐项核验；curl/python3/git/openssl/unzip/npm/compose 插件/PyYAML 缺失时
 #       脚本经包管理器自举，apt/apk/dnf/yum 自适应，非 root 自动借 sudo）：
 #   - docker + bash（运行前提，不可自举）
 #   - 子仓就位（engine/web/manager/openshell-gateway/dsh-runtime/dsh-pentest-sse，
@@ -184,7 +184,7 @@ print_summary() {
     ip=$(env_access_ip)
     say "──────── 部署参数确认 ────────"
     say "访问入口(显示) : ${ip:-<自动>} ——仅用于下方 URL 呈现，内部接线不依赖此值"
-    say "控制台         : http://${ip:-<IP>}:${CODEAUDIT_CONSOLE_PORT:-8088}  (初始账号 admin/admin，登录后请立即改密)"
+    say "控制台         : http://${ip:-<IP>}:${CODEAUDIT_CONSOLE_PORT:-8088}  (R72: 默认无种子账号——首启须 CODEAUDIT_SEED_ADMIN=true 产生初始 admin，接管后关闭该变量重启)"
     say "网关 API       : http://${ip:-<IP>}:${CODEAUDIT_HOST_GATEWAY:-8090}/v1  (JWT Bearer)"
     say "manager(内部面) : http://host.docker.internal:18800（容器互访；宿主机排障经 http://127.0.0.1:18800；token 指纹 ${OPENSHELL_MANAGER_TOKEN:+$(fp "$OPENSHELL_MANAGER_TOKEN")})"
     say "openshell 网关 : 发布 ${OPENSHELL_PORT:-8080}(gRPC) / ${OPENSHELL_HEALTH_PORT:-8081}(health)    沙箱路由域: ${ROUTING_DOMAIN:-sandbox.codeaudit.internal}(纯路由键,不解析)"
@@ -465,6 +465,15 @@ ensure_tool() {  # ensure_tool <cmd> <apt> <apk> <dnf> —— 缺则经包管理
     say "✗ 缺 $1（自动安装失败，请手工安装后重跑）"; return 1
 }
 
+ensure_gnutar() {  # 确定性打包（fetch-agent-tools RG-007 钉死 --sort=name）需 GNU tar；
+    # busybox tar 同名但缺选项——按能力探测而非存在性（2026-09-13 dind/alpine 实测缺口）
+    tar --sort=name --version >/dev/null 2>&1 && return 0
+    say "△ tar 非 GNU（busybox tar 缺确定性打包选项）—— 尝试包管理器自装..."
+    pkg_install tar tar tar
+    tar --sort=name --version >/dev/null 2>&1 && { say "✓ GNU tar 已自装"; return 0; }
+    say "✗ GNU tar 不可用（Debian/Ubuntu 自带；Alpine=apk add tar）"; return 1
+}
+
 ensure_compose() {  # compose v2 插件：docker 就绪但插件常缺（dind/极简安装实测）
     docker compose version >/dev/null 2>&1 && return 0
     say "△ docker compose 插件不可用 —— 尝试包管理器自装..."
@@ -485,6 +494,9 @@ ensure_core_deps() {  # bash(脚本解释器)/docker(引擎) 属运行前提，�
     ensure_tool python3 python3 python3 python3  || return 1
     ensure_tool openssl openssl openssl openssl    || return 1
     ensure_tool git      git     git     git     || return 1
+    ensure_tool unzip    unzip   unzip   unzip   || return 1  # fetch.sh 解 pdtools zip（2026-09-13 dind 实测缺口）
+    ensure_tool npm      npm     npm     npm     || return 1  # fetch-agent-tools 全量拉取需 npm（2026-09-13 dind 实测缺口：alpine=apk npm 自带 nodejs）
+    ensure_gnutar   || return 1  # busybox tar 缺 --sort=name（RG-007 确定性打包），能力探测后自装 GNU tar
     ensure_iproute
     ensure_compose || return 1
     ensure_pyyaml   || return 1
@@ -512,10 +524,21 @@ ensure_opengrep() {
         || die "opengrep sha256 漂移：按 $t/PROVENANCE.md 重新 vendor"; }
     say "opengrep 缺失 —— 从官方 release 拉取（v1.29.0 manylinux x86，需 GitHub 出口）..."
     mkdir -p "$t"
-    curl -fL --retry 3 --max-time 600 \
-        -o "$t/opengrep" \
-        "https://github.com/opengrep/opengrep/releases/download/v1.29.0/opengrep_manylinux_x86" \
-        || die "opengrep 下载失败（无 GitHub 出口？）。手工步骤见 $t/PROVENANCE.md：宿主机下载 opengrep_manylinux_x86 覆盖 $t/opengrep"
+    # 2026-09-13 dind 实测：egress 会中途掐断长传输（curl 56 SSL unexpected eof），
+    # --retry 默认不覆盖错误 56 且无续传→大件必死；--retry-all-errors + -C - 断点
+    # 续传实测拉通 46MB 且 sha256 与 pin 一致；-o 钉稳定路径使跨次重跑也可续传。
+    # 六战补多源兜底：劣化窗口官方直连握手超时(133s×5)全灭——加速镜像=「前缀+完整
+    # 原 URL」，sha256 逐源后仍统一复核（同 pull-images.sh 多源口径，换源不动完整性）。
+    local og_ok=0 og_src og_url="https://github.com/opengrep/opengrep/releases/download/v1.29.0/opengrep_manylinux_x86" og_try
+    for og_src in "@official" "https://ghfast.top" "https://gh-proxy.com" "https://ghproxy.net"; do
+        case "$og_src" in
+            "@official") og_try="$og_url" ;;
+            *)           og_try="$og_src/$og_url" ;;
+        esac
+        curl -fL --retry 3 --retry-all-errors --retry-delay 3 -C - --max-time 1800 \
+            -o "$t/opengrep" "$og_try" && { og_ok=1; break; }
+    done
+    [ "$og_ok" = 1 ] || die "opengrep 下载失败（无 GitHub 出口？）。手工步骤见 $t/PROVENANCE.md：宿主机下载 opengrep_manylinux_x86 覆盖 $t/opengrep"
     (cd engine && sha256sum -c services/sast-adapter-service/tools/opengrep.sha256 >/dev/null 2>&1) \
         || die "opengrep sha256 不符（下载不完整或版本漂移），删除 $t/opengrep 后重试或手工 vendor"
     say "opengrep: 已拉取并复核"
@@ -894,5 +917,5 @@ case "$cmd" in
     status) cmd_status ;;
     stop)   cmd_stop ;;
     down)   cmd_down "$@" ;;
-    *) sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *) sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

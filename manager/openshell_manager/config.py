@@ -23,13 +23,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
 SERVICE_ROOT = Path(__file__).resolve().parent.parent
 # 中性缺省(经 hosts 别名解析, 零 DNS 依赖); 有自定义域名时 env/config 覆盖(2026-09-08 内网域清中性)
 DEFAULT_GATEWAY_ENDPOINT = "host.docker.internal:8080"
-# B3-3 审计修复：上传上限缺省 2 GiB（原 0=不限，防误操作上限形同虚设）。
+# 审计修复：上传上限缺省 2 GiB（原 0=不限，防误操作上限形同虚设）。
 # 上传是流式转发（内存恒定 <1 MiB），上限纯防"误指 50GB 归档"类误操作。
 DEFAULT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2147483648
 
@@ -59,6 +60,18 @@ def _cfg(key: str, default: str = "") -> str:
     return str(value).strip() if value is not None else default
 
 
+def _int_setting(env_var: str, key: str, default: int) -> int:
+    """整数设定的统一解析序：env 直读（含非法值原样抛 ValueError）>
+    config 键 > 缺省（config 值非法时回落缺省而非炸启动）。"""
+    env = os.environ.get(env_var, "").strip()
+    if env:
+        return int(env)
+    try:
+        return int(_cfg(key, str(default)))
+    except ValueError:
+        return default
+
+
 def manager_bind() -> str:
     """Listen address. Non-loopback binds REQUIRE a token (see validate())."""
     return (os.environ.get("OPENSHELL_MANAGER_BIND", "").strip()
@@ -66,13 +79,7 @@ def manager_bind() -> str:
 
 
 def manager_port() -> int:
-    env = os.environ.get("OPENSHELL_MANAGER_PORT", "").strip()
-    if env:
-        return int(env)
-    try:
-        return int(_cfg("port", "18800"))
-    except ValueError:
-        return 18800
+    return _int_setting("OPENSHELL_MANAGER_PORT", "port", 18800)
 
 
 class TokenFileError(RuntimeError):
@@ -80,10 +87,18 @@ class TokenFileError(RuntimeError):
 
     区别于"文件不存在"（= 未配置 token，按无鉴权放行维持现状）：文件在
     而读不到 = 鉴权材料不可得，require_token 必须拒绝请求（503）而不是
-    吞掉异常当无 token 静默放行（B3-2 审计修复）。"""
+    吞掉异常当无 token 静默放行。"""
 
 
-# B3-2：文件解析结果 5s 缓存（env 分支不缓存——直读内存无 IO 且优先级
+class TokenFileEmptyError(TokenFileError):
+    """tokenFile 存在但内容为空（R24 审计修复）——这是配置错误而非未配置：
+    只对"读失败"fail-closed，空文件曾静默当无 token 整面放行（非
+    loopback bind 的轮换窗口即裸奔）。运行时一律 503 fail-closed；
+    validate() 分治——loopback 放行启动但 /api/* 持续 503（stderr 告警
+    指明删除或补全 token 文件），非 loopback 拒启。"""
+
+
+# 文件解析结果 5s 缓存（env 分支不缓存——直读内存无 IO 且优先级
 # 需实时生效）。require_token 是 async 依赖，无缓存时每请求一次阻塞磁盘
 # 读。TokenFileError 不落缓存：权限恢复后下一个请求即自动恢复。
 _TOKEN_CACHE_TTL_SECONDS = 5.0
@@ -97,10 +112,17 @@ def _token_from_file(token_file: str) -> str:
     if not path.exists():
         return ""  # 文件不存在 = 未配置 token（放行，维持现状）
     try:
-        return path.read_text(encoding="utf-8").strip()
+        value = path.read_text(encoding="utf-8").strip()
     except OSError as exc:
         raise TokenFileError(
             f"token file {path} exists but is unreadable: {exc}") from exc
+    if not value:
+        # R24 审计修复：文件在而为空 = 配置错误（与"不存在=未配置"相反），
+        # 曾静默返回 "" → 整面 fail-open。异常不落缓存，写入真值即自愈。
+        raise TokenFileEmptyError(
+            f"token file {path} exists but is empty — refusing open-auth "
+            "(delete the file or write a real token; empty ≠ unconfigured)")
+    return value
 
 
 def manager_token() -> str:
@@ -173,22 +195,30 @@ def max_upload_bytes() -> int:
     streams, so manager memory stays constant regardless of file size.
 
     Priority: $OPENSHELL_MANAGER_MAX_UPLOAD_BYTES > config ``maxUploadBytes``
-    > DEFAULT_MAX_UPLOAD_BYTES (2 GiB, B3-3 — the old default of 0/unlimited
+    > DEFAULT_MAX_UPLOAD_BYTES (2 GiB, — the old default of 0/unlimited
     left the guard disarmed).
     """
-    env = os.environ.get("OPENSHELL_MANAGER_MAX_UPLOAD_BYTES", "").strip()
-    if env:
-        return int(env)
-    try:
-        return int(_cfg("maxUploadBytes", str(DEFAULT_MAX_UPLOAD_BYTES)))
-    except ValueError:
-        return DEFAULT_MAX_UPLOAD_BYTES
+    return _int_setting("OPENSHELL_MANAGER_MAX_UPLOAD_BYTES",
+                        "maxUploadBytes", DEFAULT_MAX_UPLOAD_BYTES)
 
 
 def validate() -> None:
     """Fail loud on unsafe combinations (bind discipline)."""
     bind = manager_bind()
-    if not manager_token() and bind not in ("127.0.0.1", "localhost", "::1"):
+    loopback = bind in ("127.0.0.1", "localhost", "::1")
+    try:
+        token = manager_token()
+    except TokenFileEmptyError as exc:
+        # R24 审计修复：空 tokenFile 在 loopback 上放行启动（stderr 告警，
+        # /api/* 将持续 503 直至文件被删除或写入真值）；非 loopback 照旧
+        # 拒启。读失败（TokenFileError 其余形态）维持 fail loud 原语义。
+        if loopback:
+            print(f"[manager] WARN: {exc} — serving only /healthz until "
+                  "the token file is deleted or filled", file=sys.stderr,
+                  flush=True)
+            return
+        raise
+    if not token and not loopback:
         raise RuntimeError(
             f"refusing to bind {bind} without OPENSHELL_MANAGER_TOKEN: the "
             "service can execute commands inside sandboxes and must never be "

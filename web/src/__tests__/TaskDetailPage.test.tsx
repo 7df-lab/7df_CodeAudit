@@ -24,7 +24,7 @@ let findingsPayload: unknown = DEFAULT_FINDINGS;
 const gateway = useFakeGateway({
   // ADR-170: 详情页改用聚合快照单口轮询
   'GET /v1/tasks/:taskId/snapshot': () => snapshotOverride ?? DEFAULT_SNAPSHOT,
-  'GET /v1/reports': () => ({ reports: [{ report_id: 'r-1', task_id: 't-1', format: 3, url: '', generated_at: null }] }),
+  'GET /v1/reports': () => ({ reports: [{ report_id: 'r-1', task_id: 't-1', format: 'REPORT_FORMAT_JSON', url: '', generated_at: null }] }),
   'GET /v1/findings': () => findingsPayload,
   'POST /v1/tasks/:taskId/report': () => ({ report_id: 'r-new' }),
 });
@@ -87,7 +87,7 @@ describe('TaskDetailPage（发现/融合内嵌）', () => {
 
 });
 
-// gw-f6a3523 实证回归锁①：AI 交互日志必须随 WS 帧增量到达逐步渲染（而非收束一次性）。
+// 实证回归锁①：AI 交互日志必须随 WS 帧增量到达逐步渲染（而非收束一次性）。
 // 吸收链 = absorbSnapshot 的 next_cursor 单调 + chunk 追加——任何回归（如只在 complete
 // 时吸收、游标比较颠倒）当场红。
 describe('TaskDetailPage（AI 日志流式增量）', () => {
@@ -128,7 +128,7 @@ describe('TaskDetailPage（AI 日志流式增量）', () => {
     }
   });
 
-  // gw-f6a3523 实证回归锁②：非收束断线必须立即回填快照（服务端游标已越过 pend 内容，
+  // 实证回归锁②：非收束断线必须立即回填快照（服务端游标已越过 pend 内容，
   // 只能经快照补齐）——断线期间显示空白直到任务结束的回归在此当场红。
   it('WS 非收束断线 → 立即补拉快照（不等重连/轮询拍）', async () => {
     const created: { onopen: (() => void) | null; onclose: (() => void) | null }[] = [];
@@ -222,9 +222,9 @@ describe('TaskDetailPage（AI 降级可见性，2026-09-11 报障）', () => {
   });
 });
 
-// B4-3（审计修复）：执行日志客户端保尾 MAX_LOG_ROWS=1000——超长任务日志无界累积会拖垮
+// （审计修复）：执行日志客户端保尾 MAX_LOG_ROWS=1000——超长任务日志无界累积会拖垮
 // 标签页；保尾留最新侧，窗口满时面板顶部如实提示截断（完整内容下载入口延后）。
-describe('TaskDetailPage（日志保尾，B4-3）', () => {
+describe('TaskDetailPage（日志保尾）', () => {
   it('1005 条日志 → 只渲染最新 1000 条并显示"仅显示最近 1000 条"提示', async () => {
     const logs = Array.from({ length: 1005 }, (_, i) => ({
       log_id: `l-${i}`, task_id: 't-1', ts_ms: 1756630000000 + i,

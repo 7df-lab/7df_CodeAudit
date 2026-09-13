@@ -26,7 +26,7 @@
 | 子命令 | 前置动作 | 预期输出 | 失败语义 |
 |---|---|---|---|
 | `check`/`--check` | 对 4 文件逐一 md5 本地 vs 远端 | 逐行 `drift: <file>`；全同步时 `in sync`；有漂移时追加一行 `^ CD differs from LXC runtime; run deploy.sh to apply` | 仓内文件缺失 → `missing in CD: <file>` stderr、**exit 1**；漂移本身**不是失败**（exit 0，只报告） |
-| `deploy` | 同上 md5 差量 | **REMOTE 非空**：逐文件 `unchanged: <f>` 或 `pushed: <f>`；**REMOTE=""（本机模式）**：打 `REMOTE 空=本机模式，跳过推送`，不做任何推送（B1-5 审计修复，push 路径纳入 REMOTE 契约）；全同步时先打 `openshell-gateway: in sync, ensure only`；结束前执行 `gateway_lifecycle.sh ensure`（其输出透传） | 任一仓内文件缺失 exit 1；ensure 失败则整体失败 |
+| `deploy` | 同上 md5 差量 | **REMOTE 非空**：逐文件 `unchanged: <f>` 或 `pushed: <f>`；**REMOTE=""（本机模式）**：打 `REMOTE 空=本机模式，跳过推送`，不做任何推送；全同步时先打 `openshell-gateway: in sync, ensure only`；结束前执行 `gateway_lifecycle.sh ensure`（其输出透传） | 任一仓内文件缺失 exit 1；ensure 失败则整体失败 |
 | `status`/`start`/`stop`/`restart` | — | `exec gateway_lifecycle.sh <cmd>`，输出与退出码完全透传 | 同 lifecycle 对应子命令 |
 | `logs [N]` | — | `exec gateway_lifecycle.sh logs [N]`（N 缺省由 lifecycle 定 50） | 同 lifecycle |
 

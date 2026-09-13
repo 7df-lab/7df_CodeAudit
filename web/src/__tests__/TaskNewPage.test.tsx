@@ -2,7 +2,7 @@
 // ADR-203: 迁移到 fakeGateway（axios adapter 层）——api/client 真实代码全量执行
 // （类型化端点/拦截器链），handler 返回响应，未建模路由响亮失败。
 // 此前 vi.mock 整模块曾长期掩盖 mock 缺 api 具名导出（queryFn 抛错被 react-query 吞，
-// 数据从未加载仍全绿）。2026-09-09 人类指令起请求体矩阵收窄为"config 无任务级源码键"
+// 数据从未加载仍全绿）。请求体矩阵收窄为"config 无任务级源码键"
 // （upload_file_id/project_path 档随任务级源码覆盖一并退役），在本文件锁定。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -12,7 +12,7 @@ import TaskNewPage, { DEFAULT_SCAN_MODE, MODE_SPECS } from '../pages/tasks/TaskN
 import { httpError, useFakeGateway } from '../testsupport/fakeGateway';
 
 // 向导共用的最小网关模型（文件级注册，beforeEach 对全部用例生效；请求日志按用例隔离）
-// 2026-09-09 人类指令: 任务向导不再承载任务级源码覆盖——p1 无来源(警告)/p2 仓库/p3 上传包
+// 任务向导不再承载任务级源码覆盖——p1 无来源(警告)/p2 仓库/p3 上传包
 // 建任务引导（2026-09-11 报障修复）：projects 载荷/故障可按用例注入（defaultProjects 轮换）
 const defaultProjects = {
   projects: [
@@ -97,7 +97,23 @@ describe('TaskNewPage 向导', () => {
   });
 });
 
-describe('TaskNewPage 项目级源码来源（2026-09-09 人类指令：项目层级决定源码仓库）', () => {
+// 复审修正（R）：dict 补 SCAN_MODE_UNSPECIFIED 展示键后，向导模式过滤谓词
+// （!MODE_SPECS[value]?.deprecated）对不在 MODE_SPECS 的 UNSPECIFIED 判 undefined 不过滤——
+// 可选"未指定"→ needsSastTools undefined → sast_tools:[] → P-26 同型任务必 FAILED 复活
+describe('R: 模式入口过滤（dict 补 UNSPECIFIED 键不泄漏进向导）', () => {
+  it('第1步模式单选不含"未指定"（UNSPECIFIED 不进新建入口）', async () => {
+    renderWizard();
+    await screen.findByText(/新建扫描任务/); // 骨架就绪（projects 查询已回）
+    fireEvent.mouseDown(screen.getByRole('combobox'));
+    fireEvent.click(await screen.findByText('Demo (p1)', {}, { timeout: 5000 }));
+    fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step0 → 1
+    await screen.findByText(/模式B 纯AI/);
+    expect(screen.queryByText(/未指定/)).toBeNull();
+    expect(screen.getByText(/模式D AI增强SAST/)).toBeTruthy(); // 正常模式不受牵连
+  });
+});
+
+describe('TaskNewPage 项目级源码来源（项目层级决定源码仓库）', () => {
   // 走到参数步：选项目 → 模式B 纯AI（needsSastTools=false，绕开工具多选）
   async function gotoParamsStep(projectLabel: string) {
     fireEvent.mouseDown(screen.getByRole('combobox'));

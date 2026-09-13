@@ -16,7 +16,9 @@ COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 # 官方镜像 entrypoint 对 templates/*.template 做 envsubst——仅替换"已定义的环境变量"，
 # nginx 运行时变量（$uri/$remote_addr 等）不受影响
-ENV CODEAUDIT_GATEWAY_UPSTREAM=host.docker.internal:8080
+# 上游缺省对齐 deploy.sh/compose/伞仓生产事实源 8090（裸 docker run 缺省口径）；
+# Dockerfile 语法约束：ENV 值不允行尾注释（`#` 会被并进解析——sim rebuild 构建实证），注释独立成行
+ENV CODEAUDIT_GATEWAY_UPSTREAM=host.docker.internal:8090
 EXPOSE 80
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
   CMD wget -qO /dev/null http://127.0.0.1/ || exit 1

@@ -1,19 +1,20 @@
-"""OpenShell manager HTTP surface — FastAPI 架构（ADR-174，人类指令 2026-09-01）。
+"""OpenShell manager HTTP surface — FastAPI 架构（ADR-174）。
 
-原 stdlib http.server 实现（旧 http_api.py，2026-09-08 死代码清理中随
-人类指令"消除重复接口实现"退役，git 历史可考）整体迁移 FastAPI/uvicorn：
+原 stdlib http.server 实现（旧 http_api.py，2026-09-08 死代码清理中退役）整体迁移 FastAPI/uvicorn：
   - 路由声明式注册（替代 regex ROUTES 表 + 手写 dispatch）；
   - 鉴权收敛为依赖注入（/healthz 豁免，其余 Bearer token）；
   - 异常处理器统一错误契约 {"error": msg}（ApiError/LookupError/404 no route/
     兜底 500 "internal error"——B3-3：细节进服务端 stderr，且 502 会让上游按
     "网关不可达"误重试/降级），
     JSON 端点手工解包 body 保持既有错误语义（"invalid JSON body"/413/非对象 400）；
-  - async 端点的南向调用一律 run_in_threadpool（B3-1：同步 gRPC 调用裸跑在
+  - async 端点的南向调用一律 run_in_threadpool（同步 gRPC 调用裸跑在
     event loop 上会阻塞探活与全部并发请求，对齐 _handle_upload 既有形态）；
   - /files 流式上传：原始 body spool 到磁盘（有界内存）后沿用 upload.py 流式解析器，
     接口层收沙箱 name（+?workspace=，缺省 default）内部自解析 UUID（ADR-173）。
 
-南向 gRPC（gateway.py）与对外 JSON 契约逐字节不变（tests/test_contract.py 锁定）。
+南向 gRPC 形态与对外 JSON 错误契约由 tests/test_contract.py 锁定
+（契约演进须同 commit 更新 docs/api-external.md——修复批起 404/上限族
+口径有实质扩充）。
 """
 from __future__ import annotations
 
@@ -32,14 +33,17 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import config
-from .gateway import GatewayFacade
+from .gateway import ExecOutputTooLarge, GatewayFacade, InferenceVerificationFailed
 from .upload import StreamingMultipartParser, UploadError, boundary_from_content_type
 
 MAX_BODY_BYTES = 20 * 1024 * 1024
-# wait_ready 服务端超时上限（B3-1）：缺省 300s，硬上限 600s——客户端曾可传
+# wait_ready 服务端超时上限：缺省 300s，硬上限 600s——客户端曾可传
 # 1e9 让南向连接无限占用；超过上限 = 客户端错误 400。
 WAIT_READY_TIMEOUT_DEFAULT = 300.0
 WAIT_READY_TIMEOUT_MAX = 600.0
+# exec 服务端超时上限（R23，同族漏修）：engine 现役实参 60/20（fix-plan
+# 2026-09-12 §0 兼容性已核），600 对齐 wait_ready 硬上限。
+EXEC_TIMEOUT_MAX = 600
 
 facade = GatewayFacade()
 
@@ -84,7 +88,7 @@ def _opt_str(body: Dict[str, Any], key: str) -> Optional[str]:
 
 
 async def _json_body(request: Request) -> Dict[str, Any]:
-    # B1-13 审计修复：Transfer-Encoding: chunked 请求没有 Content-Length，
+    # 审计修复：Transfer-Encoding: chunked 请求没有 Content-Length，
     # 原 length==0 短路把整个 body 丢弃（静默当空对象 → 400 missing field）。
     # chunked 改走流式读取，同样受 MAX_BODY_BYTES 上限约束。
     if "chunked" in (request.headers.get("Transfer-Encoding") or "").lower():
@@ -121,32 +125,50 @@ def _one(request: Request, key: str) -> str:
     return vals[0]
 
 
-def _query_int(request: Request, key: str, default: int) -> int:
+def _query_int(request: Request, key: str, default: int,
+               minimum: int = 0, maximum: int = 2**31 - 1) -> int:
     """Optional integer query parameter; malformed values are a CLIENT error
-    (400) — the pre-fix behavior leaked them as 502 "upstream failure"."""
+    (400) — the pre-fix behavior leaked them as 502 "upstream failure".
+    R26a 审计修复：范围钳制——负数/超 int32 值曾直通 proto 构造炸
+    ValueError → 兜底 500（违反"客户端格式错误一律 400"红线）。"""
     vals = parse_qs(request.url.query).get(key)
     if not vals or not vals[0]:
         return default
     try:
-        return int(vals[0])
+        value = int(vals[0])
     except ValueError:
         raise ApiError(400, f"invalid query parameter {key}={vals[0]!r} "
                             "(expect integer)") from None
+    if not minimum <= value <= maximum:
+        raise ApiError(400, f"invalid query parameter {key}={vals[0]!r} "
+                            f"(out of range {minimum}..{maximum})") from None
+    return value
 
 
-def _int_field(body: Dict[str, Any], key: str) -> int:
-    """B3-3 严格化（_opt_bool 同款）：只收 int。bool（int 子类，恒真陷阱）、
-    float（含整值形式）、字符串数字一律 400——原 int() 强转放过这些垃圾
-    类型（"8123"/8123.5/True 都曾被静默接受）。"""
-    raw = body[key]
+def _check_int(key: str, raw: Any, *,
+               minimum: int = 0, maximum: int = 2**31 - 1) -> int:
+    """严格整数字段校验核心（严格化，_opt_bool 同款）：只收 int。
+    bool（int 子类，恒真陷阱）、float（含整值形式）、字符串数字一律
+    400——原 int() 强转放过这些垃圾类型（"8123"/8123.5/True 都曾被静默
+    接受）。R26a 审计修复：范围钳制（int32 技术边界为缺省，语义域如
+    端口/服务端上限由调用点收窄）。错误文案是外部契约，勿改字。"""
     if isinstance(raw, bool) or not isinstance(raw, int):
         raise ApiError(400, f"invalid field {key}={raw!r} "
                             "(expect integer)") from None
+    if not minimum <= raw <= maximum:
+        raise ApiError(400, f"invalid field {key}={raw!r} "
+                            f"(out of range {minimum}..{maximum})") from None
     return raw
 
 
+def _int_field(body: Dict[str, Any], key: str, *,
+               minimum: int = 0, maximum: int = 2**31 - 1) -> int:
+    """必填整数字段（缺 falsy 由调用点的 _need 先拒）。"""
+    return _check_int(key, body[key], minimum=minimum, maximum=maximum)
+
+
 def _opt_bool(body: Dict[str, Any], key: str) -> bool:
-    """可选布尔字段（B1-12 审计修复）：只接受 JSON 布尔或 "true"/"false"
+    """可选布尔字段：只接受 JSON 布尔或 "true"/"false"
     字符串，其余 400。bool("false") is True 的恒真陷阱在此堵死——字符串
     "false" 曾把 domain/no_verify 打开（行为与字面相反）。缺省/None → False。"""
     value = body.get(key)
@@ -159,12 +181,35 @@ def _opt_bool(body: Dict[str, Any], key: str) -> bool:
     raise ApiError(400, f'field {key} must be boolean or "true"/"false"')
 
 
+def _str_map(body: Dict[str, Any], key: str) -> Dict[str, str]:
+    """可选 str→str 映射字段（R26c 审计修复）：缺省/None → {}；非对象或
+    键值含非字符串一律 400——原零校验直透 proto map 构造炸 TypeError →
+    500（R11 字符串字段族的 map 形态同族；[] 等 falsy 值曾被 `or {}`
+    静默吞掉类型错误）。"""
+    value = body.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(
+            isinstance(k, str) and isinstance(v, str)
+            for k, v in value.items()):
+        raise ApiError(400, f"field {key} must be an object with string keys "
+                            "and string values") from None
+    return value
+
+
+def _log_safe(text: str) -> str:
+    """stderr 日志防伪（R26e 审计修复）：请求路径经百分号解码后可含控制
+    字符（%0A → 换行）伪造日志行，污染下游日志聚合——不可打印字符一律
+    替换 '?'。"""
+    return "".join(ch if ch.isprintable() else "?" for ch in text)
+
+
 # ---------------------------------------------------------------------------
 # 鉴权依赖（/healthz 豁免由路由不挂依赖实现）
 # ---------------------------------------------------------------------------
 
 async def require_token(request: Request) -> None:
-    # B3-2 fail-closed：tokenFile 已配置但读失败（EACCES/EIO）时鉴权材料
+    # fail-closed：tokenFile 已配置但读失败（EACCES/EIO）时鉴权材料
     # 不可得——503 + 服务端 stderr 日志，绝不静默放行（原实现吞异常当
     # 无 token，读失败瞬间整面鉴权失效）。
     try:
@@ -197,6 +242,12 @@ def create_app() -> FastAPI:
     async def _lookup(_req: Request, exc: LookupError):
         return JSONResponse({"error": str(exc)}, status_code=404)
 
+    @app.exception_handler(InferenceVerificationFailed)
+    async def _inference_verification(_req: Request, exc: InferenceVerificationFailed):
+        # R30：路由实核失败=客户端可修正条件（换 provider/修 base_url/改 no_verify），
+        # 确定性 400——5xx 会被上游按"服务端故障"误重试/降级
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
     @app.exception_handler(StarletteHTTPException)
     async def _http_exc(req: Request, exc: StarletteHTTPException):
         if exc.status_code == 404:
@@ -206,11 +257,13 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _unhandled(req: Request, exc: Exception):
-        # B3-3：兜底 = 500 + 通用文案。原 502 让上游把服务端缺陷按"网关
+        # 兜底 = 500 + 通用文案。原 502 让上游把服务端缺陷按"网关
         # 不可达"重试/降级，且 {type: msg} 直接向客户端泄漏内部细节；
         # 细节只进服务端 stderr 日志。
-        print(f"[manager] unhandled error on {req.method} {req.url.path}: "
-              f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        print(f"[manager] unhandled error on {req.method} "
+              f"{_log_safe(req.url.path)}: "
+              f"{_log_safe(f'{type(exc).__name__}: {exc}')}",
+              file=sys.stderr, flush=True)
         return JSONResponse({"error": "internal error"}, status_code=500)
 
     # -- health（豁免鉴权，探活口径不变） -----------------------------------
@@ -257,16 +310,22 @@ def create_app() -> FastAPI:
         body = await _json_body(request)
         _need_str(body, "workspace")
         raw_timeout = body.get("timeout_seconds", WAIT_READY_TIMEOUT_DEFAULT)
-        try:
-            timeout = float(raw_timeout)
-        except (TypeError, ValueError):
+        # R26b 审计修复：严格数值（R21 口径）——bool/字符串数字一律 400
+        # （"300"/True 曾被 float() 静默放行，api-external 3.7"含数字字符串
+        # → 400"自此为真）。
+        if isinstance(raw_timeout, bool) or \
+                not isinstance(raw_timeout, (int, float)):
             raise ApiError(400, f"invalid field timeout_seconds={raw_timeout!r} "
                                 "(expect number)") from None
-        # B3-1 服务端上限：客户端曾可传 1e9 让南向连接无限占用。
-        if timeout > WAIT_READY_TIMEOUT_MAX:
+        timeout = float(raw_timeout)
+        # 服务端上限：客户端曾可传 1e9 让南向连接无限占用。R26b：NaN 用
+        # 自不等判定（json.loads 默认收 NaN 字面量，`nan > cap` 恒 False 曾
+        # 绕过本 cap）与负值一并拒绝（负值曾直达 SDK 瞬间 500）。
+        if timeout != timeout or timeout < 0 \
+                or timeout > WAIT_READY_TIMEOUT_MAX:
             raise ApiError(400, f"invalid field timeout_seconds={raw_timeout!r} "
-                                f"(exceeds server-side cap of "
-                                f"{WAIT_READY_TIMEOUT_MAX:.0f} seconds)")
+                                f"(NaN/negative or exceeds server-side cap of "
+                                f"{WAIT_READY_TIMEOUT_MAX:.0f} seconds)") from None
         return await run_in_threadpool(
             facade.wait_ready, name=name, workspace=body["workspace"],
             timeout_seconds=timeout)
@@ -291,25 +350,31 @@ def create_app() -> FastAPI:
         workdir = _opt_str(body, "workdir")
         timeout = body.get("timeout_seconds")
         if timeout is not None:
-            try:
-                timeout = int(timeout)
-            except (TypeError, ValueError):
-                raise ApiError(400, f"invalid field timeout_seconds={timeout!r} "
-                                    "(expect integer)") from None
+            # R23 审计修复：严格化+服务端上限（wait_ready 同族漏修，
+            # 与 _int_field 同一 _check_int 通道）。bool/float/字符串数字
+            # 一律 400（原 int() 强转全放行，R21 口径）；>600 曾可抬 gRPC
+            # deadline 至 1e9 级无限占线程池令牌与南向连接。
+            timeout = _check_int("timeout_seconds", timeout,
+                                 maximum=EXEC_TIMEOUT_MAX)
         stdin = None
         if body.get("stdin_b64"):
             try:
                 stdin = base64.b64decode(body["stdin_b64"])
             except ValueError as exc:  # binascii.Error 的基类
                 raise ApiError(400, f"invalid stdin_b64: {exc}") from exc
-        return await run_in_threadpool(
-            facade.exec, sandbox_id=body["sandbox_id"], command=command,
-            workdir=workdir, environment=env, stdin=stdin,
-            timeout_seconds=timeout)
+        try:
+            return await run_in_threadpool(
+                facade.exec, sandbox_id=body["sandbox_id"], command=command,
+                workdir=workdir, environment=env, stdin=stdin,
+                timeout_seconds=timeout)
+        except ExecOutputTooLarge as exc:
+            # R27：输出超上限 = 确定性拒绝（413），避免 5xx 被上游按服务端
+            # 故障重试/降级。
+            raise ApiError(413, str(exc)) from exc
 
     @app.get("/api/v1/sandboxes/{name}/logs", dependencies=[Depends(require_token)])
     def sandbox_logs(name: str, request: Request) -> Dict[str, Any]:
-        # B1-15 审计修复：GetSandboxLogs 属 ExecSandbox 系 RPC，只认
+        # 审计修复：GetSandboxLogs 属 ExecSandbox 系 RPC，只认
         # sandbox_id=UUID——原实现把路由 name 原样当 sandbox_id 查询，网关侧
         # 必 NOT_FOUND。与 /files 同口径（ADR-173）：接口层收 name 自解析 UUID。
         workspace = _one(request, "workspace")
@@ -346,7 +411,8 @@ def create_app() -> FastAPI:
         _need_str(body, "workspace", "service")
         return await run_in_threadpool(
             facade.expose_service, sandbox=name, service=body["service"],
-            target_port=_int_field(body, "target_port"),
+            target_port=_int_field(body, "target_port", minimum=1,
+                                   maximum=65535),
             workspace=body["workspace"], domain=_opt_bool(body, "domain"))
 
     @app.get("/api/v1/sandboxes/{name}/services", dependencies=[Depends(require_token)])
@@ -395,8 +461,8 @@ def create_app() -> FastAPI:
         return await run_in_threadpool(
             facade.upsert_provider, workspace=body["workspace"],
             name=body["name"], type_=body["type"],
-            credentials=body.get("credentials") or {},
-            conf=body.get("config") or {})
+            credentials=_str_map(body, "credentials"),
+            conf=_str_map(body, "config"))
 
     @app.delete("/api/v1/inference/providers/{name}",
                 dependencies=[Depends(require_token)])
@@ -428,7 +494,7 @@ async def _handle_upload(name: str, request: Request) -> Dict[str, Any]:
                             f"limit of {limit} (OPENSHELL_MANAGER_MAX_UPLOAD_BYTES; 0 = unlimited)")
 
     tmp: tempfile.SpooledTemporaryFile = tempfile.SpooledTemporaryFile(max_size=1 << 20)
-    # B1-12 审计修复：spool 文件全程 try/finally 关闭。原接收循环在 finally
+    # 审计修复：spool 文件全程 try/finally 关闭。原接收循环在 finally
     # 保护之外，客户端中途断连（request.stream() 抛出）等异常路径会泄漏
     # spool 临时文件（大文件直落磁盘，靠 GC 兜底不可靠）。
     try:
@@ -483,10 +549,16 @@ def serve() -> None:
 
     config.validate()
     bind, port = config.manager_bind(), config.manager_port()
-    if config.manager_token():
-        auth_note = f"token auth ENABLED ({len(config.manager_token())} chars)"
+    try:
+        token = config.manager_token()
+    except config.TokenFileError:
+        # R24：tokenFile 已配置但不可得——validate() 已分治（loopback WARN
+        # 放行 / 非 loopback 拒启）。启动日志如实标注：/api/* 将持续 503。
+        auth_note = ("token auth UNAVAILABLE (configured token source "
+                     "unreadable/empty — /api/* will 503)")
     else:
-        auth_note = "token auth DISABLED (loopback bind only)"
+        auth_note = (f"token auth ENABLED ({len(token)} chars)" if token
+                     else "token auth DISABLED (loopback bind only)")
     print(f"[manager] (fastapi/uvicorn) listening on {bind}:{port} | gateway="
           f"{config.gateway_endpoint()} | {auth_note}", flush=True)
     uvicorn.run(create_app(), host=bind, port=port, log_level="warning", access_log=False)

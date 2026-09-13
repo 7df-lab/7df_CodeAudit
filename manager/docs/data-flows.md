@@ -15,8 +15,8 @@ os.environ ──覆盖──> config.json ──回落──> 内置默认
 |---|---|---|---|---|
 | 监听地址 | `OPENSHELL_MANAGER_BIND` | `bind` | 127.0.0.1 | serve() |
 | 监听端口 | `OPENSHELL_MANAGER_PORT` | `port` | 18800（坏值回落） | serve() |
-| Bearer token | `OPENSHELL_MANAGER_TOKEN` | `tokenFile`（相对服务根）→ `token` | 空=免鉴权 | require_token |
-| 网关端点 | `OPENSHELL_GATEWAY_ENDPOINT` | `gatewayEndpoint` | gateway.internal:8080 | SDK 客户端 |
+| Bearer token | `OPENSHELL_MANAGER_TOKEN` | `tokenFile`（相对服务根）→ `token` | 无配置=免鉴权（仅环回）；文件在而为空=503 fail-closed（R24） | require_token |
+| 网关端点 | `OPENSHELL_GATEWAY_ENDPOINT` | `gatewayEndpoint` | host.docker.internal:8080 | SDK 客户端 |
 | SDK 位置 | `OPENSHELL_LIB_PATH` | `libPath` | 服务根 libs/OpenShell/python | sys.path 注入 |
 | 上传策略上限 | `OPENSHELL_MANAGER_MAX_UPLOAD_BYTES` | `maxUploadBytes` | 2 GiB=2147483648（0=不限） | 上传 413 |
 | 服务地址 | `OPENSHELL_MANAGER_URL` | `url` | http://127.0.0.1:18800 | **仅引擎侧读取**（共享 SSOT，服务自身不用） |
@@ -24,8 +24,7 @@ os.environ ──覆盖──> config.json ──回落──> 内置默认
 要点：
 - **token 三级解析**：env > tokenFile（相对服务根）> config `token` 键。
   tokenFile **文件缺失**=未配置（静默空，不致命）；**存在但读失败**
-  （EACCES/EIO 等 OSError）→ `TokenFileError` fail-closed（B3-2 审计修复：
-  require_token 503 + stderr 日志；修复前吞异常当空，读失败瞬间鉴权失效）。
+  （EACCES/EIO 等 OSError）→ `TokenFileError` fail-closed。
   文件解析结果 5s 缓存（`_token_cache`；env 分支不缓存）——require_token 是
   async 依赖，防每请求一次阻塞磁盘读；异常不落缓存，权限恢复即自愈。
 - **共享 SSOT 防漂移**：引擎 `openshell_manager_client` 读同一份 config.json 的
@@ -83,7 +82,7 @@ write_file_stream()   （run_in_threadpool，全程同步阻塞线程池）
 
 - FastAPI 路由分两类：`def`（同步，Starlette 自动丢线程池）与 `async def`（事件循环）。
   全部 async def 端点（`create/exec/wait-ready/update-config/services 写操作/
-  inference 写操作`）的南向 facade 调用一律 `await run_in_threadpool(…)`（B3-1
+  inference 写操作`）的南向 facade 调用一律 `await run_in_threadpool(…)`（
   审计修复）——同步阻塞 gRPC 裸跑在事件循环上曾把 /healthz 探活与全部并发请求
   卡到 gRPC 返回（timeout=60s 兜底），修复前实测慢 exec 在途时探活排队 2s+。
   上传路径自 ADR-174 起即为该形态（大 body 解析不能占循环），本次对齐。
@@ -102,8 +101,9 @@ manager/deploy/deploy.sh deploy
   `OPENSHELL_MANAGER_TOKEN`；同一值另行供给引擎 prod compose（`OPENSHELL_MANAGER_TOKEN`）
   与 dsh-runtime 的凭据生成。
 - **网络**：`codeaudit-sandbox-gateway-manager-net`（10.10.109.0/24 显式钉网段，
-  避免撞 daemon 默认池里的物理 LAN 192.168.0.0/16）；`gateway.internal` 经
-  extra_hosts → host-gateway 走 LXC 发布的 8080。
+  避免撞 daemon 默认池里的物理 LAN 192.168.0.0/16）；网关端点缺省
+  `host.docker.internal:8080`（hosts 别名 → host-gateway 走 LXC 发布的 8080，
+  a4c1679 中性化；C3 同步：本表与 README 缺省列曾残留旧域样例值）。
 - **不挂 docker.sock**：manager 只经 gRPC 找网关，沙箱容器由网关 DooD 拉起——
   manager 被攻破也拿不到宿主 docker 控制面。
 - **root Dockerfile（离线路径）与 deploy/Dockerfile.manager（自包含）同语义**，
@@ -120,7 +120,7 @@ manager/deploy/deploy.sh deploy
 
 服务自身 `log_level=warning, access_log=False`：不产访问日志，排障靠上游引擎日志
 与服务端 stderr。未捕获异常兜底为 500 + 通用文案 `internal error`，`ExcType: msg`
-细节进服务端 stderr 日志（B3-3：客户端不再看到异常类型/消息，服务端可诊断性不变）。
+细节进服务端 stderr 日志（客户端不再看到异常类型/消息，服务端可诊断性不变）。
 
 ## 7. 错误传播全景（从网关到调用方）
 
@@ -133,12 +133,12 @@ ParseDict 失败 ─────┼─→ GatewayFacade 抛 ValueError/LookupErr
                               ▼
         400 / 404 / 500 / 503 {"error": …} ──→ 引擎按码分流：400=调用方 bug 不重试；
         404=对象不存在；500=manager 自身/南向未捕获故障（细节在服务端日志）；
-        503=token 鉴权材料不可得（fail-closed，B3-2）
+        503=token 鉴权材料不可得（fail-closed）
 ```
 
 客户端格式错误**绝不 5xx** 是硬纪律（5xx 触发上游重试/降级）——历史上数值参数、
 spec/policy 未知字段、command 裸字符串三类先后泄漏成过 502，已逐一收口为 400 并由
-契约测试锁定（REGRESSIONS.md R4/R10）；B3-3 起兜底处理器本身也改 500 + 通用文案，
+契约测试锁定（REGRESSIONS.md R4/R10）；起兜底处理器本身也改 500 + 通用文案，
 502 不再出现于本服务错误面。
 
 ## 8. 与兄弟仓的交互边界（不经理理 HTTP 面的部分）

@@ -49,6 +49,17 @@ describe('E-44 503 自动重试（退避 1s/2s/4s，至多 3 次）', () => {
     expect(hits).toHaveLength(4); // 原始 1 + 重试 3（重试上限是契约）
     expect(apiErrors).toEqual([503]); // 耗尽后才降级横幅
   }, 20_000);
+
+  // B5-P2-5（web-audit-2026-09-12）：503 自动重试仅限幂等 GET——POST 盲重放且网关每次
+  // 现生成新幂等键（RequestMetadata.request_id），第一次请求若已被服务端处理只是响应链路
+  // 故障，重试会重复建任务/重复写；100MB 上传最坏盲重放 300MB。POST 503 直接降级横幅。
+  it('B5-P2-5: POST 503 → 不重试：共 1 次请求、立即 reject + 降级横幅', async () => {
+    routes['POST /v1/mutate'] = () => httpError(503, { error: 'down' });
+    await expect(api.post('/v1/mutate', { x: 1 })).rejects.toThrow();
+    const hits = gateway.requests.filter((r) => r.url === '/v1/mutate');
+    expect(hits).toHaveLength(1); // 不盲重放（防重复建任务）
+    expect(apiErrors).toEqual([503]); // 直接走既有降级横幅路径
+  });
 });
 
 describe('E-45 403/501 全局事件（auth 端点豁免）', () => {

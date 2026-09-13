@@ -24,7 +24,7 @@ const strongPW = "passw0rd-X"
 func setupUserLifecycle(t *testing.T, mode string, codes []string) *handler.UserHandler {
 	t.Helper()
 	t.Setenv("CODEAUDIT_JWT_SECRET", "test-secret-r65") // R65 fail-fast 后测试须显式供密钥
-	store := repo.NewMemoryStore()
+	store := repo.NewMemoryStore(true)
 	idm := idempotency.New()
 	svc := service.NewUserService(store)
 	svc.SetAuthConfig(service.AuthConfig{RegistrationMode: mode, InviteCodes: codes})
@@ -286,7 +286,7 @@ func roleOf(t *testing.T, token string) string {
 	return role
 }
 
-// R43（2026-09-11 审计修复批次）: ListUsers 游标超界必须钳制返回空页——end 有钳而
+// R43（2026-09-11 修复批次）: ListUsers 游标超界必须钳制返回空页——end 有钳而
 // offset 无，大 cursor 触发 slice 越界 panic（admin 面 DoS）。对齐 ListProjects 口径。
 func TestListUsers_CursorBeyondEnd_EmptyPage(t *testing.T) {
 	h := setupUserLifecycle(t, "open", nil)
@@ -311,7 +311,7 @@ func TestListUsers_CursorBeyondEnd_EmptyPage(t *testing.T) {
 	}
 }
 
-// B5-2（D2 裁决 2026-09-11）: token TTL 对齐契约 30min/7d——实现 1h/24h 与契约
+// （D2 裁决 2026-09-11）: token TTL 对齐契约 30min/7d——实现 1h/24h 与契约
 // （03 §4 / configs yaml access_ttl_min=30·refresh_ttl_day=7 / gateway taskwatch 推导）
 // 三方冲突；改代码对齐（现网影响仅 token 提前续期）。exp-iat 直读 JWT claims 断言。
 func TestTokenTTL_MatchesContract(t *testing.T) {

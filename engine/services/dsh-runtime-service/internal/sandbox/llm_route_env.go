@@ -13,6 +13,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // defaultLLMEnv — openai 兼容族路由的既有 env 段（ADR-227 前的唯一形态）。
@@ -38,9 +39,17 @@ func (r *ManagerRunner) llmRouteEnv(ctx context.Context) string {
 		r.event("warn", "推理 provider %s 读取失败，沙箱按缺省 deepseek 适配器拉起: %v", route.Provider, err)
 		return defaultLLMEnv
 	}
-	if p.Type != "anthropic" {
+	// R80: EqualFold 对齐写入口径（service 层 rejectInferenceAliasKeys 用 EqualFold）——
+	// 大小写漂移曾令 "Anthropic" 型静默走 deepseek 通道且无 warn。
+	if !strings.EqualFold(p.Type, "anthropic") {
 		return defaultLLMEnv
 	}
 	return fmt.Sprintf("DSH_PROVIDER=%s DSH_MODEL=%s ANTHROPIC_API_KEY=openshell-injected",
-		anthropicRelayProvider, route.Model)
+		anthropicRelayProvider, shQuoteLite(route.Model))
+}
+
+// shQuoteLite — R80 兜底：单引号包裹+内嵌单引号转义。白名单在写入口（service 层），
+// 读路径对存量/绕过网关直写 manager 的路由值不裸拼进 bash -c。
+func shQuoteLite(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

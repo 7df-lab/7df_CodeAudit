@@ -303,7 +303,7 @@ describe('extension.ts 胶水层（内存桩行为测试）', () => {
     await until(() => !m().state().secrets.has('codeaudit.refresh')); // clear 已收敛
     await m().flush();
     assert.ok(hasMsg('info', '已退出 CodeAudit 登录'), '登出自己的提示保留');
-    assert.ok(!hasMsg('warn', '登录会话已失效'), '主动登出不得触发会话失效告警（B5-2）');
+    assert.ok(!hasMsg('warn', '登录会话已失效'), '主动登出不得触发会话失效告警');
     assert.strictEqual(m().state().contexts['codeaudit.loggedIn'], false);
     assert.strictEqual(script.callsTo(/POST \/v1\/auth\/logout/).length, 1, '平台登出请求照发');
   });
@@ -378,7 +378,7 @@ describe('extension.ts 胶水层（内存桩行为测试）', () => {
     assert.strictEqual(script.callsTo(/uploads/).length, 0, '两次取消：依旧零上传');
   }).timeout(20000);
 
-  it('打包清单命中 20000 上限：确认「继续打包」→ 按当前清单走完上传/建任务（B5-2）', async () => {
+  it('打包清单命中 20000 上限：确认「继续打包」→ 按当前清单走完上传/建任务', async () => {
     const script = new FetchScript().install();
     scriptScan(script, { findings: [] });
     const { root } = boot({ config: { projectId: 'p1', minPackFiles: 1 }, buttons: ['继续打包'], secrets: { 'codeaudit.refresh': 'r' } });
@@ -417,7 +417,7 @@ describe('extension.ts 胶水层（内存桩行为测试）', () => {
     await until(() => hasMsg('info', '扫描完成：0 条发现'));
   });
 
-  it('扫描互斥竞态：第一次卡在连通性探测（listTools 往返）中时第二次发起即被拒，仅一次上传（回归锁 B2-1 双上传）', async () => {
+  it('扫描互斥竞态：第一次卡在连通性探测（listTools 往返）中时第二次发起即被拒，仅一次上传（回归锁 双上传）', async () => {
     const script = new FetchScript().install();
     let releaseTools!: (v: unknown) => void;
     const gate = new Promise((r) => { releaseTools = r; });
@@ -443,7 +443,7 @@ describe('extension.ts 胶水层（内存桩行为测试）', () => {
     await until(() => hasMsg('info', '扫描完成：0 条发现'));
   });
 
-  it('扫描早退复位互斥：连通性失败（503）后再发起可正常走完整链（回归锁 B2-1 早退复位）', async () => {
+  it('扫描早退复位互斥：连通性失败（503）后再发起可正常走完整链（回归锁 早退复位）', async () => {
     const script = new FetchScript().install();
     let toolsCalls = 0;
     script.on(/GET \/v1\/tools/, () => {
@@ -511,7 +511,7 @@ describe('extension.ts 胶水层（内存桩行为测试）', () => {
     await until(() => hasMsg('info', '代码审计已开始'), 4000);
     // watcher 首轮轮询即得 COMPLETED → terminal → 收尾卡在 listFindings(A)
     await until(() => script.callsTo(/GET \/v1\/findings\?task_id=gw-abc12345/).length === 1, 4000);
-    // 挂起窗口内切绑任务 B（A 终态、无扫描发起 → 不触发 B2-5 确认门）
+    // 挂起窗口内切绑任务 B（A 终态、无扫描发起 → 不触发 确认门）
     m().state().pickQueue = [{ label: 'B', description: '', task: summaryB }];
     await vscode.commands.executeCommand('codeaudit.selectTask');
     await until(() => hasMsg('info', '已绑定任务 gw-old99'), 4000);
@@ -691,7 +691,7 @@ describe('extension.ts 胶水层（内存桩行为测试）', () => {
     assert.strictEqual(registry(globalStorage).length, 0);
   });
 
-  it('修复互斥：第一发卡在 fs 落盘时第二发被整体拒绝，完成后复位可再修（回归锁 B2-6 fixing 并发）', async () => {
+  it('修复互斥：第一发卡在 fs 落盘时第二发被整体拒绝，完成后复位可再修（回归锁 fixing 并发）', async () => {
     const { root, globalStorage } = boot({ files: { 'a.py': 'x\n' } });
     const realWriteFile = fs.promises.writeFile.bind(fs.promises) as (...args: any[]) => any;
     let releaseWrite!: () => void;
@@ -719,7 +719,7 @@ describe('extension.ts 胶水层（内存桩行为测试）', () => {
     }
   });
 
-  it('写盘互斥扩展：修复卡在 fs 落盘时，回滚（rollbackFix/rollbackFixes）与围栏兜底修复均被拒、不改盘（回归锁 B2-6 扩展）', async () => {
+  it('写盘互斥扩展：修复卡在 fs 落盘时，回滚（rollbackFix/rollbackFixes）与围栏兜底修复均被拒、不改盘（回归锁 扩展）', async () => {
     const { root, globalStorage } = boot({ files: { 'a.py': 'line1\nold line\nline3\n' } });
     await m().flush();
     // 预置一个已应用修复（f1 @ a.py）供回滚入口
@@ -762,7 +762,7 @@ describe('extension.ts 胶水层（内存桩行为测试）', () => {
     }
   });
 
-  it('写盘互斥扩展：无登记兜底回滚（rollbackFixes→restoreLatest）同样被拒（回归锁 B2-6 扩展兜底分支）', async () => {
+  it('写盘互斥扩展：无登记兜底回滚（rollbackFixes→restoreLatest）同样被拒（回归锁 扩展兜底分支）', async () => {
     const { root, globalStorage } = boot({ files: { 'a.py': 'x\n' } });
     await m().flush();
     // 挂起一发修复：checkpoint 已建、登记未写（fs 成功后才登记）→ rollbackFixes 走无登记兜底
@@ -788,7 +788,7 @@ describe('extension.ts 胶水层（内存桩行为测试）', () => {
     }
   });
 
-  it('fs 落盘失败还原：Update 文档缓冲区经 WorkspaceEdit 回写旧内容（缓冲区+磁盘同还原，回归锁 B2-6 脏缓冲区）', async () => {
+  it('fs 落盘失败还原：Update 文档缓冲区经 WorkspaceEdit 回写旧内容（缓冲区+磁盘同还原，回归锁 脏缓冲区）', async () => {
     const { root, globalStorage } = boot({ files: { 'a.py': 'line1\nold line\nline3\n' } });
     const realWriteFile = fs.promises.writeFile.bind(fs.promises) as (...args: any[]) => any;
     (fs.promises as any).writeFile = async (p: any, ...rest: any[]) => {
@@ -869,7 +869,7 @@ describe('extension.ts 胶水层（内存桩行为测试）', () => {
     assert.ok(registry(globalStorage).some((r: any) => r.findingId === 'f-rolled' && r.state === 'rolledback'), '用户回滚过的不被翻案');
   });
 
-  it('低风险批量：单条意外异常跳过继续，不中断其余候选（回归锁 B2-6 逐条容错）', async () => {
+  it('低风险批量：单条意外异常跳过继续，不中断其余候选（回归锁 逐条容错）', async () => {
     const script = new FetchScript().install();
     script.on(/GET \/v1\/tasks\?/, () => ({ tasks: [] }));
     script.on(/GET \/v1\/tasks\/[\w-]+\/snapshot/, () => snapshot(TASK, 'TASK_STATUS_COMPLETED', 100));
@@ -997,7 +997,7 @@ describe('extension.ts 胶水层（内存桩行为测试）', () => {
     assert.strictEqual(m().state().workspaceState.get('codeaudit.lastTaskId'), TASK_B);
   });
 
-  it('绑定任务 findings 拉取失败 → 回滚绑定态：进度/lastTaskId/结果树复原（回归锁 B2-5 半绑定状态）', async () => {
+  it('绑定任务 findings 拉取失败 → 回滚绑定态：进度/lastTaskId/结果树复原（回归锁 半绑定状态）', async () => {
     const script = new FetchScript().install();
     const TASK_B = 'gw-old9999-bbbbbbbbbbbbbbbb';
     const summaryB = { task_id: TASK_B, project_id: 'p1', scan_mode: 'SCAN_MODE_PARALLEL', sast_tools: [], status: 'TASK_STATUS_COMPLETED', created_at: '', updated_at: null, error_message: '' };
@@ -1026,7 +1026,7 @@ describe('extension.ts 胶水层（内存桩行为测试）', () => {
     const TASK_B = 'gw-dead0000-bbbbbbbbbbbbbbbb';
     const summaryB = { task_id: TASK_B, project_id: 'p1', scan_mode: 'SCAN_MODE_PARALLEL', sast_tools: [], status: 'TASK_STATUS_COMPLETED', created_at: '', updated_at: null, error_message: '' };
     // B 的快照 404（listTasks 结果瞬态过期：列出后、绑定前被平台删除）
-    script.on(/GET \/v1\/tasks\/gw-dead0000[\w-]*\/snapshot/, () => new Response(JSON.stringify({ error: 'task gw-dead0000 not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } }));
+    script.on(/GET \/v1\/tasks\/gw-dead0000[\w-]*\/snapshot/, () => new Response(JSON.stringify({ error: 'task not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } }));
     script.on(/GET \/v1\/tasks\/[\w-]+\/snapshot/, () => snapshot(TASK, 'TASK_STATUS_RUNNING', 42)); // A 运行中 → watcher 活跃
     script.on(/GET \/v1\/findings/, () => page([finding()]));
     script.on(/GET \/v1\/tasks\?/, () => ({ tasks: [summaryB] }));

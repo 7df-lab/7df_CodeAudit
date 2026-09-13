@@ -11,6 +11,7 @@ SDK client instead of touching the real gateway.
 from __future__ import annotations
 
 import base64
+import contextlib
 import sys
 import threading
 from typing import Any, Dict, Iterator, List, Optional
@@ -30,6 +31,57 @@ def _ensure_sdk_path():
     if str(lib) not in sys.path:
         sys.path.insert(0, str(lib))
     _sdk_path_done = True
+
+
+def _rpc_code_name(exc) -> "str | None":
+    """grpc.RpcError（须同时实现 grpc.Call）才有 code()；返回其 name（如
+    'NOT_FOUND'）。不 import grpc：本模块承诺无 SDK 也可导入，测试环境
+    未必装 grpcio。"""
+    code = getattr(exc, "code", None)
+    if not callable(code):
+        return None
+    return getattr(code(), "name", None)
+
+
+@contextlib.contextmanager
+def _map_not_found(what: str):
+    """南向 gRPC NOT_FOUND → LookupError（api 层既有 404 通道）。
+
+    R22 审计修复：真实 SDK 对网关 NOT_FOUND 裸抛 grpc.RpcError（非
+    LookupError 子类，MRO 实测），沙箱不存在曾全落兜底 500，文档承诺的
+    404 从未生效。其余 code（UNAVAILABLE/UNKNOWN 等）原样上抛维持 500
+    兜底——health→500 是 api-external 已接受口径，不扩大映射面。"""
+    try:
+        yield
+    except Exception as exc:
+        if _rpc_code_name(exc) == "NOT_FOUND":
+            raise LookupError(f"{what} not found") from exc
+        raise
+
+
+@contextlib.contextmanager
+def _map_verification_failed():
+    """R30：南向 FAILED_PRECONDITION（路由实核失败）→
+    InferenceVerificationFailed（api 层 400）。其余 code 原样上抛维持兜底。"""
+    try:
+        yield
+    except Exception as exc:
+        if _rpc_code_name(exc) == "FAILED_PRECONDITION":
+            details = getattr(exc, "details", None)
+            msg = details() if callable(details) else str(exc)
+            raise InferenceVerificationFailed(msg) from exc
+        raise
+
+
+class ExecOutputTooLarge(RuntimeError):
+    """R27 审计修复：exec 输出超过 MAX_EXEC_OUTPUT_BYTES。api 层映射 413
+    （确定性拒绝——5xx 会被上游按"服务端故障"误重试/降级）。"""
+
+
+class InferenceVerificationFailed(RuntimeError):
+    """R30：set_route 南向 FAILED_PRECONDITION（endpoint 连通性实核失败）。
+    api 层映射 400——客户端可修正（换 provider/修 base_url/改 no_verify），
+    500 会被上游按"服务端故障"误重试/降级（同 ExecOutputTooLarge 413 理由）。"""
 
 
 class GatewayFacade:
@@ -121,14 +173,22 @@ class GatewayFacade:
         return self._ref(client.create(workspace=workspace, name=name or "", spec=pb_spec))
 
     def get(self, *, name: str, workspace: str) -> Dict[str, Any]:
-        client = self._sdk()
-        return self._ref(client.get(name, workspace=workspace))
+        with _map_not_found(f"sandbox '{name}' in workspace '{workspace}'"):
+            client = self._sdk()
+            return self._ref(client.get(name, workspace=workspace))
 
     def wait_ready(self, *, name: str, workspace: str,
                    timeout_seconds: float = 300.0) -> Dict[str, Any]:
-        client = self._sdk()
-        return self._ref(client.wait_ready(
-            name, workspace=workspace, timeout_seconds=timeout_seconds))
+        with _map_not_found(f"sandbox '{name}' in workspace '{workspace}'"):
+            client = self._sdk()
+            return self._ref(client.wait_ready(
+                name, workspace=workspace, timeout_seconds=timeout_seconds))
+
+    # R27 审计修复：exec 输出累计上限。SDK exec 曾无界攒 stdout/stderr，
+    # `cat /dev/zero` 类命令以线速耗尽管理面内存（殃及全部租户）；facade
+    # 改走 exec_stream 流式消费并在此钳制（vendored 上游树零改动；生成器
+    # 惰性拉取保证 SDK 侧同步受界，放弃消费即释放）。
+    MAX_EXEC_OUTPUT_BYTES = 64 * 1024 * 1024
 
     def exec(self, *, sandbox_id: str, command: List[str],
              workdir: Optional[str] = None,
@@ -136,23 +196,47 @@ class GatewayFacade:
              stdin: Optional[bytes] = None,
              timeout_seconds: Optional[int] = None) -> Dict[str, Any]:
         client = self._sdk()
-        result = client.exec(
-            sandbox_id, list(command), workdir=workdir, env=environment or {},
-            stdin=stdin, timeout_seconds=timeout_seconds)
+        stdout_parts: List[bytes] = []
+        stderr_parts: List[bytes] = []
+        received = 0
+        exit_code: Optional[int] = None
+        # 流式路径同样暴露寻址类 NOT_FOUND（R22）：错 UUID/沙箱中途消失——
+        # 与 get_logs/update_config 同一 _map_not_found 通道（LookupError
+        # 文案 "sandbox {id} not found" 逐字节不变）。
+        with _map_not_found(f"sandbox {sandbox_id}"):
+            for event in client.exec_stream(
+                    sandbox_id, list(command), workdir=workdir,
+                    env=environment or {}, stdin=stdin,
+                    timeout_seconds=timeout_seconds):
+                stream = getattr(event, "stream", None)
+                if stream not in ("stdout", "stderr"):
+                    # ExecResult 收尾事件：输出以逐 chunk 累计为准（受上限
+                    # 约束），此处只取退出码。
+                    exit_code = event.exit_code
+                    continue
+                data = event.data
+                received += len(data)
+                if received > self.MAX_EXEC_OUTPUT_BYTES:
+                    raise ExecOutputTooLarge(
+                        f"exec output exceeds {self.MAX_EXEC_OUTPUT_BYTES} "
+                        "byte cap")
+                (stdout_parts if stream == "stdout"
+                 else stderr_parts).append(data)
+        if exit_code is None:
+            raise RuntimeError("exec stream ended without an exit event")
         return {
-            "exit_code": result.exit_code,
-            "stdout": result.stdout.decode("utf-8", errors="replace")
-            if isinstance(result.stdout, (bytes, bytearray)) else result.stdout,
-            "stderr": result.stderr.decode("utf-8", errors="replace")
-            if isinstance(result.stderr, (bytes, bytearray)) else result.stderr,
+            "exit_code": exit_code,
+            "stdout": b"".join(stdout_parts).decode("utf-8", errors="replace"),
+            "stderr": b"".join(stderr_parts).decode("utf-8", errors="replace"),
         }
 
     # -- file upload ----------------------------------------------------------
 
     def resolve_sandbox_id(self, *, name: str, workspace: str) -> str:
-        """人类指令 2026-09-01：/files 接口层对外收 name，内部自行换 UUID 走后续
+        """/files 接口层对外收 name，内部自行换 UUID 走后续
         上传（网关 ExecSandbox 系 RPC 只认 UUID；其余 name 端点由此统一收口）。"""
-        return self._sdk().get(name, workspace=workspace).id
+        with _map_not_found(f"sandbox '{name}' in workspace '{workspace}'"):
+            return self._sdk().get(name, workspace=workspace).id
 
     # ExecSandbox carries stdin as a single proto bytes field. The gateway
     # REJECTS request messages over 1MiB (measured live 2026-09-06:
@@ -194,7 +278,7 @@ class GatewayFacade:
                 "parent dir creation")
             # 原始切片按 3 字节对齐后再编码：2MiB 非 3 的倍数，若按整块编码，
             # 每段 base64 各带 padding，沙箱内单条 `base64 -d` 流式解码会在段中
-            # 遇到 padding 而中断/截断（人类指令 2026-09-01 name 口径联调时实测暴露）。
+            # 遇到 padding 而中断/截断。
             take = self.UPLOAD_CHUNK_BYTES - (self.UPLOAD_CHUNK_BYTES % 3)
             for piece in chunks:
                 buffer += piece
@@ -213,6 +297,19 @@ class GatewayFacade:
                                         append=chunk_count > 0)
                 total += len(buffer)
                 chunk_count += 1
+            # Rename into place only after every chunk landed, so a failed
+            # upload never leaves a truncated file at the target path.
+            # R26d 审计修复：finalize mv/chmod 纳入同一 try——mv 因磁盘满/
+            # 权限失败曾绕过下方 .part 清理（违背本 docstring 承诺）；mv 已
+            # 成功后 chmod 失败时 rm 是无害空操作。
+            self._exec_or_fail(
+                sandbox_id,
+                ["/bin/sh", "-c", f"mv {escaped}.part {escaped}"],
+                "finalize mv")
+            if mode:
+                self._exec_or_fail(
+                    sandbox_id, command=["chmod", mode, path],
+                    what=f"chmod {mode}")
         except Exception:
             # Best-effort cleanup of the staging file so a failed upload
             # leaves no debris; the target path was never touched.
@@ -222,15 +319,6 @@ class GatewayFacade:
             except Exception:  # noqa: BLE001 - cleanup is advisory
                 pass
             raise
-        # Rename into place only after every chunk landed, so a failed upload
-        # never leaves a truncated file at the target path.
-        self._exec_or_fail(
-            sandbox_id,
-            ["/bin/sh", "-c", f"mv {escaped}.part {escaped}"],
-            "finalize mv")
-        if mode:
-            self._exec_or_fail(
-                sandbox_id, command=["chmod", mode, path], what=f"chmod {mode}")
         return {"path": path, "bytes": total, "chunks": chunk_count}
 
     def _exec_or_fail(self, sandbox_id: str, command: List[str],
@@ -260,7 +348,8 @@ class GatewayFacade:
         request = pb.GetSandboxLogsRequest(
             sandbox_id=sandbox_id, lines=lines, since_ms=since_ms,
             workspace=workspace)
-        response = client._stub.GetSandboxLogs(request, timeout=60)
+        with _map_not_found(f"sandbox {sandbox_id}"):
+            response = client._stub.GetSandboxLogs(request, timeout=60)
         return [MessageToDict(line, preserving_proto_field_name=True)
                 for line in response.logs]
 
@@ -269,14 +358,18 @@ class GatewayFacade:
         client = self._sdk()
         pb, sandbox_pb, _m2d, _ParseDict = self._pb()
         pb_policy = self._parse_dict(policy, sandbox_pb.SandboxPolicy())
-        response = client._stub.UpdateConfig(
-            pb.UpdateConfigRequest(name=name, workspace=workspace,
-                                   policy=pb_policy), timeout=60)
+        with _map_not_found(f"sandbox '{name}'"):
+            # R22 审查补全：对不存在沙箱的热更新同属寻址错误 → 404（曾落
+            # 兜底 500，与错误码总表的泛化 404 承诺不一致）
+            response = client._stub.UpdateConfig(
+                pb.UpdateConfigRequest(name=name, workspace=workspace,
+                                       policy=pb_policy), timeout=60)
         return {"version": response.version, "policy_hash": response.policy_hash}
 
     def delete(self, *, name: str, workspace: str) -> bool:
-        client = self._sdk()
-        return bool(client.delete(name, workspace=workspace))
+        with _map_not_found(f"sandbox '{name}' in workspace '{workspace}'"):
+            client = self._sdk()
+            return bool(client.delete(name, workspace=workspace))
 
     def list_all(self, *, limit: int = 500) -> List[Dict[str, Any]]:
         client = self._sdk()
@@ -297,25 +390,29 @@ class GatewayFacade:
                        target_port: int, workspace: str,
                        domain: bool = False) -> Dict[str, Any]:
         stub, pb = self._admin_stub()
-        resp = stub.ExposeService(pb.ExposeServiceRequest(
-            sandbox=sandbox, service=service, target_port=int(target_port),
-            domain=bool(domain), workspace=workspace), timeout=60)
+        with _map_not_found(f"sandbox '{sandbox}'"):
+            resp = stub.ExposeService(pb.ExposeServiceRequest(
+                sandbox=sandbox, service=service, target_port=int(target_port),
+                domain=bool(domain), workspace=workspace), timeout=60)
         return self._service_projection(resp)
 
     def list_services(self, *, sandbox: str, workspace: str = "",
                       limit: int = 100, offset: int = 0,
                       all_workspaces: bool = False) -> List[Dict[str, Any]]:
         stub, pb = self._admin_stub()
-        resp = stub.ListServices(pb.ListServicesRequest(
-            sandbox=sandbox, workspace=workspace, limit=limit, offset=offset,
-            all_workspaces=all_workspaces), timeout=30)
+        with _map_not_found(f"sandbox '{sandbox}'"):
+            resp = stub.ListServices(pb.ListServicesRequest(
+                sandbox=sandbox, workspace=workspace, limit=limit,
+                offset=offset, all_workspaces=all_workspaces), timeout=30)
         return [self._service_projection(s) for s in resp.services]
 
     def delete_service(self, *, sandbox: str, service: str,
                        workspace: str) -> Dict[str, Any]:
         stub, pb = self._admin_stub()
-        resp = stub.DeleteService(pb.DeleteServiceRequest(
-            sandbox=sandbox, service=service, workspace=workspace), timeout=30)
+        with _map_not_found(f"sandbox '{sandbox}'"):
+            resp = stub.DeleteService(pb.DeleteServiceRequest(
+                sandbox=sandbox, service=service, workspace=workspace),
+                timeout=30)
         return {"deleted": bool(resp.deleted)}
 
     # -- inference route / provider admin ------------------------------------
@@ -333,8 +430,11 @@ class GatewayFacade:
         _ensure_sdk_path()  # 测试缝会整体替换 _inference_stub，pb 导入前必须自备路径
         stub = self._inference_stub()
         from openshell._proto import inference_pb2 as ipb
-        resp = stub.GetInferenceRoute(
-            ipb.GetInferenceRouteRequest(workspace=workspace), timeout=30)
+        # R30：全新部署路由未配置，南向 NOT_FOUND 曾裸 500（dind 七战 e2e 实证）
+        # ——与 R22 沙箱面同款映射，404 通道对齐错误码总表
+        with _map_not_found(f"inference route in workspace '{workspace}'"):
+            resp = stub.GetInferenceRoute(
+                ipb.GetInferenceRouteRequest(workspace=workspace), timeout=30)
         return {"provider": resp.provider_name, "model": resp.model_id,
                 "version": resp.version}
 
@@ -343,10 +443,14 @@ class GatewayFacade:
         _ensure_sdk_path()
         stub = self._inference_stub()
         from openshell._proto import inference_pb2 as ipb
-        resp = stub.SetInferenceRoute(
-            ipb.SetInferenceRouteRequest(
-                workspace=workspace, provider_name=provider, model_id=model,
-                no_verify=no_verify), timeout=30)
+        # R30：endpoint 实核失败是客户端可修正条件（换 provider/修 base_url/改
+        # no_verify），南向 FAILED_PRECONDITION 曾裸 500——确定性 400（同
+        # ExecOutputTooLarge 413 的"5xx 被上游误重试"理由）
+        with _map_verification_failed():
+            resp = stub.SetInferenceRoute(
+                ipb.SetInferenceRouteRequest(
+                    workspace=workspace, provider_name=provider, model_id=model,
+                    no_verify=no_verify), timeout=30)
         return {"provider": resp.provider_name, "model": resp.model_id,
                 "version": resp.version,
                 "validation_performed": bool(resp.validation_performed),
@@ -396,8 +500,18 @@ class GatewayFacade:
             stub.UpdateProvider(pb.UpdateProviderRequest(
                 provider=provider, workspace=workspace), timeout=30)
         else:
-            stub.CreateProvider(pb.CreateProviderRequest(
-                provider=provider, workspace=workspace), timeout=30)
+            try:
+                stub.CreateProvider(pb.CreateProviderRequest(
+                    provider=provider, workspace=workspace), timeout=30)
+            except Exception as exc:
+                # R26c 审计修复：check-then-act 竞态收敛——并发双 Create 的
+                # 败者收 ALREADY_EXISTS 时落一次 Update，维持 upsert 语义
+                # （曾炸 500）。其余 RpcError 原样上抛维持兜底。
+                if _rpc_code_name(exc) != "ALREADY_EXISTS":
+                    raise
+                stub.UpdateProvider(pb.UpdateProviderRequest(
+                    provider=provider, workspace=workspace), timeout=30)
+                exists = True
         return {"name": name, "created": not exists}
 
 

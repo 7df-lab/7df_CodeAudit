@@ -12,16 +12,14 @@ OpenShell Gateway 的 **HTTP/JSON 管理面**：把网关 gRPC SDK 包装成 RES
 token，否则拒绝启动（`config.py validate()`）；`/api/*` 全部 Bearer 鉴权
 （`/healthz` 豁免）。
 
-调用链：`引擎 / dsh-agent → manager(:18800, HTTP/JSON) → gateway.internal:8080 (gRPC) → 沙箱容器（网关 DooD 拉起）`
+调用链：`引擎 / dsh-agent → manager(:18800, HTTP/JSON) → host.docker.internal:8080 (gRPC，缺省经 hosts 别名解析；有自定义域名时 env/config 覆盖) → 沙箱容器（网关 DooD 拉起）`
 
 ## 仓库位置
 
-本仓是 `codeaudit-umbrella` 的子模块 `manager/`（GitLab
-`admins/codeaudit/manager`）。2026-09-05 仓库重构时由原 `openshell-manager`
-源码仓 + `CD/openshell-manager` 部署 overlay 合并而成：**源码与部署事实源
-同居一仓**（部署配方见 `deploy/`；CD 已析出归档）。
+本目录是伞仓 `codeaudit` 的 manager 子仓：**源码与部署事实源同居一仓**
+（部署配方见 `deploy/`）。
 
-架构沿革：stdlib `http.server` 起家 → ADR-174（2026-09-01，人类指令）整体
+架构沿革：stdlib `http.server` 起家 → ADR-174（2026-09-01）整体
 迁移 FastAPI/uvicorn，南向 gRPC 与对外 JSON 契约逐字节不变（契约测试锁定）；
 镜像 1.0.0 → 2.0.0。
 
@@ -34,15 +32,15 @@ token，否则拒绝启动（`config.py validate()`）；`/api/*` 全部 Bearer 
 | `openshell_manager/gateway.py` | `GatewayFacade`：懒加载 vendored SDK、南向 gRPC 全操作、沙箱 name→UUID 解析（ADR-173） |
 | `openshell_manager/upload.py` | 手写流式 multipart 解析器：720 KiB 分块（3 字节对齐 base64，编码后 960KiB < 网关 gRPC 实测 1 MiB 收包上限）经 exec stdin 写入沙箱，先建父目录再写 `.part` 后原子 mv，失败自清理 |
 | `openshell_manager/config.py` | 配置解析（env > config.json > 内置默认）+ `validate()` 绑定纪律 |
-| `tests/test_contract.py` | 47 条契约测试（假 SDK 门面 + 真 HTTP 层，离线无需网关）；可 pytest 或直跑 |
-| `tests/test_guardrails.py` | 守门测试：鉴权全覆盖/路由快照/README 文档实测化/分块上限/常量时间比较/SDK 在库/档案完整 |
-| `REGRESSIONS.md` | 缺陷档案：R1…R12 每条缺陷绑定具名锁定测试 + 修复流程纪律（先红后修再记档） |
-| `.agent/verify.sh` | 交付门禁：pytest 全量 + 直跑模式双绿才可交付 |
+| `tests/test_contract.py` | 契约测试（假 SDK 门面 + 真 HTTP 层，离线无需网关）；可 pytest 或直跑；用例数以 pytest 汇总为准 |
+| `tests/test_guardrails.py` | 守门测试：鉴权全覆盖/路由快照/README 文档实测化/分块上限/常量时间比较/SDK 在库/档案完整/根 Dockerfile 纪律 |
+| `REGRESSIONS.md` | 缺陷档案：R1 起每条缺陷绑定具名锁定测试 + 修复流程纪律（先红后修再记档）；末条编号以档案为准 |
+| `tests/deploy_cases.sh` | deploy.sh 行为锁定关卡：PATH 桩 docker/pct/ssh/curl，断言脚本侧命令形态（不模拟远端语义） |
 | `docs/` | 接口文档三件套：`api-external.md`（外部 HTTP 契约）/`api-internal.md`（内部模块契约）/`data-flows.md`（数据流转与部署链） |
 | `libs/OpenShell/python` | vendored openshell SDK（供应商树；整树 7.2G 几乎全是 Rust 构建产物，仅 python 子树 <1M 入镜像）。**python 子树 2026-09-05 起纳管入库**（Dockerfile COPY 输入，gitignored 会让 fresh clone 构建必败）；`libs/OpenShell` 本体是嵌套上游仓（NVIDIA/OpenShell），仅存于开发机本地 |
 | `config.json` | 全局配置——与引擎共享的 SSOT（引擎 `openshell_manager_client.py` 读同一份 `url`/`token`/`tokenFile`，两端不会漂移） |
 | `run.sh` | 宿主机开发态启动（127.0.0.1:18800） |
-| `Dockerfile` | 2.0.0 镜像（离线构建路径，现役镜像由此产出）：基于 1.0.0 叠加 fastapi/uvicorn wheels（`build/wheels/` 不入 git） |
+| `Dockerfile` | 2.0.0 镜像（离线构建路径，现役镜像由此产出）：基于 1.0.0 叠加 fastapi/uvicorn wheels（`build/wheels/` 不入 git，fresh clone 先 `pip download`）；非 root 运行；**产物携带基础镜像内置 .token，禁止 push/导出/分发——生产重建走 `deploy/Dockerfile.manager`** |
 | `deploy/` | 生产部署事实源（compose + `deploy.sh` + `env.template`）→ LXC 107，详见 `deploy/README.md` |
 
 ## 运行
@@ -51,9 +49,8 @@ token，否则拒绝启动（`config.py validate()`）；`/api/*` 全部 Bearer 
 # 开发态（宿主机；免 token 仅限环回）：
 ./run.sh                          # = python3 -m openshell_manager，127.0.0.1:18800
 
-# 契约+守门测试（离线，47 条；交付门禁）：
-bash .agent/verify.sh            # = pytest tests/ 全量 + 直跑模式双检
-python3 -m pytest tests/ -q      # 或 python3 tests/test_contract.py
+# 契约+守门测试（离线；交付门禁）：
+python3 -m pytest tests/ -q      # 或 python3 tests/test_contract.py 直跑
 
 # 生产（LXC 107 docker，容器 openshell-manager，镜像 openshell-manager:2.0.0）：
 deploy/deploy.sh deploy           # 同步源码+产物+.env → compose build+up → healthz → 网关可达性
@@ -66,7 +63,9 @@ deploy/deploy.sh check|status|logs [N]
 ## 镜像构建（2.0.0，ADR-174）
 
 现役镜像 = 根 `Dockerfile` 离线路径（在 1.0.0 基底上叠加，自带 SDK/grpcio/
-config.json/.token，构建期 `USER root` 装 fastapi+uvicorn）：
+config.json/.token，构建期 `USER root` 装依赖后**切回 65534 非 root 运行**；
+产物携带基础镜像的 .token——**禁止 push/导出/分发**，生产重建应走
+`deploy/Dockerfile.manager`）：
 
 ```bash
 # 1) 宿主机备离线 wheels（构建上下文 build/wheels，不入 git）
@@ -76,7 +75,7 @@ pip3 download fastapi uvicorn -d build/wheels \
 tar --exclude='.git' --exclude='__pycache__' --exclude='build' \
     -czf /tmp/om_ctx.tgz Dockerfile openshell_manager build/wheels tests config.json
 pct push 107 /tmp/om_ctx.tgz /tmp/om_ctx.tgz
-pct exec 107 -- bash -c 'mkdir -p /root/om-build && tar -xzf /tmp/om_ctx.tgz -C /root/om-build \
+pct exec <CTID> -- bash -c 'mkdir -p /root/om-build && tar -xzf /tmp/om_ctx.tgz -C /root/om-build \
     && cd /root/om-build && docker build -t openshell-manager:2.0.0 .'
 # 3) 重建容器（沿用原容器 env/network 参数；或改走 deploy/ 的 compose 路径）
 ```
@@ -96,7 +95,7 @@ pct exec 107 -- bash -c 'mkdir -p /root/om-build && tar -xzf /tmp/om_ctx.tgz -C 
   "bind":            "127.0.0.1",
   "port":            18800,
   "tokenFile":       ".token",
-  "gatewayEndpoint": "gateway.internal:8080",
+  "gatewayEndpoint": "host.docker.internal:8080",
   "libPath":         "libs/OpenShell/python"
 }
 ```
@@ -105,9 +104,9 @@ pct exec 107 -- bash -c 'mkdir -p /root/om-build && tar -xzf /tmp/om_ctx.tgz -C 
 |---|---|---|
 | `bind` / `OPENSHELL_MANAGER_BIND` | `127.0.0.1` | 监听地址；非环回无 token = `validate()` 拒启 |
 | `port` / `OPENSHELL_MANAGER_PORT` | `18800` | 监听端口 |
-| `tokenFile` / `OPENSHELL_MANAGER_TOKEN` | `.token` | Bearer token；优先级 env > tokenFile（相对服务根）> config `token`；空 = 免鉴权（仅环回） |
-| `gatewayEndpoint` / `OPENSHELL_GATEWAY_ENDPOINT` | `gateway.internal:8080` | 网关 gRPC 端点 |
-| `libPath` / `OPENSHELL_LIB_PATH` | `libs/OpenShell/python` | vendored SDK 位置；回退链 = 服务自带树 > 引擎旧检出遗留路径 |
+| `tokenFile` / `OPENSHELL_MANAGER_TOKEN` | `.token` | Bearer token；优先级 env > tokenFile（相对服务根）> config `token`；文件不存在 = 未配置（免鉴权，仅环回）；**文件存在但为空 = 配置错误 → 503 fail-closed（R24）** |
+| `gatewayEndpoint` / `OPENSHELL_GATEWAY_ENDPOINT` | `host.docker.internal:8080` | 网关 gRPC 端点（缺省经 hosts 别名解析，零 DNS 依赖；有自定义域名时覆盖） |
+| `libPath` / `OPENSHELL_LIB_PATH` | `libs/OpenShell/python` | vendored SDK 位置（R8 起仅服务自带树，无其他回退） |
 | `maxUploadBytes` / `OPENSHELL_MANAGER_MAX_UPLOAD_BYTES` | `2147483648`（2 GiB；0=不限） | 上传策略上限，纯防误操作——上传为流式转发，内存恒定 <1 MiB，与文件大小无关 |
 | `url` / `OPENSHELL_MANAGER_URL` | `http://127.0.0.1:18800` | **引擎侧**读取的服务地址（本服务自身不用） |
 
@@ -128,7 +127,7 @@ pct exec 107 -- bash -c 'mkdir -p /root/om-build && tar -xzf /tmp/om_ctx.tgz -C 
 | `DELETE /api/v1/sandboxes/{name}?workspace=` | 删除 → `{deleted}` |
 | `POST /api/v1/sandboxes/{name}/wait-ready` | `{workspace, timeout_seconds?=300}`（服务端上限 600s，超限 400） |
 | `POST /api/v1/sandboxes/exec` | 执行命令 `{sandbox_id, command, env?, workdir?, stdin_b64?, timeout_seconds?}`。**sandbox_id 必须传创建响应的 UUID `id` 字段，传沙箱名会 NOT_FOUND**；`command` 必须是字符串列表（裸字符串/混合类型 400，不触达网关）；`stdin_b64` 非法 base64 → 400 |
-| `GET /api/v1/sandboxes/{name}/logs?workspace=&lines=&since_ms=` | 日志（lines 默认 2000；`name` 接口层先解析成 UUID 再查——B1-15 审计修复，GetSandboxLogs 只认 UUID） |
+| `GET /api/v1/sandboxes/{name}/logs?workspace=&lines=&since_ms=` | 日志（lines 默认 2000；`name` 接口层先解析成 UUID 再查——审计修复，GetSandboxLogs 只认 UUID） |
 | `POST /api/v1/sandboxes/{name}/update-config` | 热更新策略 `{workspace, policy}` |
 | `POST /api/v1/sandboxes/{name}/files` | 流式上传，**仅 multipart/form-data**（否则 415）、**必带 Content-Length**（否则 411）：表单字段 `path`（绝对路径必填，父目录自动 `mkdir -p`，含空格/通配符路径安全）、`mode`（八进制可选如 `0755`）+ 文件部分 `file` → `{path,bytes,chunks}`；`?workspace=` 缺省 default。流式转发：边收边按 720 KiB 分块经 exec stdin 写沙箱（网关收包上限实测 1 MiB），内存恒定 <1 MiB，单请求大小受 `maxUploadBytes` 约束（缺省 2 GiB；20 MiB 的 `MAX_BODY_BYTES` 只管 JSON 接口） |
 | `POST /api/v1/sandboxes/{name}/services` | ExposeService：沙箱端口暴露为网关服务 `{workspace, service, target_port, domain?=false}` → `{name,sandbox_id,sandbox_name,target_port,domain,url}`；重暴露同名即更新 |
@@ -147,16 +146,21 @@ pct exec 107 -- bash -c 'mkdir -p /root/om-build && tar -xzf /tmp/om_ctx.tgz -C 
   唯 `/exec` 的 `sandbox_id` 走 UUID。
 - **错误契约**统一 `{"error": msg}`：400（缺字段/坏 JSON/非对象 body/非法数值参数/
   **字符串字段收非字符串**/布尔字段收布尔或 "true"/"false" 以外的值/env 非"字符串到字符串"映射/command 非字符串列表/
-  stdin_b64 非法/spec·policy 未知字段）、
-  401、503（tokenFile 已配置但读失败——fail-closed，B3-2）、
-  404（含 `no route for METHOD /path`）、405（也是 `{"error":…}` 形态）、
-  411（上传缺 Content-Length）、413（JSON > 20 MiB 或超 `maxUploadBytes`）、
+  stdin_b64 非法/spec·policy 未知字段/数值越界（query 整数 0..2³¹-1、
+  target_port 1..65535、exec timeout 0..600、wait_ready 0..600 且拒 NaN））、
+  401、503（tokenFile 已配置但读失败或内容为空——fail-closed，B3-2/R24）、
+  404（含 `no route for METHOD /path`；沙箱不存在 → 404 自 R22 审计修复起
+  真实生效）、405（也是 `{"error":…}` 形态）、
+  411（上传缺 Content-Length）、413（JSON > 20 MiB、超 `maxUploadBytes`、
+  exec 输出累计超 64 MiB——R27）、
   415（上传非 multipart）、
-  500（南向异常/未捕获兜底，通用文案 `internal error`，细节进服务端日志——B3-3）。
+  500（南向非 NOT_FOUND 异常/未捕获兜底，通用文案 `internal error`，细节进
+  服务端日志——B3-3）。
   客户端格式错误一律 400，绝不泄漏成 5xx
   （5xx 会被上游按服务端故障重试/降级）——该红线由
   `tests/test_guardrails.py` 结构守门 + `REGRESSIONS.md` R6/R11 档案锁定。
-- 上传先写 `.part` 全部落盘后原子改名，失败自动清理。
+- 上传先写 `.part` 全部落盘后原子改名，失败（含 finalize mv/chmod，R26d）
+  自动清理。
 
 ## 网关生命周期（兄弟仓）
 
@@ -173,7 +177,9 @@ ensure/verify/status/start/stop/restart；`ensure` 幂等强制服务路由域
 ```bash
 # 生产（容器化实例，现役）：
 export OPENSHELL_MANAGER_URL=http://gateway.internal:18800
-export OPENSHELL_MANAGER_TOKEN=$(cut -d= -f2 deploy/env)
+export OPENSHELL_MANAGER_TOKEN=$(grep -m1 '^OPENSHELL_MANAGER_TOKEN=' deploy/env | cut -d= -f2-)
+# 注意不要用 `cut -d= -f2`：token 常见 base64 padding '='，-f2 会从值内
+# 第一个 = 截断 → token 残缺全线 401（同族教训）
 # 宿主机开发态实例（./run.sh）才用 127.0.0.1:18800
 python3 engine/llm_config.py get     # 经微服务读路由
 ```

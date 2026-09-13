@@ -5,6 +5,7 @@ package handler
 // 超限拒绝。进程内真实 gRPC 后端（同 transcode_test.go 口径，不 mock HTTP 层）。
 
 import (
+	"github.com/codeaudit/services/gateway-service/internal/middleware"
 	"context"
 	"encoding/json"
 	"net"
@@ -112,7 +113,10 @@ func TestSourceFile_UploadLinkFlow(t *testing.T) {
 	b := startSrcBackend(t)
 	tr := newSrcTranscoder(t, b)
 	setSourceDirs(t, uploads, "")
-	srv := httptest.NewServer(tr.Handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN") // R89: 机制测试按 admin 走门禁
+			tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+		}))
 	defer srv.Close()
 
 	code, m := getJSON(t, srv, "/v1/tasks/t-link/source-file?path=src/main/java/Foo.java")
@@ -135,7 +139,10 @@ func TestSourceFile_BasenameAndSuffixFallback(t *testing.T) {
 	b := startSrcBackend(t)
 	tr := newSrcTranscoder(t, b)
 	setSourceDirs(t, uploads, "")
-	srv := httptest.NewServer(tr.Handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN") // R89: 机制测试按 admin 走门禁
+			tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+		}))
 	defer srv.Close()
 
 	// 裸文件名（AI 结论常见形态）：up1 内有两个 Foo.java，取路径最短者（主源文件口径）
@@ -158,7 +165,10 @@ func TestSourceFile_RepoDirAndProjectConfigFlows(t *testing.T) {
 	b := startSrcBackend(t)
 	tr := newSrcTranscoder(t, b)
 	setSourceDirs(t, uploads, filepath.Dir(repo))
-	srv := httptest.NewServer(tr.Handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN") // R89: 机制测试按 admin 走门禁
+			tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+		}))
 	defer srv.Close()
 
 	// repo 流：repos_dir/<task_id>
@@ -186,7 +196,10 @@ func TestSourceFile_ContentFallbackForLegacyTasks(t *testing.T) {
 	projectCfgForTest = map[string]string{} // 无 project_path
 	t.Cleanup(func() { projectCfgForTest = nil })
 	setSourceDirs(t, uploads, "")
-	srv := httptest.NewServer(tr.Handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN") // R89: 机制测试按 admin 走门禁
+			tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+		}))
 	defer srv.Close()
 
 	code, m := getJSON(t, srv, "/v1/tasks/t-legacy/source-file?path=src/main/java/Foo.java")
@@ -219,7 +232,10 @@ func TestSourceFile_Rejects(t *testing.T) {
 	b := startSrcBackend(t)
 	tr := newSrcTranscoder(t, b)
 	setSourceDirs(t, uploads, "")
-	srv := httptest.NewServer(tr.Handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN") // R89: 机制测试按 admin 走门禁
+			tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+		}))
 	defer srv.Close()
 
 	// 穿越
@@ -248,7 +264,10 @@ func TestSourceFile_BinaryRejected(t *testing.T) {
 	b := startSrcBackend(t)
 	tr := newSrcTranscoder(t, b)
 	setSourceDirs(t, uploads, "")
-	srv := httptest.NewServer(tr.Handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN") // R89: 机制测试按 admin 走门禁
+			tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+		}))
 	defer srv.Close()
 
 	if code, _ := getJSON(t, srv, "/v1/tasks/t-bin/source-file?path=Bin.dat"); code != http.StatusUnsupportedMediaType {
@@ -272,7 +291,7 @@ func TestWriteTaskLink(t *testing.T) {
 	writeTaskLink("t-a", "")
 }
 
-// TestSourceFile_UploadsUnpackedFlow — ①b 流回归（gw-f6a3523 实证锁）：ADR-200 起
+// TestSourceFile_UploadsUnpackedFlow — ①b 流回归（实证锁）：ADR-200 起
 // storage 拉包流把任务源落在 <repos_dir>/uploads-<task_id>/unpacked，压缩包顶层壳
 // 目录（GitHub 式 <repo>-<ver>/）需在读取侧剥掉——旧四流对该布局全部落空 →
 // 发现详情"源码全文不可用 + Sink 链路不可用"。剥壳语义与 task-service
@@ -297,7 +316,10 @@ func TestSourceFile_UploadsUnpackedFlow(t *testing.T) {
 	b := startSrcBackend(t)
 	tr := newSrcTranscoder(t, b)
 	setSourceDirs(t, uploads, repos)
-	srv := httptest.NewServer(tr.Handler())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN") // R89: 机制测试按 admin 走门禁
+			tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+		}))
 	defer srv.Close()
 
 	// 发现里的 file_path 相对真实项目根（无壳）——经壳内 suffix 匹配命中全文

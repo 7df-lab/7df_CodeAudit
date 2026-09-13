@@ -1,6 +1,6 @@
 // 任务创建向导（14号 §3.3 ①；04 §3 五模式分流）
 // Step4 创建 → POST /v1/tasks（网关生成幂等键）；config 不再承载任务级源码键——
-// 2026-09-09 人类指令：项目层级决定源代码仓库，向导不提供重新上传/指定仓库/手填路径
+// 项目层级决定源代码仓库，向导不提供重新上传/指定仓库/手填路径
 // （项目 config.upload_file_id / repo_url 由 task-service 启动时解析，ADR-203 兜底链）
 // 2026-09-11 用户报障（建任务引导）：项目列表加载失败 Alert+重试 / 空列表引导去项目页 /
 // 项目 Select 可搜索 / ?project_id= 深链预选（项目详情页直达）
@@ -9,10 +9,12 @@ import { Alert, Button, Card, Checkbox, Form, Radio, Select, Steps, Typography, 
 import { autoRunTask } from '../../tasks/stateMachine';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { createTask, getProject, getProjectConfig, getProjects, getTools } from '../../api/client';
+import { createTask, getProject, getProjectConfig, getTools, listAllProjects } from '../../api/client';
 import { SCAN_MODE, REVIEW_DEPTH, zh } from '../../dict';
+import PageHeader from '../../components/PageHeader';
+import { usePageTitle } from '../../hooks/usePageTitle';
 
-// ADR-186 五模式矩阵（人类决策 2026-09-03）：每模式需要的参数分支（向导分支覆盖的单一来源）
+// ADR-186 五模式矩阵：每模式需要的参数分支（向导分支覆盖的单一来源）
 // A=纯SAST多工具并行 / B=纯AI / C=SAST+AI并行融合（默认推荐） / D=AI增强SAST / E=SAST+AI并行对比
 export interface ModeSpec {
   needsSastTools: boolean;
@@ -33,12 +35,13 @@ export const MODE_SPECS: Record<string, ModeSpec> = {
 export const DEFAULT_SCAN_MODE = 'SCAN_MODE_PARALLEL';
 
 export default function TaskNewPage() {
+  usePageTitle('新建任务');
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [step, setStep] = useState(0);
   const [projectId, setProjectId] = useState<string>('');
   const [mode, setMode] = useState<string>(DEFAULT_SCAN_MODE); // ADR-182: 默认推荐模式C
-  // 人类指令 2026-09-01（B3-5 文案纠偏）：审批流已废除——创建→启动直达，无"提交→批准"环节；
+  // （文案纠偏）：审批流已废除——创建→启动直达，无"提交→批准"环节；
   // 勾掉自动启动则停在已创建，需在任务页手动点启动
   const [autoStart, setAutoStart] = useState<boolean>(true);
   // 2026-09-09: 任务级源码覆盖（uploadFileId/project_path）随"项目层级决定源码"指令退役，
@@ -55,7 +58,7 @@ export default function TaskNewPage() {
   // 用户只看到无法选择的下拉）；深链 ?project_id= 供项目详情页直达预选。
   const { data: projects, isError: projectsError, refetch: refetchProjects } = useQuery({
     queryKey: ['projects'],
-    queryFn: () => getProjects(),
+    queryFn: async () => ({ projects: await listAllProjects() }), // B5-P2-7: 全量翻页
   });
   // 深链预选：仅当 project_id 命中列表项才预选，未命中保持未选（不猜 ID）
   const wantedProjectId = searchParams.get('project_id') ?? '';
@@ -72,7 +75,7 @@ export default function TaskNewPage() {
     enabled: !!projectId,
   });
   const repoURL = projInfo?.repo_url ?? '';
-  // 项目级源码来源展示（2026-09-09 人类指令：源码由项目层级决定，向导只读呈现）
+  // 项目级源码来源展示（源码由项目层级决定，向导只读呈现）
   const { data: projConfig } = useQuery({
     queryKey: ['project-config', projectId],
     queryFn: () => getProjectConfig(projectId),
@@ -95,7 +98,7 @@ export default function TaskNewPage() {
   const create = useMutation({
     mutationFn: async (values: { sast_tools?: string[]; review_depth?: string; review_opts?: string[] }) => {
       const config: Record<string, string> = {};
-      // 2026-09-09 人类指令: 不再写任务级源码键（upload_file_id/project_path）——
+      // 不再写任务级源码键（upload_file_id/project_path）——
       // 源码来源由项目解析；config 只承载审核类键
       if (values.review_depth) config.review_depth = values.review_depth;
       if (values.review_opts?.length) {
@@ -171,7 +174,9 @@ export default function TaskNewPage() {
         value={mode}
         onChange={(e) => setMode(e.target.value)}
         options={Object.entries(SCAN_MODE)
-          .filter(([value]) => !MODE_SPECS[value]?.deprecated) // ADR-182: 弃用模式不进新建入口
+          // ADR-182: 弃用模式不进新建入口；R: UNSPECIFIED 展示键不进新建入口
+          // （MODE_SPECS 缺项 → needsSastTools undefined → sast_tools:[] → P-26 同型必 FAILED 复活）
+          .filter(([value]) => !MODE_SPECS[value]?.deprecated && value !== 'SCAN_MODE_UNSPECIFIED')
           .map(([value, label]) => ({ value, label: `${label} —— ${MODE_SPECS[value]?.blurb ?? ''}` }))}
       />
     ),
@@ -200,7 +205,7 @@ export default function TaskNewPage() {
             )}
           </>
         )}
-        {/* 2026-09-09 人类指令: 项目层级决定源代码仓库——任务向导不提供重新上传/指定
+        {/* 项目层级决定源代码仓库——任务向导不提供重新上传/指定
             仓库/手填路径；源码来源=项目 config/repo_url，只读呈现 */}
         {sourceText ? (
           <Alert
@@ -220,7 +225,8 @@ export default function TaskNewPage() {
         {spec?.needsReviewConfig && (
           <>
             <Form.Item name="review_depth" label="审核深度（ReviewConfig.depth）" initialValue="REVIEW_DEPTH_STANDARD">
-              <Select options={Object.entries(REVIEW_DEPTH).map(([value, label]) => ({ value, label }))} />
+              {/* R: 零值不进新建入口 */}
+              <Select options={Object.entries(REVIEW_DEPTH).filter(([value]) => value !== 'REVIEW_DEPTH_UNSPECIFIED').map(([value, label]) => ({ value, label }))} />
             </Form.Item>
             <Form.Item name="review_opts" label="审核选项">
               <Checkbox.Group
@@ -280,7 +286,8 @@ export default function TaskNewPage() {
 
   return (
     <div style={{ maxWidth: 720 }}>
-      <Typography.Title level={3}>新建扫描任务</Typography.Title>
+      {/*  PageHeader（Title 默认 margin-top 与 Content padding 叠加的 48px 空带归零） */}
+      <PageHeader title="新建扫描任务" />
       <Steps
         items={[{ title: '项目' }, { title: '模式' }, { title: '参数' }, { title: '确认' }]}
         current={step}

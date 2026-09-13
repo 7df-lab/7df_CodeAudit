@@ -261,7 +261,7 @@ describe('createTask 增量载荷（ADR-225 D5）', () => {
   });
 });
 
-describe('refresh 失败仅 401 清凭据（B2-3 回归锁）', () => {
+describe('refresh 失败仅 401 清凭据（回归锁）', () => {
   // 组合路由：业务请求带过期 access → 401 触发单飞刷新；refresh 端点按脚本返回 status
   const expiredThenRefresh = (refreshStatus: number): FetchLike => async (url) =>
     /\/v1\/auth\/refresh/.test(String(url))
@@ -296,7 +296,7 @@ describe('refresh 失败仅 401 清凭据（B2-3 回归锁）', () => {
   });
 });
 
-describe('REST 超时注入（B2-7 回归锁）', () => {
+describe('REST 超时注入（回归锁）', () => {
   it('requestJson 注入 AbortSignal.timeout：普通请求 60s 档', async () => {
     const orig = AbortSignal.timeout.bind(AbortSignal);
     const seen: number[] = [];

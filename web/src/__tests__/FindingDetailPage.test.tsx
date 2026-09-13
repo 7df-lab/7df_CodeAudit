@@ -4,12 +4,20 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import FindingDetailPage from '../pages/findings/FindingDetailPage';
-import { useFakeGateway } from '../testsupport/fakeGateway';
+import { httpError, useFakeGateway } from '../testsupport/fakeGateway';
 
 // ADR-203 fakeGateway：真实 api/client 执行，仅 HTTP 层伪造；未建模路由响亮失败
 let detailPayload: unknown;
+let detailError: { status: number; body: unknown } | null = null; // (P3-k)：失败注入
 const gateway = useFakeGateway({
-  'GET /v1/findings/:findingId': () => ({ finding: detailPayload }),
+  'GET /v1/findings/:findingId': () => {
+    if (detailError) {
+      const e = detailError;
+      detailError = null;
+      httpError(e.status, e.body); // 抛出式（响亮失败纪律）
+    }
+    return { finding: detailPayload };
+  },
   'PUT /v1/findings/:findingId/verdict': () => ({}),
 });
 function setDefaultDetail() {
@@ -93,10 +101,10 @@ describe('FindingDetailPage（T3 triage 工作台）', () => {
   });
 });
 
-// B4-3（审计修复）：提交裁决成功联动失效 fusion-findings / review-findings 前缀——
+// （审计修复）：提交裁决成功联动失效 fusion-findings / review-findings 前缀——
 // 本组件内嵌于 ReviewView 行展开（I-A0），任务详情 Tabs 的融合/审核视图也读 ai_verdict，
 // 不联动则裁决后返回这些视图停留旧结论。探针 queryKey 与真实视图一致，queryFn 计数。
-describe('FindingDetailPage 裁决缓存联动（B4-3）', () => {
+describe('FindingDetailPage 裁决缓存联动', () => {
   it('提交裁决成功 → fusion-findings / review-findings 前缀失效并重拉', async () => {
     setDefaultDetail();
     let fusionFetches = 0;
@@ -125,5 +133,18 @@ describe('FindingDetailPage 裁决缓存联动（B4-3）', () => {
     });
     await waitFor(() => expect(fusionFetches).toBe(2)); // 前缀失效 → 重拉
     await waitFor(() => expect(reviewFetches).toBe(2));
+  });
+
+
+});
+
+// (P3-k)：finding 主查询失败显性化——404/网络失败此前永远停在"加载中…"（深链直达）
+describe('B5: 发现详情加载失败显性化', () => {
+  it('查询 500 → 错误 Alert + 重试按钮，非"加载中…"死态', async () => {
+    detailError = { status: 500, body: { error: 'boom' } };
+    renderPage();
+    expect(await screen.findByText(/发现详情加载失败/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /重\s*试/ })).toBeTruthy();
+    expect(screen.queryByText('加载中…')).toBeNull();
   });
 });

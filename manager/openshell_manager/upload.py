@@ -5,7 +5,9 @@ uploads cannot afford that. This parser consumes the request body
 incrementally from ``rfile`` (64KiB reads) and yields text fields as bytes
 plus the file part as a lazy byte stream, so the HTTP layer can forward
 each completed 2MiB chunk into the sandbox before the rest of the request
-has even arrived. Memory stays constant regardless of file size.
+has even arrived. Memory stays constant regardless of file size, up to the
+bounded preamble/part-header caps (R25) that apply before the file part
+starts.
 
 A delimiter token may straddle read boundaries, so payload emission always
 withholds a ``len(delimiter) - 1`` byte lookback tail until the next read
@@ -16,6 +18,11 @@ from __future__ import annotations
 from typing import BinaryIO, Dict, Iterator, Tuple
 
 READ_CHUNK = 64 * 1024
+# R25 审计修复：前置阶段内存上限（原"内存恒定"只对 file part 成立）——
+# 首个 boundary 前的前导与单 part 头块超限即 400，防止 2GiB 缺省上限内
+# 的垃圾 body 把全量字节缓冲进内存（OOM 管理面）。
+MAX_PREAMBLE_BYTES = 1 * 1024 * 1024      # 合法客户端前导 ≈ 0 字节
+MAX_PART_HEADERS_BYTES = 64 * 1024        # 典型头块 < 1KiB
 
 
 class UploadError(Exception):
@@ -86,12 +93,19 @@ class StreamingMultipartParser:
     def _expect_first_boundary(self) -> None:
         """Consume the opening boundary line (``--boundary CRLF``)."""
         token = b"--" + self._boundary
+        scanned = 0
         while True:
             pos = self._buffer.find(token)
             if pos != -1:
                 break
+            before = len(self._buffer)
             if not self._fill():
                 raise UploadError("unexpected end of multipart body")
+            scanned += len(self._buffer) - before
+            if scanned > MAX_PREAMBLE_BYTES:
+                raise UploadError(
+                    f"multipart preamble exceeds {MAX_PREAMBLE_BYTES} bytes "
+                    "before the first boundary")
         if pos != 0:
             raise UploadError("garbage before multipart boundary")
         self._buffer = self._buffer[len(token):]
@@ -119,9 +133,15 @@ class StreamingMultipartParser:
     def _read_headers(self) -> Dict[str, str]:
         self._buffer = self._buffer[2:]  # CRLF after boundary line
         headers: Dict[str, str] = {}
+        scanned = 0
         while b"\r\n\r\n" not in self._buffer:
+            before = len(self._buffer)
             if not self._fill():
                 raise UploadError("unexpected end of part headers")
+            scanned += len(self._buffer) - before
+            if scanned > MAX_PART_HEADERS_BYTES:
+                raise UploadError(
+                    f"part headers exceed {MAX_PART_HEADERS_BYTES} bytes")
         block, self._buffer = self._buffer.split(b"\r\n\r\n", 1)
         for line in block.split(b"\r\n"):
             text = line.decode("utf-8", errors="replace")
@@ -184,14 +204,10 @@ class StreamingMultipartParser:
             if pos != -1 and len(self._buffer) >= pos + keep:
                 terminator = self._buffer[pos + len(self._delimiter):
                                           pos + keep]
-                if terminator.startswith(b"--"):
-                    yield self._buffer[:pos]
-                    self._buffer = b""
-                    return
-                if terminator == b"\r\n":
-                    # Boundary without "--": another part follows the file.
-                    # Our contract stops at the file part; leave the rest to
-                    # the HTTP layer's drain.
+                if terminator.startswith(b"--") or terminator == b"\r\n":
+                    # "--" ends the body; a bare-CRLF terminator means another
+                    # part follows the file. Our contract stops at the file
+                    # part; leave the rest to the HTTP layer's drain.
                     yield self._buffer[:pos]
                     self._buffer = b""
                     return

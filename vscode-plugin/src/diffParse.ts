@@ -96,7 +96,7 @@ export function canonicalize(s: string): string {
     .replace(/\\"/g, '"');
 }
 
-// —— Cline 同款 Levenshtein 相似度（B2-8 收敛为共享实现：applyPatch.ts 亦复用本导出，
+// —— Cline 同款 Levenshtein 相似度（收敛为共享实现：applyPatch.ts 亦复用本导出，
 //    消除双副本漂移风险；守卫见 guards.test.ts 相似度单一来源用例） ——————————————
 
 export const SIMILARITY_THRESHOLD = 0.66;

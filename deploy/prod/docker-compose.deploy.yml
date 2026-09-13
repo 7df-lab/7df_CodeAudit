@@ -23,6 +23,12 @@ services:
     restart: unless-stopped
   project:
     restart: unless-stopped
+    # R72 契约（engine）：用户档为内存存储、种子 admin 缺省关闭防默认凭据。生产一键
+    # 档必须显式开启 bootstrap 账号（admin/admin ROLE_ADMIN，与完成横幅口径一致），
+    # 否则全新栈无任何可登录用户（invitation 注册本身也需要首个 admin）。改密后
+    # 重启回缺省是内存用户档的既知边界；不需种子可 env 置 false。
+    environment:
+      CODEAUDIT_SEED_ADMIN: "${CODEAUDIT_SEED_ADMIN:-true}"
   task:
     restart: unless-stopped
     # （task 的 codeaudit.yaml 挂载缺陷已在仓库 base compose 修复，overlay
@@ -44,6 +50,18 @@ services:
       CODEAUDIT_GATEWAY_DIAL_ADDR: ${CODEAUDIT_GATEWAY_DIAL_ADDR:-host.docker.internal:8080}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # ---- 中间件 restart（2026-09-13 审计补：base 为开发宽容档零 restart，宿主/daemon
+  #      重启后中间件不自起而应用服务空转、健康门必挂——本 overlay 是生产档部署态
+  #      差异的唯一收口面，两条生产链（107 链与 production-deploy 一键链）同用）----
+  postgres:
+    restart: unless-stopped
+  redis:
+    restart: unless-stopped
+  minio:
+    restart: unless-stopped
+  kafka:
+    restart: unless-stopped
 
 networks:
   default:

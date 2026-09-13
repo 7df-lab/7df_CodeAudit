@@ -73,7 +73,7 @@ seed_db() {
     || echo "[seed][警告] init-db.sql 执行有误——若库表已存在可忽略" >&2
 }
 
-# 沙箱南向链保障（2026-09-09 人类指令"不应该拉起所有相关的服务吗"）：
+# 沙箱南向链保障：
 # dsh-runtime → openshell-manager(:18800) → openshell-gateway(:8080) → dsh-pentest-sse 沙箱。
 # manager/gateway 不在 sim compose 内——它们是独立部署面的共享实例（107 宿主上自
 # 2026-09-08 起为 sim 独占依赖）。宿主上存在其容器（无论运行/退出）则自动拉起；

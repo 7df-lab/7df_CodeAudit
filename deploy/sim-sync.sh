@@ -4,10 +4,13 @@
 # 背景：栈操作须在有 docker 的宿主上执行（pb-A；本机无 docker → LXC 107），
 # 宿主侧检出台（默认 /root/codeaudit-sim-check）是 engine + deploy 的源码拷贝
 # （无 .git）。本脚本把"打 tar → pct push → 远端解包 → sim.sh up"的手工管线
-# 固化为可重复入口（2026-09-06 人类指令"用脚本走安装流程，而不是手动安装"）：
+# 固化为可重复入口：
 #   - 同步源 = git archive，仅已提交内容——脏树/本机杂物不可泄漏（pb-D 同纪律）
-#   - 覆盖式解包（overlay，不删远端既有文件）：env.sim 等本地 gitignored 的
-#     真实值只存于远端，不受同步影响
+#   - 收敛式同步（对齐 prod/deploy.sh 与 web/deploy.sh 同型）：
+#     解包前清空远端 engine/ web/ 与 deploy/ 旧树，白名单保留 deploy/env.sim——
+#     本地 gitignored 的真实值只存于远端（sim.sh 靠它注入沙箱接线）；不清空则
+#     上游已删/改名文件残留进构建上下文（LESSONS #7 叠加同步膨胀，旧实现可静默
+#     复活进构建产物）
 #   - rebuild 即调 deploy/sim.sh up（幂等 up -d --build）；Go 全量构建耗时以
 #     分钟计，调用方不得套短超时
 #
@@ -32,7 +35,7 @@ sync_tree() {
     work=$(mktemp -d)
     trap 'rm -rf "$work"' EXIT
     # engine/web 取子仓 HEAD（子仓内容不入伞仓 archive）；deploy 取伞仓 HEAD。
-    # web 必须随批同步（2026-09-07 gw-f6a3523 实证）：console 容器 build context=../web，
+    # web 必须随批同步（2026-09-07 实证）：console 容器 build context=../web，
     # 只同步 engine 时 console 永远用残留旧树重建——前端修复不进部署产物，
     # "修过的缺陷在 GUI 又出现"即此缺口。
     git -C engine archive --prefix=engine/ -o "$work/engine.tgz" HEAD
@@ -41,10 +44,16 @@ sync_tree() {
     pct push "$VMID" "$work/engine.tgz" /tmp/sim-sync-engine.tgz
     pct push "$VMID" "$work/web.tgz" /tmp/sim-sync-web.tgz
     pct push "$VMID" "$work/deploy.tgz" /tmp/sim-sync-deploy.tgz
-    run_remote bash -c "mkdir -p '$SIM_DIR' && cd '$SIM_DIR' && \
-        tar -xzf /tmp/sim-sync-engine.tgz && tar -xzf /tmp/sim-sync-web.tgz && tar -xzf /tmp/sim-sync-deploy.tgz && \
-        rm -f /tmp/sim-sync-engine.tgz /tmp/sim-sync-web.tgz /tmp/sim-sync-deploy.tgz && \
-        echo 'sim-sync: source tree updated at $SIM_DIR'"
+    run_remote bash -c "mkdir -p '$SIM_DIR/deploy' && cd '$SIM_DIR' && \
+        { [ -f engine/services/sast-adapter-service/tools/opengrep ] && rm -f /tmp/sim-sync-tools.keep && cp -a engine/services/sast-adapter-service/tools/opengrep /tmp/sim-sync-tools.keep || true; } && \\
+        rm -rf engine web && \\
+        find deploy -mindepth 1 -maxdepth 1 '!' -name env.sim -exec rm -rf {} + && \\
+        tar -xzf /tmp/sim-sync-engine.tgz && tar -xzf /tmp/sim-sync-web.tgz && tar -xzf /tmp/sim-sync-deploy.tgz && \\
+        rm -f /tmp/sim-sync-engine.tgz /tmp/sim-sync-web.tgz /tmp/sim-sync-deploy.tgz && \\
+        mkdir -p engine/services/sast-adapter-service/tools && \\
+        { [ -f /tmp/sim-sync-tools.keep ] && cp -a /tmp/sim-sync-tools.keep engine/services/sast-adapter-service/tools/opengrep || true; } && \\
+        rm -f /tmp/sim-sync-tools.keep && \\
+        echo 'sim-sync: source tree converged at $SIM_DIR (deploy/env.sim + sast-adapter tools/opengrep preserved)'"
 }
 
 case "$cmd" in

@@ -287,7 +287,7 @@ class Handler(BaseHTTPRequestHandler):
         """Stream a multipart upload into the sandbox without buffering it.
 
         接口层对外收沙箱 name（+可选 workspace 查询参数，缺省 default），
-        内部先解析为 UUID 再走网关流式写盘（人类指令 2026-09-01）。
+        内部先解析为 UUID 再走网关流式写盘。
 
         Manager memory stays constant (~2MiB chunk window) regardless of
         file size: parser output is forwarded chunk-by-chunk through

@@ -51,9 +51,9 @@
 | 18 | Delete/Move 修复永远无法回滚 | `writeRestored` 对已删除文件走 `openTextDocument`（缺失文件必抛错）→ 回滚整体失败 | Delete File / Move to 补丁应用后，按发现回滚报"文件读取异常"，登记停在 applied | `extension.test.ts › Delete+Add 多段补丁…回滚`、`› Move to…回滚`（内存桩行为测试） | 2026-09-07 测试体系补齐时发现并修复：缺失文件改 fs 直写重建 |
 | 19 | checkpoint latest() 取错快照 | `cp-<ts>-<seq>` 按字典序排序，seq 跨位数（9→10）时 `cp-…-10` 排在 `cp-…-9` 之前 | 同毫秒连存 ≥10 个 checkpoint 时（低风险批量连修场景）`回滚最近一次`还原到错误版本 | `checkpoint.test.ts › 多个 checkpoint 时 latest 取最新`（测试负载加大后自然暴露） | 2026-09-07 修复：按 (ts, seq) 数值序排序 |
 | 20 | 终态历史任务状态栏滞留 | bindTask 绑定已完成历史任务后 `progress` 残留非 null，状态栏走百分比分支显示 `0%` 而非「N 发现」 | 切换/恢复历史任务后状态栏永远显示 0%，点击无响应感 | `extension.test.ts › 恢复链路：重启后绑定上次任务…`（statusBars 断言） | 并行会话 56a75af 先修复（状态栏百分比只对非终态任务展示）；本仓行为测试独立收敛到同一断言 |
-| 21 | 扫描互斥竞态双上传 | `doScan` 的 `scanning=true` 在 `listTools()` 网络往返之后才置位，并发第二次调用从 await 窗口穿过守卫 | 连击/深链+手点并发触发扫描 → 双 zip 上传、平台双沙箱消耗；互斥标志形同虚设 | `extension.test.ts › 扫描互斥竞态：第一次卡在连通性探测…仅一次上传（B2-1）` + `› 扫描早退复位互斥…（B2-1）`（立即置位+全部早退路径 finally 复位） | B2 审计批次 |
-| 22 | 旧任务终态收尾覆盖新任务 UI | terminal 收尾仅在 await 前查一次 lastTaskId；`listFindings` 挂起窗口内切绑任务后，旧收尾恢复执行照样 renderFindings/clearTaskUi | 扫描完成瞬间切换任务 → 新任务发现/UI 被旧任务收尾清掉、互斥被误释 | `extension.test.ts › 旧任务终态收尾 TOCTOU…（B2-2）`（每次 await 后复查 `taskId===lastTaskId && progress?.taskId===taskId`） | B2 审计批次 |
-| 23 | refresh 瞬态失败清凭据 | `doRefresh` 对任何非 2xx 一律 `tokens.clear()`，502/429 也把会话判死 | 网关抖动/限流一次 → 插件被登出，状态栏"未登录"，离线态缓存 token 全部失效 | `apiClient.test.ts › refresh 失败仅 401 清凭据（B2-3）` 3 例（502/429 凭据保留、401 才清） | B2 审计批次 |
+| 21 | 扫描互斥竞态双上传 | `doScan` 的 `scanning=true` 在 `listTools()` 网络往返之后才置位，并发第二次调用从 await 窗口穿过守卫 | 连击/深链+手点并发触发扫描 → 双 zip 上传、平台双沙箱消耗；互斥标志形同虚设 | `extension.test.ts › 扫描互斥竞态：第一次卡在连通性探测…仅一次上传` + `› 扫描早退复位互斥…`（立即置位+全部早退路径 finally 复位） | B2 审计批次 |
+| 22 | 旧任务终态收尾覆盖新任务 UI | terminal 收尾仅在 await 前查一次 lastTaskId；`listFindings` 挂起窗口内切绑任务后，旧收尾恢复执行照样 renderFindings/clearTaskUi | 扫描完成瞬间切换任务 → 新任务发现/UI 被旧任务收尾清掉、互斥被误释 | `extension.test.ts › 旧任务终态收尾 TOCTOU…`（每次 await 后复查 `taskId===lastTaskId && progress?.taskId===taskId`） | B2 审计批次 |
+| 23 | refresh 瞬态失败清凭据 | `doRefresh` 对任何非 2xx 一律 `tokens.clear()`，502/429 也把会话判死 | 网关抖动/限流一次 → 插件被登出，状态栏"未登录"，离线态缓存 token 全部失效 | `apiClient.test.ts › refresh 失败仅 401 清凭据` 3 例（502/429 凭据保留、401 才清） | B2 审计批次 |
 
 ## 四、如何新增一条档案
 
@@ -65,17 +65,17 @@
 判据：只有当"这类错误再次发生时，门禁必然变红"才有资格写进本表——
 即守卫位置必须是一条会真实执行的断言（单测/守卫/打包关卡），不能是文档或评审约定。
 
-## #24 R58（2026-09-11）：增量完成口径通知不可达（B2-2 次生缺陷）
+## #24 R58（2026-09-11）：增量完成口径通知不可达（次生缺陷）
 
 - **症状**：增量扫描 COMPLETED 且元数据快照拉取成功时，「CodeAudit 增量扫描完成：…（变更 N·删除 D·继承 M·新发现 K）」通知永不显示（A20.1 完成口径死代码）；仅快照请求抛错走 catch 才会带零值展示。
-- **根因**：B2-2 收尾 TOCTOU 修复引入——`clearTaskUi()` 收尾本任务时置 `progress = null`，紧随其后的二次复查 `progress?.taskId !== taskId` 变恒真早退；复查把"本任务收尾动作的副作用"误判为"用户已切走"。
+- **根因**：收尾 TOCTOU 修复引入——`clearTaskUi()` 收尾本任务时置 `progress = null`，紧随其后的二次复查 `progress?.taskId !== taskId` 变恒真早退；复查把"本任务收尾动作的副作用"误判为"用户已切走"。
 - **修复**：二次复查只查 `taskId !== lastTaskId`（切走=绑定变更，由 lastTaskId 反映；本任务 progress 置空是收尾预期，不再参与归属判定）。catch 分支守卫不经 clearTaskUi，保持原样。
 - **锁定**：`test/doScan-branches.test.ts` 增量终态通知用例（showInformationMessage 含「变更 N · 删除 D · 继承 M · 新发现 K」）。
 
-## #25 B5-1（2026-09-11）：旧 watcher 在途 404/迟到 WS 1011 污染新任务（R58/B2-2 同族漏网）
+## #25 （2026-09-11）：旧 watcher 在途 404/迟到 WS 1011 污染新任务（R58 同族漏网）
 
 - **症状**：任务 A 跟踪中（轮询/WS 在途）切走——`watchTask` 换新任务或 `bindTask` 切绑都会 `close()` 旧 watcher——但 A 的在途快照请求随后以 404 "not found" 返回（旧任务被平台删除），或服务端已发出的 1011 "task not found" close 帧在 close() 后仍送达：新任务 progress 被标 `TASK_STATUS_DEAD`、`scanning` 互斥被误释（运行中的新扫描解锁 → 连击双沙箱消耗）、`codeaudit.taskRunning` 上下文被误清，并误弹「已在平台删除或归档」警告。
-- **根因**：B2-2 只给 terminal 收尾补了归属复查，`onTaskGone` 回调无守卫；且 `taskWatcher.pollOnce` 在 `await taskSnapshot` 返回后不复查 `this.closed`——已关闭的旧 watcher 仍会走 404→onTaskGone 路径；WS onclose 的 "not found" 分支同样不查 closed（close() 不撤销已在途的服务端关闭帧）。
+- **根因**：只给 terminal 收尾补了归属复查，`onTaskGone` 回调无守卫；且 `taskWatcher.pollOnce` 在 `await taskSnapshot` 返回后不复查 `this.closed`——已关闭的旧 watcher 仍会走 404→onTaskGone 路径；WS onclose 的 "not found" 分支同样不查 closed（close() 不撤销已在途的服务端关闭帧）。
 - **修复**：双层守卫——① extension.ts `onTaskGone` 回调头部 `if (taskId !== lastTaskId || (progress && progress.taskId !== taskId)) return;`；② taskWatcher.ts `pollOnce` 在 await 返回后复查 `this.closed`（快照不进 settle、404 不触发 onTaskGone）。
 - **锁定**：`test/extension.test.ts › 旧 watcher 在途 404/迟到的 WS 1011：新任务 progress 不被标 DEAD、互斥不被误释（回归锁 B5-1）`（FetchScript/wsInstances 桩：A 挂起轮询→doScan 换 C→404 释放+手动 1011 close 帧→断言 taskRunning/10% 状态栏/互斥拦截/无"已删除"警告）+ `test/taskWatcher.test.ts › 轮询在途 404 返回前 watcher 已被 close…（回归锁 B5-1）`（单测粒度：closed 后的 404 拒绝不触发 onTaskGone）。
 
@@ -93,16 +93,16 @@
 - **修复**：404 两径分治——taskId===prev.lastTaskId（恢复场景，无旧任务在跟）→ 清指针（原行为）；否则保留旧绑定态原样（内存与持久化指针都不动）+ 警告「未切换绑定」。
 - **锁定**：`extension.test.ts › 切换绑定到已删除任务（snapshot 404）：旧任务绑定保持，旧任务终态收尾不被吞`（404→警告+指针保持→A 的 WS COMPLETED 帧正常收尾）。
 
-## #28（2026-09-12）写盘互斥不完整（B2-6 同族遗留）：回滚与围栏兜底修复绕过 fixing
+## #28（2026-09-12）写盘互斥不完整（同族遗留）：回滚与围栏兜底修复绕过 fixing
 
-- **症状**：B2-6 给 applyMachinePatch 加了 fixing 互斥（理由：多步 await 改盘并发会互相踩 checkpoint/登记），但 ①rollbackRecord（外科/整文件覆盖回滚）②doFixFinding 围栏 diff 兜底路径改盘段 ③doRollback 无登记 restoreLatest 兜底——三处同类改盘完全绕过互斥，可与进行中的修复交叠改盘。
+- **症状**：给 applyMachinePatch 加了 fixing 互斥（理由：多步 await 改盘并发会互相踩 checkpoint/登记），但 ①rollbackRecord（外科/整文件覆盖回滚）②doFixFinding 围栏 diff 兜底路径改盘段 ③doRollback 无登记 restoreLatest 兜底——三处同类改盘完全绕过互斥，可与进行中的修复交叠改盘。
 - **修复**：fixing 语义扩展为工作区写盘互斥，统一覆盖三路（外壳模式：进入检查+置位、finally 复位、进行中拒绝且不改盘不建 checkpoint）。
 - **锁定**：`extension.test.ts › 写盘互斥扩展：修复卡在 fs 落盘时，回滚（rollbackFix/rollbackFixes）与围栏兜底修复均被拒、不改盘` + `› 写盘互斥扩展：无登记兜底回滚（rollbackFixes→restoreLatest）同样被拒`。
 
-## #29（2026-09-12）taskWatcher 双通道收束竞态与 settle 无守卫（B5-1 同族）：terminal/onTaskGone 可双触发
+## #29（2026-09-12）taskWatcher 双通道收束竞态与 settle 无守卫（同族）：terminal/onTaskGone 可双触发
 
 - **症状**：①close() 后仍在途/已缓冲的 WS 终态帧仍会走 settle→二次 emit terminal（上层收尾重跑=完成通知弹两次、findings 重复拉取）；②任务删除时轮询 404 与迟到 WS 1011 close 帧竞态——404 路径只置 closed 不关 socket，1011 分支不复查 closed，onTaskGone 双触发（两次「已删除/归档」警告）。
-- **根因**：B5-1 只修跨任务方向（归属守卫），未防同任务双通道/迟到帧；收束路径（404/1011）不走 close() 统一清理。
+- **根因**：只修跨任务方向（归属守卫），未防同任务双通道/迟到帧；收束路径（404/1011）不走 close() 统一清理。
 - **修复**：settle 入口复查 closed；轮询 404 与 WS 1011 收束统一先 `close()`（关 socket+清定时器）再回调 onTaskGone，1011 分支先复查 closed（先到者收束、后到者拦截）。
 - **锁定**：`taskWatcher.test.ts › WS 在途终态帧在 close 后到达：settle 复查 closed，不二次 emit terminal/snapshot` + `› 轮询 404 与迟到 WS 1011 双通道竞态：onTaskGone 恰一次，404 收束时 socket 被 close`。
 
@@ -130,7 +130,7 @@
 ## #33（2026-09-12）checkpoint 无清理策略：globalStorage 无界增长
 
 - **症状**：每次修复留一份文件快照且口径为「保留不删」，长期使用磁盘占用无上限。
-- **决策**（人类指令 2026-09-12）：同一绝对路径在全部 checkpoint 中的条目上限 100。
+- **决策**：同一绝对路径在全部 checkpoint 中的条目上限 100。
 - **修复**：save 后按文件增量清理（pruneFile）——超限从最旧 cp 移除该文件条目（删内容文件+manifest 去键；manifest 清空则整目录删除）。清理不感知修复登记表：被清理的旧登记按发现回滚走既有「checkpoint 缺失或损坏（文件可能被清理）」诚实降级（100 份窗口足够深）。
 - **锁定**：`checkpoint.test.ts › 每文件快照上限 100：第 101 份起最旧 checkpoint 中该文件条目被移除，同 cp 其他文件保留` + `› 单文件 checkpoint 条目清空后整目录删除`（mutation：去清理调用/上限改 1000 均变红）。
 
@@ -143,7 +143,7 @@
 ## #35（2026-09-12）绑定项目后不自动同步平台已有风险：空面板误导"项目无风险"
 
 - **症状**：绑定平台项目后扫描结果面板为空，直到用户手动扫描或执行「刷新扫描结果」——平台上已有已完成任务的发现（团队协作/此前会话扫过）不可见，空面板会被读成"无风险"。
-- **决策**（人类指令 2026-09-12）：加载/绑定平台项目时自动同步已发现的风险。
+- **决策**：加载/绑定平台项目时自动同步已发现的风险。
 - **修复**：doSelectProject 绑定成功且空闲（无 scanning、无活跃非终态任务——避免撞 bindTask 切换确认门 B2-5）时，自动 latestCompletedTask(projectId)→bindTask（带轻通知「已绑定任务…N 条发现」）；项目无完成任务/拉取失败静默仅日志（不误导"无风险"、不打扰绑定流程）。启动路径既有口径不变（restoreLastTask：lastTaskId 优先，否则登录+绑定项目兜底最近完成任务）。
 - **锁定**：`extension.test.ts › 绑定项目后自动同步：拉取该项目最近完成任务并渲染发现` + `› 项目无完成任务 → 静默零打扰`（mutation：删同步块两用例同红）。
 

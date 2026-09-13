@@ -105,6 +105,11 @@ services:
   # ---- 健康检查升级：base 的占位 true → 真实 TCP 探针（e2e 就绪等待依赖）----
   project:
     container_name: codeaudit-sim-project
+    # R72 契约（engine）：种子 admin 默认关闭防默认凭据登入 ROLE_ADMIN；sim/联调
+    # 经 CODEAUDIT_SEED_ADMIN=true 显式开启（admin/admin ROLE_ADMIN，与 e2e lib.sh
+    # 缺省凭据配套）。overlay map 形态与 base environment 合并，不整体替换。
+    environment:
+      CODEAUDIT_SEED_ADMIN: "true"
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 50052"]
       interval: 5s

@@ -21,8 +21,7 @@ __main__.py ──> api.serve() ──> uvicorn ──> create_app() 的路由
 facade 无状态、懒加载单例（`api.facade` 模块级；测试经 `client_factory` 注入假 SDK）。
 HTTP 层保证：调进 facade 的参数**已经过类型校验**；facade 抛出的异常按 §4 映射。
 七个 async def 端点（create/wait-ready/exec/update-config/services/inference 写操作）
-的南向调用一律 `await run_in_threadpool(facade.xxx, …)`（B3-1 审计修复：同步 gRPC
-裸跑在 event loop 上会阻塞 /healthz 探活与全部并发请求；对齐上传路径既有形态）。
+的南向调用一律 `await run_in_threadpool(facade.xxx, …)`。
 
 | facade 方法 | 输入（HTTP 层校验后保证） | 输出 dict 形态 | 可能异常 |
 |---|---|---|---|
@@ -127,7 +126,7 @@ api 层主动转换：`ValueError`（ParseDict/绝对路径）→ 400；`UploadE
 | `manager_token()` | str（空=免鉴权） | `require_token`、`serve()` 提示语 | tokenFile **不存在**=未配置 → 空（放行维持现状）；**存在但读失败**（EACCES/EIO 等 OSError）→ `TokenFileError`（require_token 503 fail-closed + stderr 日志，B3-2；修复前吞异常当空=读失败瞬间鉴权失效）。文件解析结果 5s 缓存（`_token_cache`；env 分支不缓存直读）——require_token 是 async 依赖，防每请求阻塞磁盘 IO；异常不落缓存，权限恢复即自愈 |
 | `manager_bind()` / `manager_port()` | str / int | `serve()` → uvicorn | port 坏值回落 18800 |
 | `gateway_endpoint()` | str | `GatewayFacade._default_client_factory`、health 投影 | 有内置默认，不失败 |
-| `max_upload_bytes()` | int（缺省 2 GiB；0=不限） | `_handle_upload` 413 判断 | 坏值回落 2 GiB（B3-3：原缺省/回落 0 让防误操作上限形同虚设） |
+| `max_upload_bytes()` | int（缺省 2 GiB；0=不限） | `_handle_upload` 413 判断 | 坏值回落 2 GiB（原缺省/回落 0 让防误操作上限形同虚设） |
 | `openshell_lib_path()` | Path | `_ensure_sdk_path` | 找不到 SDK 目录 → RuntimeError（fail-loud） |
 | `validate()` | None / raise | `serve()` 启动前 | 非环回 bind 且无 token → RuntimeError 拒启 |
 

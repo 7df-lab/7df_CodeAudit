@@ -6,29 +6,16 @@ import { useQuery } from '@tanstack/react-query';
 import { Button, Card, Select, Space, Statistic, Table, Tag, Typography } from 'antd';
 import { Link, useNavigate } from 'react-router-dom';
 import { useState } from 'react';
-import { api, getProjects } from '../../api/client';
+import { api, listAllProjects } from '../../api/client';
 import type { PaginationResponse, ScanTask, TaskStage } from '../../api/types';
 import { SCAN_MODE, STAGE_STATUS, STAGE_TYPE, TASK_STATUS, zh } from '../../dict';
+import { MONO_FONT, SEVERITY_COLOR, STAGE_DOT_COLOR, STATUS_COLOR } from '../../dict/tokens';
+import PageHeader from '../../components/PageHeader';
+import { EmptyState, ListSkeleton } from '../../components/states';
 import { isTerminal } from '../../tasks/stateMachine';
-
-const STATUS_COLOR: Record<string, string> = {
-  TASK_STATUS_COMPLETED: 'green',
-  TASK_STATUS_RUNNING: 'blue',
-  TASK_STATUS_FAILED: 'red',
-  TASK_STATUS_DEAD: 'red',
-  TASK_STATUS_TIMEOUT: 'orange',
-  TASK_STATUS_CANCELLED: 'default',
-  TASK_STATUS_PENDING: 'gold',
-  TASK_STATUS_QUEUED: 'cyan',
-  TASK_STATUS_CREATED: 'default',
-};
+import { usePageTitle } from '../../hooks/usePageTitle';
 
 // 2026-09-09 对标竞品: Stage 进度点（行内迷你阶段进度，悬停看阶段名与状态）
-const STAGE_DOT_COLOR: Record<string, string> = {
-  STAGE_STATUS_COMPLETED: '#52c41a',
-  STAGE_STATUS_RUNNING: '#1677ff',
-  STAGE_STATUS_FAILED: '#ff4d4f',
-};
 
 function StageDots({ stages }: { stages: TaskStage[] | undefined }) {
   if (!stages?.length) return <Typography.Text type="secondary">—</Typography.Text>;
@@ -50,7 +37,7 @@ function StageDots({ stages }: { stages: TaskStage[] | undefined }) {
 
 // 2026-09-09 对标竞品"漏洞数量"列: 每任务发现数（总数 + 高危及以上彩签）。
 // 行级懒加载查询（每页 ≤20 个、staleTime 缓存；发现按任务隔离查询是现有契约面）。
-// B4-3（审计修复）：带 pagination:{page_size:100}（契约形状分页缺省会命中服务端极小缺省页，
+// （审计修复）：带 pagination:{page_size:100}（契约形状分页缺省会命中服务端极小缺省页，
 // >缺省条数任务发现数被截成缺省值）；计数优先消费 pagination.total（服务端权威总数），
 // 缺失回退已加载行数（历史载荷兼容）。
 function FindingCountCell({ taskId }: { taskId: string }) {
@@ -73,12 +60,13 @@ function FindingCountCell({ taskId }: { taskId: string }) {
   return (
     <Space size={4} style={{ whiteSpace: 'nowrap' }}>
       <span>总 {total}</span>
-      {high > 0 && <Tag color="red" style={{ marginRight: 0 }}>高危 {high}</Tag>}
+      {high > 0 && <Tag color={SEVERITY_COLOR['SEVERITY_CRITICAL']} style={{ marginRight: 0 }}>高危 {high}</Tag>}
     </Space>
   );
 }
 
 export default function TasksPage() {
+  usePageTitle('任务');
   const navigate = useNavigate();
   // ADR-160: 项目/模式筛选；ADR-164: 服务端游标翻页（offset 游标+total），改筛选回第一页
   const [projectFilter, setProjectFilter] = useState<string>('');
@@ -88,14 +76,15 @@ export default function TasksPage() {
 
   const { data: projects } = useQuery({
     queryKey: ['projects'],
-    queryFn: () => getProjects(),
+    queryFn: async () => ({ projects: await listAllProjects() }), // B5-P2-7: 全量翻页（下拉只拿 20 条→旧项目不可达）
   });
   // 2026-09-09 用户指令"任务页应显示项目名称而不是项目ID"：task_id→项目名索引。
-  // 独立 key（不与筛选下拉的 ['projects'] 混用 queryFn 形状）；page_size 拉大提升覆盖，
-  // 索引未命中的项目（超出首页范围）如实回落显示 ID。
+  // 独立 key 语义：['projects-index'] 带 60s staleTime（索引可缓存），['projects'] 恒新鲜
+  // （筛选下拉用）——B5-P2-7 后两侧 queryFn 形状相同，但新鲜度语义不同，不合并；
+  // 索引未命中的项目（listAllProjects 10 页上限外）如实回落显示 ID。
   const { data: projectsIndex } = useQuery({
     queryKey: ['projects-index'],
-    queryFn: () => getProjects({ page_size: 200 }),
+    queryFn: async () => ({ projects: await listAllProjects() }), // B5-P2-7: 全量翻页（200 被服务端钳 100）
     staleTime: 60_000,
   });
   const projectName = (pid: string) =>
@@ -119,7 +108,9 @@ export default function TasksPage() {
     },
   });
   const rows = data?.tasks ?? [];
-  const total = data?.pagination?.total ?? 0;
+  // B5-P1-2: 服务端只在还有下页时填 pagination（task_service.go:1107），末页该字段为 null——
+  // 旧 `?? 0` 塌成 0 → antd 本地切片把末页切空+分页器塌缩。缺省时按页位推导真总数兜底。
+  const total = data?.pagination?.total ?? (page - 1) * PAGE_SIZE + rows.length;
 
   // 报告索引（ADR-142 对称列真实性）：task_id → 报告数。一次拉取，避免逐任务查询。
   const { data: reportIndex } = useQuery({
@@ -154,7 +145,7 @@ export default function TasksPage() {
       title: '任务', dataIndex: 'task_id',
       render: (v: string, rec: ScanTask) => (
         <div>
-          <Link to={`/tasks/${v}`} title={v}>#{v.slice(-6)}</Link>
+          <Link to={`/tasks/${v}`} title={v} style={{ fontFamily: MONO_FONT }}>#{v.slice(-6)}</Link>
           {rec.created_at && (
             <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
               创建于 {dayjs(rec.created_at).format('MM-DD HH:mm')}
@@ -177,7 +168,7 @@ export default function TasksPage() {
       title: '发现', dataIndex: 'task_id', width: 110,
       render: (v: string) => <FindingCountCell taskId={v} />,
     },
-    { title: '模式', dataIndex: 'scan_mode', width: 90, render: (s: string) => <Tag>{zh(SCAN_MODE, s)}</Tag> },
+    { title: '模式', dataIndex: 'scan_mode', width: 132, render: (s: string) => <Tag style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }} title={zh(SCAN_MODE, s)}>{zh(SCAN_MODE, s)}</Tag> },
     { title: '状态', dataIndex: 'status', width: 90, render: (s: string) => <Tag color={STATUS_COLOR[s]}>{zh(TASK_STATUS, s)}</Tag> },
     { title: '更新时间', dataIndex: 'updated_at', width: 150, render: (v: string | null) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '—') },
     {
@@ -192,12 +183,14 @@ export default function TasksPage() {
 
   return (
     <div>
+      {/*  页首置顶（此前统计卡带在标题之上，"任务"大标题出现在首屏中部） */}
+      <PageHeader title="任务" extra={<Button type="primary" onClick={() => navigate('/tasks/new')}>新建任务</Button>} />
       {/* 2026-09-09 对标竞品统计卡带: 任务域概览（数值来自近 200 条一次性聚合） */}
       <Card size="small" style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-around', flexWrap: 'wrap', gap: 8 }}>
           <Statistic title="任务总数" value={(tasksStats?.tasks ?? []).length} />
           <Statistic title="已完成" value={stat((t) => t.status === 'TASK_STATUS_COMPLETED')} valueStyle={{ color: '#52c41a' }} />
-          <Statistic title="进行中" value={stat((t) => !isTerminal(t.status))} valueStyle={{ color: '#1677ff' }} />
+          <Statistic title="进行中" value={stat((t) => !isTerminal(t.status))} valueStyle={{ color: '#3056D3' }} />
           <Statistic title="失败" value={stat((t) => t.status === 'TASK_STATUS_FAILED' || t.status === 'TASK_STATUS_DEAD')} valueStyle={{ color: '#ff4d4f' }} />
           <Statistic title="已完成占比" value={(() => {
             const all = tasksStats?.tasks ?? [];
@@ -207,10 +200,6 @@ export default function TasksPage() {
           })()} />
         </div>
       </Card>
-      <Space style={{ marginBottom: 12, justifyContent: 'space-between', width: '100%' }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>任务</Typography.Title>
-        <Button type="primary" onClick={() => navigate('/tasks/new')}>新建任务</Button>
-      </Space>
       {/* ADR-160: 项目/模式筛选（服务端过滤；后端未实现的字段会诚实报 400，不静默忽略） */}
       <Space style={{ marginBottom: 12 }} wrap>
         <Typography.Text type="secondary">筛选：</Typography.Text>
@@ -229,20 +218,24 @@ export default function TasksPage() {
             .map(([value, label]) => ({ value, label }))}
         />
       </Space>
-      <Table
-        rowKey="task_id"
-        loading={isLoading}
-        dataSource={rows}
-        columns={columns}
-        pagination={{
-          current: page,
-          pageSize: PAGE_SIZE,
-          total,
-          onChange: (p) => setPage(p),
-          showSizeChanger: false,
-        }}
-        locale={{ emptyText: '暂无任务——点右上角"新建任务"' }}
-      />
+      {isLoading && rows.length === 0 ? (
+        <Card><ListSkeleton /></Card>
+      ) : (
+        <Table
+          rowKey="task_id"
+          loading={isLoading}
+          dataSource={rows}
+          columns={columns}
+          pagination={{
+            current: page,
+            pageSize: PAGE_SIZE,
+            total,
+            onChange: (p) => setPage(p),
+            showSizeChanger: false,
+          }}
+          locale={{ emptyText: <EmptyState description='暂无任务——点右上角"新建任务"创建' /> }}
+        />
+      )}
       {rows.length > 0 && !isTerminal(rows[0].status) && (
         <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
           进行中的任务在详情页自动刷新进度（10s）

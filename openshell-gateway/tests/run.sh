@@ -415,10 +415,14 @@ sec_c() {
   RC=$?
   t "T-C5a JWT 缺失时 ensure 仍走通（自举）"          test $RC -eq 0
   t "T-C5b 触发一次性 generate-certs"                 grep -qF 'generate-certs' "$STUB_LOG"
-  # B2-3 后 output-dir 随 JWT_DIR 推导（本用例 JWT_DIR=$CASE_DIR/jwt）
-  t "T-C5c generate-certs 参数指向 bind 内目录+正确 SAN" \
-    grep -qF -- "--output-dir $CASE_DIR/jwt" "$STUB_LOG" \
+  # 后 output-dir 随 JWT_DIR 推导（本用例 JWT_DIR=$CASE_DIR/jwt）；
+  # （dind 五战实测）：generate-certs 以 output-dir 为 PKI 根自建 jwt/ 子目录，
+  # 故根=JWT_DIR 父目录，产物才是 $JWT_DIR/signing.pem（传 JWT_DIR 本身=嵌套 jwt/jwt/）
+  t "T-C5c generate-certs 参数指向 PKI 根（JWT_DIR 父目录）+正确 SAN" \
+    grep -qF -- "--output-dir $CASE_DIR " "$STUB_LOG" \
     -a grep -qF -- '--server-san host.openshell.internal' "$STUB_LOG"
+  t "T-C5c-2 output-dir 不得指向 JWT_DIR 本身（certgen 会嵌套 jwt/jwt/）" \
+    bash -c "! grep -qF -- '--output-dir $CASE_DIR/jwt' '$STUB_LOG'"
   : > "$STUB_LOG"
   touch "$CASE_DIR/jwt/signing.pem"
   ( cd "$ROOT" && REMOTE='' DEPLOY_DIR="$CASE_DIR/deploy" JWT_DIR="$CASE_DIR/jwt" \
@@ -548,7 +552,7 @@ sec_d() {
 
 # =============================================================================
 # E deploy.sh 行为级（REMOTE='' 本机契约 + 差量→bak→push→ensure 时序）
-#   B1-5 起 push 仅限 REMOTE 非空（远程模式）；REMOTE='' 断言绝不调 pct
+#   起 push 仅限 REMOTE 非空（远程模式）；REMOTE='' 断言绝不调 pct
 # =============================================================================
 
 sec_e() {
@@ -570,14 +574,14 @@ sec_e() {
   t "T-E1b 无文件被推"                                bash -c "! grep -q pushed '$WORK/out'"
 
   # 漂移：远端副本（fixture）被改 → check 报告不改 → REMOTE='' 本机模式
-  # （B1-5 契约）：pct push 属远程动作必须跳过，ensure 收尾就地治愈路由域
+  # （契约）：pct push 属远程动作必须跳过，ensure 收尾就地治愈路由域
   sed -i 's/sandbox\.codeaudit\.internal/old.example/' "$CASE_DIR/deploy/gateway.toml"
   ( cd "$ROOT" && REMOTE='' VMID='' DEPLOY_DIR="$CASE_DIR/deploy" JWT_DIR="$CASE_DIR/jwt" \
     PATH="$STUBS:$PATH" bash "$DEPLOY_SH" check ) >"$WORK/out" 2>&1
   RC=$?
-  # B2-2（2026-09-11 审计）：漂移必须 exit 1——伞仓 sandbox-deploy check 按退出码聚合，
+  # 漂移必须 exit 1——伞仓 sandbox-deploy check 按退出码聚合，
   # 恒 0 令 CD↔LXC 漂移在门禁静默通过（原"漂移≠失败"口径与上游门禁语义冲突，按审计修正）
-  t "T-E2a check 报 drift 且 exit 1（漂移=门禁失败，B2-2）" \
+  t "T-E2a check 报 drift 且 exit 1（漂移=门禁失败）" \
     test $RC -eq 1 -a "$(grep -cF 'drift: gateway.toml' "$WORK/out")" = 1
   : > "$STUB_LOG"
   ( cd "$ROOT" && REMOTE='' VMID='' DEPLOY_DIR="$CASE_DIR/deploy" JWT_DIR="$CASE_DIR/jwt" \
@@ -593,14 +597,17 @@ sec_e() {
   t "T-E2e ensure 收尾就地治愈路由域（事实源=仓内目录）" \
     grep -qF 'server_sans = ["*.sandbox.codeaudit.internal"]' "$CASE_DIR/deploy/gateway.toml"
 
-  # B2-3（2026-09-11 审计）：JWT_DIR 覆盖时 generate-certs 的 mount/output 必须由
-  # $JWT_DIR 推导——原硬编码 /var/lib/openshell 令密钥落不到检查路径（每轮重复生成）
+  # JWT_DIR 覆盖时 generate-certs 的 mount/output 必须由
+  # $JWT_DIR 推导——原硬编码 /var/lib/openshell 令密钥落不到检查路径（每轮重复生成）；
+  # output-dir=PKI 根（JWT_DIR 父目录），certgen 自建 jwt/ 子目录落 signing.pem
   rm -f "$CASE_DIR/jwt/signing.pem"
   : > "$STUB_LOG"
   ( cd "$ROOT" && REMOTE='' VMID='' DEPLOY_DIR="$CASE_DIR/deploy" JWT_DIR="$CASE_DIR/jwt"     LIVENESS_HOST=127.0.0.1 LIVENESS_PORT=$LIVENESS_PORT LIVENESS_TIMEOUT_SECS=10     PATH="$STUBS:$PATH" bash "$DEPLOY_SH" deploy ) >"$WORK/out" 2>&1
-  t "T-E2f generate-certs 的 --output-dir 随 JWT_DIR 推导（B2-3）" \
-    grep -qF -- "--output-dir $CASE_DIR/jwt" "$STUB_LOG"
-  t "T-E2g generate-certs 的 mount 随 JWT 父目录推导（B2-3）" \
+  t "T-E2f generate-certs 的 --output-dir=PKI 根随 JWT_DIR 父目录推导" \
+    grep -qF -- "--output-dir $CASE_DIR " "$STUB_LOG"
+  t "T-E2f-2 output-dir 不得指向 JWT_DIR 本身（嵌套 jwt/jwt/ 曾致网关 crash loop）" \
+    bash -c "! grep -qF -- '--output-dir $CASE_DIR/jwt' '$STUB_LOG'"
+  t "T-E2g generate-certs 的 mount 随 JWT 父目录推导" \
     grep -qF -- "-v $CASE_DIR:$CASE_DIR" "$STUB_LOG"
 
   ( cd "$ROOT" && REMOTE='' bash "$DEPLOY_SH" nonsense ) >/dev/null 2>&1

@@ -13,8 +13,9 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # 上传代码压缩包 ≤100MB（gateway UploadArchive 上限 100MB + multipart 开销余量）
-    client_max_body_size 100m;
+    # 上传代码压缩包 ≤100MB（gateway UploadArchive 上限 100MB；B5: 101m=100MB 正文 +
+    # multipart 编码开销真余量——旧 100m 与正文上限精确相等，恰好 100MiB 的合法文件被 413 先拦）
+    client_max_body_size 101m;
 
     # gzip：antd/react 产物体积大头是 JS，压缩比显著
     gzip on;

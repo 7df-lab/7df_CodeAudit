@@ -4,6 +4,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionProvider, useSession } from '../auth/session';
 import { TOKEN_KEY, clearSession } from '../api/client';
+import { queryClient } from '../api/queryClient';
 import { httpError, useFakeGateway, type HandlerCtx } from '../testsupport/fakeGateway';
 
 type SessionApi = ReturnType<typeof useSession>;
@@ -99,6 +100,20 @@ describe('I-34 logout（E-04：必须携带 access_token；服务端失败也清
     await waitFor(() => expect(screen.getByTestId('who').textContent).toBe('anon'));
     expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
     routes['POST /v1/auth/logout'] = {};
+  });
+
+  // B5-P2-6（web-audit-2026-09-12）：登出必须清 TanStack 缓存——软登出（SPA 跳 /login，
+  // 非整页刷新）后缓存留存至 gcTime，共享机器上另一账号登录先见到上一账号列表数据。
+  it('B5-P2-6: logout 清空 QueryClient 缓存（跨账号数据不残留）', async () => {
+    const clearSpy = vi.spyOn(queryClient, 'clear');
+    try {
+      await boot();
+      await S!.login('alice', 'pw');
+      await S!.logout();
+      expect(clearSpy).toHaveBeenCalled();
+    } finally {
+      clearSpy.mockRestore();
+    }
   });
 });
 

@@ -9,8 +9,10 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -58,7 +60,12 @@ func (st *pgTaskStore) upsert(t *pb.ScanTask) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	_, err = st.db.Exec(`INSERT INTO tasks (task_id, project_id, status, created_by, payload)
+	// R77: persistTaskLocked 调用方持全局写锁——无超时 Exec 在 PG 抖动时会冻结
+	// 创建/列表/快照/流式全任务面（R47 同型，慢源换 PG）。锁内写穿封顶 2s；
+	// 错误仍只记日志不反噬任务流（R-31 语义不变）。
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = st.db.ExecContext(ctx, `INSERT INTO tasks (task_id, project_id, status, created_by, payload)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (task_id) DO UPDATE
 		SET status = EXCLUDED.status, payload = EXCLUDED.payload, updated_at = now()`,

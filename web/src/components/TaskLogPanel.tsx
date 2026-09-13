@@ -4,16 +4,18 @@
 import { Button, Card, Segmented, Tag, Tooltip, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import type { TaskLogEntry } from '../api/types';
+import { EVIDENCE } from '../theme/evidence';
+import { MONO_FONT } from '../dict/tokens';
 
-// B4-3（审计修复）：执行日志客户端保尾上限——任务详情页吸收快照时只保留最新 1000 条
+// （审计修复）：执行日志客户端保尾上限——任务详情页吸收快照时只保留最新 1000 条
 // （超长任务无界累积会拖垮标签页）。此常量由 TaskDetailPage 消费，提示文案在此渲染。
 // 完整内容下载入口延后（服务端无日志全量导出端点），顶部如实提示截断。
 export const MAX_LOG_ROWS = 1000;
 
 const LEVEL_COLOR: Record<string, string> = {
-  TASK_LOG_LEVEL_INFO: '#8b949e',
-  TASK_LOG_LEVEL_WARN: '#d29922',
-  TASK_LOG_LEVEL_ERROR: '#f85149',
+  TASK_LOG_LEVEL_INFO: EVIDENCE.textMuted,
+  TASK_LOG_LEVEL_WARN: EVIDENCE.warn,
+  TASK_LOG_LEVEL_ERROR: EVIDENCE.error,
 };
 const LEVEL_ZH: Record<string, string> = {
   TASK_LOG_LEVEL_INFO: 'INFO',
@@ -110,9 +112,9 @@ export default function TaskLogPanel(
         ref={boxRef}
         onScroll={onScroll}
         style={{
-          background: '#0d1117',
-          color: '#c9d1d9',
-          fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace',
+          background: EVIDENCE.bg,
+          color: EVIDENCE.text,
+          fontFamily: MONO_FONT,
           fontSize: 12,
           lineHeight: '20px',
           padding: '12px 16px',
@@ -124,17 +126,17 @@ export default function TaskLogPanel(
         data-testid="task-log-box"
       >
         {logs.length === 0 ? (
-          <span style={{ fontSize: 12, color: '#8b949e' }}>
+          <span style={{ fontSize: 12, color: EVIDENCE.textMuted }}>
             暂无执行日志——任务启动后，流水线事件（沙箱创建/就绪/DSH 执行/降级链决策）将在此实时出现。
           </span>
         ) : (
           shown.map((e) => (
             <div key={e.log_id}>
-              <span style={{ color: '#8b949e' }}>[{hhmmss(e.ts_ms)}]</span>{' '}
-              <span style={{ color: LEVEL_COLOR[e.level] ?? '#8b949e', fontWeight: 600 }}>
+              <span style={{ color: EVIDENCE.textMuted }}>[{hhmmss(e.ts_ms)}]</span>{' '}
+              <span style={{ color: LEVEL_COLOR[e.level] ?? EVIDENCE.textMuted, fontWeight: 600 }}>
                 {LEVEL_ZH[e.level] ?? e.level}
               </span>{' '}
-              <span style={{ color: '#58a6ff' }}>[{e.source}]</span> {e.message}
+              <span style={{ color: EVIDENCE.link }}>[{e.source}]</span> {e.message}
             </div>
           ))
         )}

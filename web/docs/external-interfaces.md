@@ -48,7 +48,7 @@
 
 | ID | 端点 | 预期输入 | 预期输出（200） | 错误语义 | 锚点 |
 |----|------|----------|----------------|----------|------|
-| E-11 | `POST /v1/uploads/archive` | **multipart/form-data**，字段名 `file`（File 对象）；timeout 300s（B4-3：120s→300s，慢速上行大包与 nginx 反代窗对齐）；≤100MB（zip/tar.gz；前端 file.size 预检，超限本地拒绝不发请求）；nginx `client_max_body_size 100m` | `{upload_id, file_id, file_path, size_bytes}`——`file_id` 是唯一下游消费字段（→ 项目 config.upload_file_id；**任务级 config.upload_file_id 档随 2026-09-09 人类指令退役**——项目层级决定源码；网关零落盘转 storage，ADR-200。storage 对象键不含原始文件名，故项目创建时把 `file.name` 落 config.upload_file_name 供展示） | 4xx/5xx → 上传失败文案（「上传失败（仅支持 zip/tar.gz，≤100MB）」/「上传失败：<详情>」）；**响应形状变更必须显式修 file_id 消费链**（ADR-200 改形状无一测试报红的历史教训 → 本契约行即锚） | clientContract.test.ts「uploadArchive…」；ProjectsPage.test.tsx |
+| E-11 | `POST /v1/uploads/archive` | **multipart/form-data**，字段名 `file`（File 对象）；timeout 300s（120s→300s，慢速上行大包与 nginx 反代窗对齐）；≤100MB（zip/tar.gz；前端 file.size 预检，超限本地拒绝不发请求）；nginx `client_max_body_size 100m` | `{upload_id, file_id, file_path, size_bytes}`——`file_id` 是唯一下游消费字段（→ 项目 config.upload_file_id；**任务级 config.upload_file_id 档已退役**——项目层级决定源码；网关零落盘转 storage，ADR-200。storage 对象键不含原始文件名，故项目创建时把 `file.name` 落 config.upload_file_name 供展示） | 4xx/5xx → 上传失败文案（「上传失败（仅支持 zip/tar.gz，≤100MB）」/「上传失败：<详情>」）；**响应形状变更必须显式修 file_id 消费链**（ADR-200 改形状无一测试报红的历史教训 → 本契约行即锚） | clientContract.test.ts「uploadArchive…」；ProjectsPage.test.tsx |
 
 ### 1.4 项目
 
@@ -65,8 +65,8 @@
 
 | ID | 端点 | 预期输入 | 预期输出（200） | 错误语义 | 锚点 |
 |----|------|----------|----------------|----------|------|
-| E-18 | `GET /v1/tasks` | query：`pagination={page_size:20, cursor:"(page-1)*20"}`；`project_id`（ADR-160 服务端过滤）；`filter={"conditions":[{field:"scan_mode",operator:"FILTER_OPERATOR_EQ",value:<mode>}]}`（契约 L1108-1112 形状；**服务端未实现的过滤字段会诚实报 400**） | `{tasks: ScanTask[], pagination: {next_cursor, has_next, total}}` | — | TasksPagePaging.test.tsx（cursor/filter 形状锚定）；ProjectDetailPage.test.tsx（project_id 过滤守卫） |
-| E-19 | `POST /v1/tasks` | JSON `{project_id, scan_mode, sast_tools: string[], config: Record<string,string>}`。config 键域：`review_depth` / `assess_severity`、`verify_location`、`generate_suggestions`（"true"/"false" 字符串，仅旧模式D）。**源码键（`upload_file_id`/`project_path`）不再由向导写入**——2026-09-09 人类指令"项目层级决定源代码仓库"，源码由项目 config/repo_url 在启动时解析（后端键域兼容保留，历史任务不受影响） | `{task_id}` | 创建失败必须 message.error（ADR-154：此前静默无反馈） | TaskNewPage.test.tsx（config 无任务级源码键锁） |
+| E-18 | `GET /v1/tasks` | query：`pagination={page_size:20, cursor:"(page-1)*20"}`；`project_id`（ADR-160 服务端过滤）；`filter={"conditions":[{field:"scan_mode",operator:"FILTER_OPERATOR_EQ",value:<mode>}]}`（契约 L1108-1112 形状；**服务端未实现的过滤字段会诚实报 400**） | `{tasks: ScanTask[], pagination: {next_cursor, has_next, total}}` | — | ReportsTasksPaging.test.tsx（TasksPage 游标前进+project_id/filter.conditions 形状锚定）；TasksPage.test.tsx（B5-P1-2 末页分页行为）；ProjectDetailPage.test.tsx（project_id 过滤守卫）；ProjectDetailPage.test.tsx（project_id 过滤守卫） |
+| E-19 | `POST /v1/tasks` | JSON `{project_id, scan_mode, sast_tools: string[], config: Record<string,string>}`。config 键域：`review_depth` / `assess_severity`、`verify_location`、`generate_suggestions`（"true"/"false" 字符串，仅旧模式D）。**源码键（`upload_file_id`/`project_path`）不再由向导写入**——2026-09-09 源码由项目 config/repo_url 在启动时解析（后端键域兼容保留，历史任务不受影响） | `{task_id}` | 创建失败必须 message.error（ADR-154：此前静默无反馈） | TaskNewPage.test.tsx（config 无任务级源码键锁） |
 | E-20 | `GET /v1/tasks/:id/snapshot` | query：`logs_after=<log_id>`（增量游标）、`ai_cursor=<int>`（字节游标；均首省） | `TaskSnapshot{task: ScanTask, progress?, logs?: {logs: TaskLogEntry[]}, ai?: {chunk(b64), next_cursor, complete, total_bytes}}`（ADR-170 聚合单口；**响应须被幂等吸收：客户端按 log_id 去重、AI 游标单调**） | 404=任务不存在/已被清除（内存存储重启语义，ADR-147 专页）；其他=「加载失败（<status>）」+重试 | TaskDetailSnapshot.test.tsx（增量吸收/404/500 三分支） |
 | E-21 | `POST /v1/tasks/:id/{start,cancel,retry,pause,resume}` | 空 body `{}` | `{}`；服务端状态机为转换权威，非法转换 FailedPrecondition → 「操作被拒绝：<msg>」 | 前端按钮可见性=展示镜像（stateMachine.ts ALLOWED_ACTIONS），不预校验放行 | TaskDetailSnapshot.test.tsx「RUNNING 动作…」；stateMachine.test.ts |
 | E-22 | `POST /v1/tasks/:id/report` | 空 JSON `{}` | `{report_id}`；成功后必须失效 `['task-reports', taskId]`（否则摘要卡片显示旧报告——2026-09-06 六缺陷之一） | — | TaskDetailPage.test.tsx「重新生成报告…」 |
@@ -85,8 +85,8 @@
 
 | ID | 端点 | 预期输入 | 预期输出（200） | 错误语义 | 锚点 |
 |----|------|----------|----------------|----------|------|
-| E-28 | `GET /v1/reports` | query：`task_id?`（任务↔报告双向导航过滤）、`pagination={page_size, cursor}`（**lastID 不透明游标，仅可顺序前进**；无 total 语义） | `{reports: ReportRow[], pagination?: {next_cursor?, has_next?}}`（ReportRow.format 为 protojson **数值**枚举：1=PDF/2=HTML/3=JSON/4=CSV/0=历史未记录） | — | ReportsTasksPaging.test.tsx（游标前进+task 过滤）；pages2.test.tsx（格式映射） |
-| E-29 | `GET /v1/reports/:id/download` | 路径参数；两种消费形态：①`responseType:'text'` + 关闭 JSON transform（getReportContent，内联摘要）②`responseType:'blob'`（下载/在线查看） | 报告正文：JSON 文本或 HTML 文本（`<` 前缀嗅探分型）；下载文件名 **`<report_id>.<reportFileExt(format)>`**（0/未知兜底 json——此前恒 `.bin`，2026-09-06 修复） | 下载失败 → message.error；不可下载时引导「重新生成」 | clientContract.test.ts「getReportContent…」；dict.test.ts（扩展名映射） |
+| E-28 | `GET /v1/reports` | query：`task_id?`（任务↔报告双向导航过滤）、`pagination={page_size, cursor}`（**lastID 不透明游标，仅可顺序前进**；无 total 语义） | `{reports: ReportRow[], pagination?: {next_cursor?, has_next?}}`（ReportRow.format 为 protojson **枚举名字符串** `REPORT_FORMAT_*`，同 E-00c；`REPORT_FORMAT_UNSPECIFIED`=历史未记录。B5-P1-1 实证：旧"数值枚举"记载与网关实现矛盾——transcode protojson 未开 UseEnumNumbers，实发枚举名，数字键控字典恒 miss → 格式列恒"—"/下载恒 .json） | — | ReportsTasksPaging.test.tsx（游标前进+task 过滤）；pages2.test.tsx（格式映射） |
+| E-29 | `GET /v1/reports/:id/download` | 路径参数；两种消费形态：①`responseType:'text'` + 关闭 JSON transform（getReportContent，内联摘要）②`responseType:'blob'`（下载/在线查看） | 报告正文：JSON 文本或 HTML 文本（`<` 前缀嗅探分型）；下载文件名 **`<report_id>.<reportFileExt(format)>`**（UNSPECIFIED/未知兜底 json——此前恒 `.bin`，2026-09-06 修复；B5-P1-1 后按枚举名键控） | 下载失败 → message.error；不可下载时引导「重新生成」 | clientContract.test.ts「getReportContent…」；dict.test.ts（扩展名映射） |
 
 ### 1.8 通知 / 工具 / 对比
 

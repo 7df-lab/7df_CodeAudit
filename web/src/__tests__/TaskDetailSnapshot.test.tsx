@@ -106,6 +106,31 @@ describe('E-20/I-90 快照增量吸收（轮询与 WS 共用路径，P-06）', (
   });
 });
 
+// (P3-b)：AI 增量按任意字节偏移切块（服务端 256KB maxBytes 截断），多字节 UTF-8
+// 字符可跨块边界——每帧独立 TextDecoder 会把残余字节解成 U+FFFD 乱码并随 aiText
+// 持久化（下载完整日志亦带出）。流式解码（stream:true）必须把残余字节留待下一帧。
+describe('B5: AI 文本流式解码（多字节跨块边界）', () => {
+  const b64b = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
+  it('「中」字被切成两帧：拼接后无 U+FFFD', async () => {
+    const full = new TextEncoder().encode('缺陷中');
+    const cut = 7; // '缺陷'=6 字节 + '中' 首字节 → 边界落在 '中' 中间
+    let call = 0;
+    snapHandler = () => {
+      call += 1;
+      if (call === 1) {
+        return snap({ ai: { chunk: b64b(full.slice(0, cut)), next_cursor: String(cut), complete: false, total_bytes: String(full.length) } });
+      }
+      return snap({ ai: { chunk: b64b(full.slice(cut)), next_cursor: String(full.length), complete: true, total_bytes: String(full.length) } });
+    };
+    const { qc } = renderDetail();
+    await waitFor(() => expect(screen.getByTestId('ai-interaction-log-box').textContent).toContain('缺陷'));
+    await act(() => qc.refetchQueries({ queryKey: ['task-snapshot', 't-9'] }));
+    const aiBox = screen.getByTestId('ai-interaction-log-box');
+    expect(aiBox.textContent).toContain('缺陷中');
+    expect(aiBox.textContent).not.toContain('\uFFFD');
+  });
+});
+
 describe('E-21/I-44 动作分发（I-40 状态机镜像→端点）', () => {
   it('RUNNING → 暂停/取消可见（无启动/人工重试）；点取消 → POST /v1/tasks/t-9/cancel', async () => {
     renderDetail();
@@ -156,7 +181,7 @@ describe('E-23 WS 帧路径（250ms 聚合推帧与轮询同构吸收；live 徽
   });
 });
 
-// 收束即补拉（gw-d331089f 报障回归锁）：终态帧早于发现落库的异常序列下（长任务被
+// 收束即补拉（报障回归锁）：终态帧早于发现落库的异常序列下（长任务被
 // 对账器误判超时后阶段仍收敛），发现列表以空结果入缓存且不再触发——终态+AI 收束
 // 帧到达时必须失效一次 findings/fusion/review 查询，晚到数据不再需要手动刷新页面。
 describe('收束即补拉（终态+AI 收束 → 失效产出类查询，一次性）', () => {
@@ -181,7 +206,7 @@ describe('收束即补拉（终态+AI 收束 → 失效产出类查询，一次�
   });
 });
 
-// 布局改版回归锁（2026-09-09 人类指令）：右侧固定一页——上卡精简（去掉重试次数/
+// 布局改版回归锁：右侧固定一页——上卡精简（去掉重试次数/
 // 进度/查看报告/重新生成报告）、阶段时间线横排、产出视图固定框内滚动。
 describe('布局改版：上卡精简 + 时间线横排 + 产出框内滚动', () => {
   it('终态页不再出现重试次数/进度/重新生成报告/查看报告；阶段时间线为横排', async () => {

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// ResolveProjectRoot 回归锁（gw-f6a3523 实证）：压缩包顶层壳目录不剥时，
+// ResolveProjectRoot 回归锁（实证）：压缩包顶层壳目录不剥时，
 // fixpatch 校验/source-file 解析/沙箱视角三方根错位——7/7 补丁被误杀、
 // 发现详情源码全文 404。剥壳语义 = "唯一子目录则降入"，封顶 3 层。
 

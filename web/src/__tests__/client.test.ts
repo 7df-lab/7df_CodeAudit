@@ -88,4 +88,26 @@ describe('api client 401 刷新', () => {
       (globalThis as { window?: unknown }).window = undefined;
     }
   });
+
+  // B5-P2-4（web-audit-2026-09-12）：刷新失败分类——5xx/网络抖动 ≠ 凭据失效。
+  // access 30min 过期后周期性刷新必经此路：恰逢后端抖动/网关限流（/v1/auth/* 按 IP 限流，
+  // 共享出口 IP 全员可中招）就把仍有效的 7 天 refresh_token 清掉并踢线是过度误杀
+  // （P-22 同族的第二条误杀通道）。只有 400/401/403/无令牌才清会话。
+  it('B5-P2-4: refresh 503（后端抖动）→ 保会话不跳登录，仅 reject 原始 401', async () => {
+    saveRefreshToken('refresh-1');
+    vi.stubGlobal('fetch', async () => new Response('{"error":"down"}', { status: 503 }));
+    const assign = vi.fn();
+    (globalThis as { window?: unknown }).window = { location: { assign } };
+    try {
+      const err = await api.get('/v1/secure').then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeTruthy(); // 原始 401 照常 reject 交上层（轮询口下轮自愈）
+      expect(store.get('codeaudit.refresh_token')).toBe('refresh-1'); // 会话保留
+      expect(assign).not.toHaveBeenCalled(); // 不踢登录页
+    } finally {
+      (globalThis as { window?: unknown }).window = undefined;
+    }
+  });
 });

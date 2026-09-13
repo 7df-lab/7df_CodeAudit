@@ -18,7 +18,7 @@
 ```bash
 make deploy-sim        # 构建+启动全栈：base compose + sim overlay；等 gateway 健康（上限 420s）+ PG 种子
 make logs-sim gateway  # 确认 gateway 起来（健康由 deploy-sim 自动等，卡住再看日志定位）
-make test-sim          # e2e 九用例（deploy/tests/run.sh）
+make test-sim          # e2e 11 用例（deploy/tests/run.sh）
 ```
 
 - 单用例重跑：`bash deploy/tests/run.sh 08`（08=项目级上传→自动任务全链，GUI 用户
@@ -37,7 +37,7 @@ make test-sim          # e2e 九用例（deploy/tests/run.sh）
 
 ## DoD（完成判据）
 
-- `tests/run.sh` 输出 9 用例全过（07 AI 链路按诚实失败口径过），**原始输出归档**
+- `tests/run.sh` 输出 11 用例全过（07 AI 链路按诚实失败口径过），**原始输出归档**
   `.agent/evidence/sim-e2e-<日期>.log`（本机，不入 git）。
 - 涉及流式链路（WS 推流/前端吸收/AI 日志）的交付：另跑 `deploy/tests/ui_check.py --task <RUNNING任务>`
   （挂载模式对运行中任务采样，进度耦合判据断言面板跟随后端实质产出——终态断言抓不住流式回归；

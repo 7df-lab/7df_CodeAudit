@@ -11,7 +11,7 @@
 // （NormalizeDiffPatch fuzz=0）复验后方可落盘——再生成不豁免校验。
 // 恰好一轮（对齐 Cline 每次失败反馈换一轮自纠；失败两次如实丢弃，finding 保留）。
 //
-// 依据: ADR-183 补遗②（人类指令"参考学习 Cline 的成熟代码逻辑解决问题"）。
+// 依据: ADR-183 补遗②。
 package service
 
 import (

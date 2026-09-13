@@ -17,6 +17,7 @@ docs/                        接口契约与防回归机制文档（AI 会话第
   internal-interfaces.md     内部接口契约：模块间调用面/缓存键失效图/复用关系（[I-nn] 锚点）
   dataflows-other.md         其余数据流：令牌生命周期/WS×轮询/下载流/反代链/构建部署
   regression-guard.md        回归防线总纲：三道防线 + 缺陷模式档案 + 修复工作流
+  design-tokens.md          视觉设计令牌：配色/字体/版式 SSOT 索引（设计整改 2026-09-13）
 scripts/
   guard.sh                   静态守卫（npm run guard）：禁区模式 grep 拦截 + 锚点存在性自检
   mutation-check.sh          变异检验（npm run mutation-check）：证明历史 bug 锁会红
@@ -34,11 +35,11 @@ src/
   dict/index.ts              proto 枚举 → 中文展示映射（扫描模式/状态/严重级/阶段等）
   components/                TaskLogPanel（流水线日志）、AIInteractionLogPanel（AI 交互时间线）、
                              errors（403/404/501/503 统一错误 UX）
-  pages/                     LoginPage、Projects(+Detail)、tasks/（列表/创建/详情）、
+  pages/                     LoginPage、Dashboard（总览首页）、Projects(+Detail)、tasks/（列表/创建/详情）、
                              findings/（列表/详情）、views/（融合/审核/对比）、reports、
                              notifications、admin/Users
   testsupport/fakeGateway.ts 测试台：axios adapter 层伪造网关（详见「测试」）
-  __tests__/                 28 个测试文件（vitest run 入口自动发现）
+  __tests__/                 31 个测试文件（vitest run 入口自动发现）
 ```
 
 ## 本地开发
@@ -46,7 +47,8 @@ src/
 ```bash
 npm ci
 CODEAUDIT_GATEWAY_URL=http://localhost:8080 npm run dev   # /v1 代理到网关（含 WS），缺省 localhost:8080
-npm test                # vitest run（jsdom，84 用例）
+npm run dev:mock        # 无后端视觉走查：挂演示网关（testsupport/demoGateway，设计整改 2026-09-13）
+npm test                # vitest run（jsdom，214+ 用例——随防线递增，以当次门禁输出为准）
 npm run build           # tsc -b 类型门禁 + vite build → dist/
 npm run preview         # 本地预览生产构建（/v1 代理配置与 dev 相同）
 ```
@@ -56,7 +58,7 @@ npm run preview         # 本地预览生产构建（/v1 代理配置与 dev 相
 | 变量 | 用在哪 | 缺省 | 说明 |
 |------|--------|------|------|
 | `CODEAUDIT_GATEWAY_URL` | `npm run dev` / `preview` | `http://localhost:8080` | Vite 代理的网关目标 |
-| `CODEAUDIT_GATEWAY_UPSTREAM` | 容器（nginx） | `host.docker.internal:8080` | nginx 反代上游（容器内可达地址） |
+| `CODEAUDIT_GATEWAY_UPSTREAM` | 容器（nginx） | Dockerfile 内置 `host.docker.internal:8090`（B5 对齐生产事实源；compose 同名变量可覆盖） | nginx 反代上游（容器内可达地址） |
 | `CODEAUDIT_CONSOLE_PORT` | docker compose | `8088` | compose 映射到宿主机的端口 |
 
 伞仓入口：`make test-web`（= 本仓 `npm test`）、`make build-web`（= `npm run build`）。
@@ -66,17 +68,20 @@ npm run preview         # 本地预览生产构建（/v1 代理配置与 dev 相
 | 路由 | 页面 | 要点 |
 |------|------|------|
 | `/login` | 登录 | `POST /v1/auth/login`；未登录访问其余路由自动跳转至此 |
-| `/` | — | 重定向到 `/projects` |
+| `/register` | 注册 | V2.1（ADR-205）：`POST /v1/auth/register`，公开路由（与 /login 同级，Shell 之外）；注册即登录，邀请码制（服务端校验） |
+| `/` | 总览（首页仪表盘） | P4（2026-09-13）：跨项目态势——项目/任务/进行中/完成/失败/报告统计带 + 任务状态分布（Progress 纯组件）+ 最近任务/最近报告/未读通知；数据全部复用既有契约面一次性查询（30s staleTime） |
 | `/projects` | 项目列表 | 服务端翻页；创建项目；上传代码压缩包（zip/tar.gz ≤100MB，multipart 直传 `/v1/uploads/archive`，网关零落盘转 storage，`file_id` 写入项目 `config.upload_file_id`） |
 | `/projects/:id` | 项目详情 | 项目信息 + 源码来源只读展示（上传件或仓库地址）+ 关联任务列表 + 删除 |
 | `/tasks` | 任务列表 | 服务端游标翻页 + 项目/模式筛选 |
-| `/tasks/new` | 任务创建向导 | 五种扫描模式（A 纯SAST / B 纯AI / C SAST+AI融合（推荐）/ D AI增强SAST / E SAST+AI对比；两个旧模式仅历史兼容）；SAST 工具多选；压缩包上传（任务级覆盖）；创建成功自动发起启动（审批流已废除） |
+| `/tasks/new` | 任务创建向导 | 五种扫描模式（A 纯SAST / B 纯AI / C SAST+AI融合（推荐）/ D AI增强SAST / E SAST+AI对比；两个旧模式仅历史兼容）；SAST 工具多选；创建成功自动发起启动（审批流已废除）。任务级压缩包上传已退役（源码归属收口到项目层级） |
 | `/tasks/:id` | 任务详情 | 左右两栏：左=AI 交互日志时间线常驻；右=任务信息/阶段时间线/执行日志/报告摘要/发现 Tabs（按模式出现融合/审核视图）。WebSocket `/v1/tasks/{id}/ws` 在线时服务端 250ms 聚合推帧，断线回退 10s 轮询（终态自停）；动作按钮按状态机可见 |
 | `/tasks/:id/comparison` | 对比视图 | 模式E：SAST/AI 三分桶对比 + 指标脚注 |
 | `/findings/:fid` | 发现详情 | triage 工作台：AI 结论、代码上下文全文（`/v1/tasks/{id}/source-file`）、Source→Sink 链路跳转 |
 | `/reports` | 报告中心 | 报告列表/在线查看/下载；失败报告可重新生成 |
 | `/notifications` | 通知中心 | 当前用户通知 + 标记已读；顶栏菜单挂未读角标（60s 兜底轮询） |
-| `/admin/users` | 用户管理 | V1 口径：按 ID 查询用户与权限（缺省查当前用户）+ 修改该用户状态（启用/停用）；无用户列表/自助注册（待 proto V2.1） |
+| `/change-password` | 修改密码 | V2.1（ADR-205）：首登 `must_change_password` 强改密锁死页 + 顶栏主动改密共用；`POST /v1/users/me/password` |
+| `/admin/users` | 用户管理 | V2.1（ADR-205，admin 门禁）：用户列表（GET /v1/users 游标"加载更多"）+ 搜索/状态过滤 + 管理员建号（POST /v1/users）+ 启用/停用 + 重置密码；非 admin 由路由守卫与页面双重拦截 |
+| `/admin/providers` | 推理 Provider 管理 | ADR-217（admin 门禁）：/v1/inference/* 配置面——provider 增删改/凭据只进不出/推理路由设置 |
 | `*` | 404 | 未知路由显示 404 错误页（不静默重定向） |
 
 发现列表页内嵌于任务详情的发现 Tab；发现详情主体（`FindingDetailBody`）同时被列表行内展开复用。
@@ -101,7 +106,7 @@ npm run preview         # 本地预览生产构建（/v1 代理配置与 dev 相
 
 ## 已知取舍
 
-有意识接受并留档的设计取舍（审计 B3-7 建档；"知道并接受"≠"不知道"）：
+有意识接受并留档的设计取舍（审计 建档；"知道并接受"≠"不知道"）：
 
 - **WS token 走 URL 参数**（`/v1/tasks/{id}/ws?token=…`）：浏览器 WebSocket API 无法自定义
   请求头，`Authorization` 头方案在握手期不可行。接受依据：内网部署边界 + access token 短时
@@ -116,7 +121,7 @@ npm run preview         # 本地预览生产构建（/v1 代理配置与 dev 相
   iframe sandbox 使脚本与同源权限全灭；blob 内容前置 CSP meta（`REPORT_WINDOW_CSP_META`，
   `default-src 'none'; style-src 'unsafe-inline'`）即便 sandbox 通道被降级仍灭脚本。
   样式只能内联生效、无法发起网络请求，残留样式最坏影响布局不影响安全；
-  JSON 分支保持转义 `<pre>` 文本（fix-plan-0911 §14 升级）。
+  JSON 分支保持转义 `<pre>` 文本。
 
 ## 测试
 
@@ -137,8 +142,8 @@ npm run mutation-check  # 变异检验（2-4min，要求干净工作区）：证
 
 三道防线见 `docs/regression-guard.md`：①契约锚定测试（docs 两份接口文档的 [E-nn]/[I-nn]
 锚点 ↔ 用例双向追溯）；②`npm run guard` 静态守卫（整模块 mock / 死契约复活 / 防御锚点
-丢失直接拦截）；③`npm run mutation-check` 变异检验（对 20 类历史缺陷档案中的 12 个要害
-注入等价变异，证明对应测试会红——锁失效即红灯）。缺陷修复工作流：先写红测试 → 修 →
+丢失直接拦截）；③`npm run mutation-check` 变异检验（对 §3 缺陷模式档案中的要害项
+注入等价变异，证明对应测试会红——锁失效即红灯；档案/变异随修复批次递增）。缺陷修复工作流：先写红测试 → 修 →
 建档（§3 缺陷模式档案加行/加固锁）→ 变异验证 → commit 记账。
 
 ## 容器化

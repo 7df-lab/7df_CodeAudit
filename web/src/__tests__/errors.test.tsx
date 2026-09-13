@@ -36,4 +36,14 @@ describe('统一错误组件（14号 §3.5 / ADR-157）', () => {
     fireEvent.click(screen.getByText('关闭并返回项目页'));
     await waitFor(() => expect(screen.queryByText('权限不足')).toBeNull());
   });
+
+  // （P3-l）：overlay 内 ErrorPage 自带「返回项目页」只 navigate 不清 pageCode——
+  // 遮罩不撤，点击无反馈形似按钮失灵；hideAction 后同屏只剩 overlay 出口一个按钮。
+  it('B5: overlay 态只有一个返回出口（ErrorPage hideAction，双按钮不并存）', async () => {
+    render(wrap(<><ApiErrorOverlay /></>));
+    window.dispatchEvent(new CustomEvent(API_ERROR_EVENT, { detail: 403 }));
+    await waitFor(() => expect(screen.getByText('权限不足')).toBeTruthy());
+    expect(screen.getAllByRole('button', { name: /返回项目页/ })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: '关闭并返回项目页' })).toBeTruthy();
+  });
 });

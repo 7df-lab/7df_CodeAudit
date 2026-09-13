@@ -1,4 +1,4 @@
-// 沙箱多轮会话与项目上传（ADR-173，人类指令 2026-09-01）：
+// 沙箱多轮会话与项目上传（ADR-173）：
 //   - 4a VerifySASTResults：整项目代码上传进沙箱磁盘，逐条把"文件/行/CWE/疑点"提交为
 //     独立 prompt 由 DSH 自行阅读源码判定真伪，逐条取回最终结论，全部完成后再销毁沙箱；
 //   - 4b SearchMissedVulns：整项目上传后一次 prompt 要求 DSH 全项目审计并返回发现 JSON。
@@ -44,6 +44,9 @@ func (r *ManagerRunner) RunSession(ctx context.Context, t SessionTask) ([]string
 	if !r.Enabled() {
 		return nil, ErrDisabled
 	}
+	// R76: 整会话上限接线（07 §8:126；原 SessionTask.Timeout 死字段同 Run）
+	ctx, cancel := withDeadline(ctx, t.Timeout)
+	defer cancel()
 	ls, err := r.launch(ctx, t.TaskID)
 	if err != nil {
 		return nil, err
@@ -249,7 +252,7 @@ func isTransientStreamErr(err error) bool {
 //   - ADR-190：idle 只认主会话；主会话 idle 时若存在已死子任务且尚未提交 → 发恢复
 //     指令恰一轮；再 idle 如实收敛（调用方走失败/降级链，绝不循环）；
 //   - ADR-192：主会话推理流瞬态中断（STREAM_CLOSED 等）→ 发继续指令重试 ≤2 轮
-//     （会话历史在，模型重发提交即可；gw-d911757 实证：7 项发现确认完毕、死于
+//     （会话历史在，模型重发提交即可；实证：7 项发现确认完毕、死于
 //     submit_findings 参数流式生成途中，全部作废）；错误回合的收尾 idle 不当收敛。
 func (ls *liveSession) turn(ctx context.Context, prompt string) (string, []ToolCall, error) {
 	if err := ls.sess.prompt(ctx, prompt); err != nil {
@@ -392,7 +395,7 @@ func (r *ManagerRunner) uploadProject(ctx context.Context, ls *liveSession, proj
 	// 路径参数按 README 为沙箱 {id}；manager 各端点 id/name 混用（exec=UUID、services=name），
 	// 名称优先、404 回退 UUID——契约以实测为准。
 	archivePath := "/tmp/am-project.tar.gz"
-	// ADR-174（人类指令 2026-09-01）：manager 接口层收 name、内部自解析 UUID；
+	// ADR-174：manager 接口层收 name、内部自解析 UUID；
 	// 执行器统一以 name+workspace 寻址（与其余沙箱端点一致）。
 	if err := r.uploadFile(ctx, ls.url, ls.token, ls.ref.Name, archivePath, gz); err != nil {
 		return err
@@ -476,7 +479,7 @@ func tarProject(root string) ([]byte, int, error) {
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err
 		}
-		// R62（2026-09-11 审计）：流式拷贝边打边量——原实现 ReadFile 整文件入内存，
+		// R62流式拷贝边打边量——原实现 ReadFile 整文件入内存，
 		// 超限判定在打包完成后才触发（内存已冲高）；现按缓冲区水位即时中止
 		if buf.Len()+int(info.Size()) > maxProjectArchiveBytes {
 			return fmt.Errorf("project tar exceeds %d bytes", maxProjectArchiveBytes)

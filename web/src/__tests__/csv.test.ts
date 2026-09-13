@@ -54,7 +54,7 @@ describe('buildFindingsCsv', () => {
     expect(lines[1]).toContain('未判定');
   });
 
-  // B4-3（审计修复）：CSV 公式注入中和——= / + / - / @ 开头字段前置单引号，
+  // （审计修复）：CSV 公式注入中和——= / + / - / @ 开头字段前置单引号，
   // Excel/LibreOffice/WPS 打开时不按公式求值（=cmd|DDE、@SUM 等执行面）。
   it('B4-3: =/+/-/@ 开头字段前置单引号；正常字段不受影响', () => {
     const csv = buildFindingsCsv([
@@ -77,5 +77,12 @@ describe('buildFindingsCsv', () => {
     const lines = csv.slice(1).split('\r\n');
     // 前置单引号在双引号包裹内侧（Excel 读到 '= 开头即按文本处理）
     expect(lines[1]).toContain('"\'=HYPERLINK(""http://x"", ""y"")"');
+  });
+
+  it('B5: 前导 TAB/CR 公式注入中和（OWASP 清单扩展，=cmd 前置制表符绕过防护）', () => {
+    const csv = buildFindingsCsv([row({ title: '\t=cmd|/C calc' }), row({ title: '\r@SUM(A1)' })]);
+    const lines = csv.slice(1).split('\r\n');
+    expect(lines[1]).toContain("'\t=cmd|/C calc");
+    expect(lines[2]).toContain("'\r@SUM(A1)");
   });
 });

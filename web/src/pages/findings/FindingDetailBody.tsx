@@ -1,24 +1,20 @@
-// 发现详情（14号 §3.3 ④，P0 triage 工作台）：字段全部溯源 proto UnifiedFinding（P4）
+// 发现详情（14号 §3.3 ④，P0 triage 工作台）：字段全部溯源 proto UnifiedFinding
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Card, Descriptions, Input, Select, Space, Spin, Tag, Tooltip, Typography, message } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, getSourceFile } from '../../api/client';
 import type { UnifiedFinding } from '../../api/types';
 import { AI_VERDICT, SEVERITY, zh } from '../../dict';
+import { MONO_FONT, SEVERITY_COLOR, VERDICT_COLOR } from '../../dict/tokens';
+import { EVIDENCE } from '../../theme/evidence';
+import PageHeader from '../../components/PageHeader';
+import { PageLoading } from '../../components/states';
+import EvidenceChain, { type ChainStep } from '../../components/EvidenceChain';
 import { baseName, parseChain } from '../../findings/chainParser';
+import { usePageTitle } from '../../hooks/usePageTitle';
 
 // 上下文窗口（ADR-143）：适配器在扫描时捕获匹配点 ±10 行（真实文件内容）。
 interface CodeContextWindow { start_line: number; end_line: number; lines: string[] }
-
-// ADR-152: 结论配色（判定可见性；单一来源，列表页与详情页共用）
-export const VERDICT_COLOR: Record<string, string> = {
-  AI_VERDICT_TRUE_POSITIVE: 'green',
-  AI_VERDICT_LIKELY_TRUE: 'cyan',
-  AI_VERDICT_FALSE_POSITIVE: 'red',
-  AI_VERDICT_LIKELY_FALSE: 'volcano',
-  AI_VERDICT_NEEDS_MANUAL: 'orange',
-  AI_VERDICT_UNCERTAIN: 'default',
-};
 
 // ADR-144: taint 规则命中标记（rule id 由规则文件 id 派生）
 function isTaintRule(ruleId: string | undefined): boolean {
@@ -145,13 +141,15 @@ function extractCodeContext(rawB64: string | undefined, hintFile?: string, hintL
 
 
 export function FindingDetailBody({ findingId }: { findingId: string }) {
-const qc = useQueryClient();
+  const qc = useQueryClient();
   const [verdict, setVerdict] = useState<string>('AI_VERDICT_TRUE_POSITIVE');
   const [reasoning, setReasoning] = useState('');
   // ADR-195: 链路点选态——path 为原文写法（裸文件名/截断路径，服务端 source-file 回退解析）
   const [selHop, setSelHop] = useState<{ path: string; line?: number; endLine?: number } | null>(null);
 
-  const { data: resp } = useQuery({
+  // (P3-k)：主查询失败显性化——data 空涵盖"加载中/出错/不存在"，旧实现只认加载态，
+  // 404/网络失败时永远停在"加载中…"（深链场景直达此页）
+  const { data: resp, isError: findingError, error: findingErr, refetch: refetchFinding } = useQuery({
     queryKey: ['finding', findingId],
     queryFn: async () => (await api.get(`/v1/findings/${findingId}`)).data as { finding: UnifiedFinding },
   });
@@ -197,7 +195,7 @@ const qc = useQueryClient();
       // ADR-152 补充：同步失效发现列表缓存——否则外层行标签停留在"未判定"
       qc.invalidateQueries({ queryKey: ['findings'] });
       qc.invalidateQueries({ queryKey: ['finding', findingId] });
-      // B4-3（审计修复）：本组件还内嵌于 ReviewView 行展开（I-A0），且任务详情 Tabs 的
+      // （审计修复）：本组件还内嵌于 ReviewView 行展开（I-A0），且任务详情 Tabs 的
       // 融合/审核视图读 ai_verdict——裁决成功联动前缀失效，切 Tab/展开不再停留旧结论。
       qc.invalidateQueries({ queryKey: ['fusion-findings'] });
       qc.invalidateQueries({ queryKey: ['review-findings'] });
@@ -205,7 +203,19 @@ const qc = useQueryClient();
     onError: (e) => message.error(`回写失败：${(e as Error).message}`),
   });
 
-  if (!f) return <Typography.Text type="secondary">加载中…</Typography.Text>;
+  usePageTitle(f?.title?.slice(0, 40) ?? '发现详情');
+  if (findingError) {
+    return (
+      <Alert
+        type="error"
+        showIcon
+        message="发现详情加载失败（可能已不存在或服务暂不可用）"
+        description={`原因：${((findingErr as Error)?.message ?? '未知').slice(0, 220)}`}
+        action={<Button size="small" onClick={() => refetchFinding()}>重试</Button>}
+      />
+    );
+  }
+  if (!f) return <PageLoading />;
   const loc = f.location;
   const codeCtx = extractCodeContext(f.source_raw, loc?.file_path, loc?.start_line);
   const dfTrace = extractDataflowTrace(f.source_raw); // ADR-158: 变量级污点链路（OpenGrep）
@@ -218,18 +228,52 @@ const qc = useQueryClient();
   const isSystem = !isAI && isSystemReasoning(f.ai_reasoning);
   const isHuman = verdictSet && !!f.ai_reasoning && !isAI && !isSystem;
 
+  //  签名元素: Source→Sink 证据链一眼视图。数据优先级：OpenGrep 变量级
+  // dataflow_trace > AI 结论解析链（role 标注）；两者皆无则不渲染（不为单点造流程感）
+  const chainSteps: ChainStep[] = (() => {
+    if (isTaintRule(f.source_rule_id) && dfTrace && (dfTrace.source || dfTrace.sink)) {
+      const steps: ChainStep[] = [];
+      if (dfTrace.source?.path) steps.push({ path: dfTrace.source.path, line: dfTrace.source.line, content: dfTrace.source.content, role: 'source' });
+      for (const pv of dfTrace.propagation) if (pv.path) steps.push({ path: pv.path, line: pv.line, content: pv.content });
+      if (dfTrace.sink?.path) steps.push({ path: dfTrace.sink.path, line: dfTrace.sink.line, content: dfTrace.sink.content, role: 'sink' });
+      return steps;
+    }
+    if (chain.hops.length >= 2) {
+      return chain.hops.map((h) => ({ path: h.path, line: h.line, endLine: h.endLine, content: h.snippet, role: h.role }));
+    }
+    return [];
+  })();
+
   return (
-    // ADR-151: 展开态铺满表格宽度（与其他内容对齐）；独立页场景同为响应式全宽
+    // ADR-151: 展开态铺满表格宽度（与其他内容对齐）；独立页场景同为响应式全宽。
+    //  标题降 level 4（本组件常嵌在表格展开行/Tab 内，level 3 与外层页面同级过大）
     <div style={{ width: '100%' }}>
-      <Typography.Title level={3}>{f.title}</Typography.Title>
+      <PageHeader level={4} title={f.title} />
+      {chainSteps.length >= 2 && (
+        <div style={{ marginBottom: 16 }}>
+          <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 6 }}>
+            证据链（源 → 汇，点击定位对应文件与行）：
+          </Typography.Text>
+          <EvidenceChain
+            steps={chainSteps}
+            onSelect={(s) => selectHop({ path: s.path, line: s.line, endLine: s.endLine })}
+            activePath={selHop?.path}
+            activeLine={selHop?.line}
+          />
+        </div>
+      )}
       <Card style={{ marginBottom: 16 }}>
         <Descriptions column={2} size="small">
-          <Descriptions.Item label="严重级"><Tag color="red">{zh(SEVERITY, f.severity)}</Tag></Descriptions.Item>
+          <Descriptions.Item label="严重级"><Tag color={SEVERITY_COLOR[f.severity]}>{zh(SEVERITY, f.severity)}</Tag></Descriptions.Item>
           <Descriptions.Item label="工具置信度">{f.confidence ?? '—'}</Descriptions.Item>
           <Descriptions.Item label="CWE">{f.cwe_id || '—'}</Descriptions.Item>
-          <Descriptions.Item label="规则">{f.source_rule_id ? f.source_rule_id.split('.').pop() : '—'}</Descriptions.Item>
+          <Descriptions.Item label="规则">
+            <span style={{ fontFamily: MONO_FONT }}>{f.source_rule_id ? f.source_rule_id.split('.').pop() : '—'}</span>
+          </Descriptions.Item>
           <Descriptions.Item label="来源工具">{f.source_tool}</Descriptions.Item>
-          <Descriptions.Item label="位置">{loc ? `${loc.file_path}:${loc.start_line}` : '—'}</Descriptions.Item>
+          <Descriptions.Item label="位置">
+            {loc ? <span style={{ fontFamily: MONO_FONT }}>{loc.file_path}:{loc.start_line}</span> : '—'}
+          </Descriptions.Item>
         </Descriptions>
         <Typography.Paragraph style={{ marginTop: 12, whiteSpace: 'pre-wrap' }}>{f.description}</Typography.Paragraph>
       </Card>
@@ -256,7 +300,7 @@ const qc = useQueryClient();
                     onClick={() => selectHop({ path: h.path, line: h.line, endLine: h.endLine })}
                     style={{
                       padding: '0 8px',
-                      borderColor: selHop && selHop.path === h.path && selHop.line === h.line ? '#40a9ff' : undefined,
+                      borderColor: selHop && selHop.path === h.path && selHop.line === h.line ? EVIDENCE.link : undefined,
                     }}
                   >
                     {i + 1}. {h.role === 'source' ? '源 ' : h.role === 'sink' ? '汇 ' : ''}
@@ -304,14 +348,14 @@ const qc = useQueryClient();
         {openPath && !srcQuery.isLoading && (srcQuery.isError || !srcQuery.data) && (
           codeCtx?.context ? (
             <>
-              <pre style={{ background: '#0b1021', color: '#d6e2ff', padding: 12, borderRadius: 6, overflowX: 'auto', fontSize: 13, lineHeight: 1.5, margin: 0 }}>
+              <pre style={{ background: EVIDENCE.bg, color: EVIDENCE.text, fontFamily: MONO_FONT, padding: 12, borderRadius: 6, overflowX: 'auto', fontSize: 13, lineHeight: 1.5, margin: 0 }}>
                 {codeCtx.context.lines.map((line, i) => {
                   const ln = codeCtx.context!.start_line + i;
                   const isMatch = startLine > 0 && ln >= startLine && ln <= (loc?.end_line && loc.end_line > startLine ? loc.end_line : startLine);
                   return (
-                    <div key={ln} style={{ display: 'flex', background: isMatch ? 'rgba(255,208,75,0.12)' : undefined }}>
-                      <span style={{ width: 44, textAlign: 'right', marginRight: 12, color: '#5b6b8c', userSelect: 'none' }}>{ln}</span>
-                      <span style={{ whiteSpace: 'pre-wrap', color: isMatch ? '#ffd24b' : undefined }}>{line}</span>
+                    <div key={ln} style={{ display: 'flex', background: isMatch ? EVIDENCE.matchBg : undefined }}>
+                      <span style={{ width: 44, textAlign: 'right', marginRight: 12, color: EVIDENCE.textMuted, userSelect: 'none' }}>{ln}</span>
+                      <span style={{ whiteSpace: 'pre-wrap', color: isMatch ? EVIDENCE.matchText : undefined }}>{line}</span>
                     </div>
                   );
                 })}
@@ -321,10 +365,10 @@ const qc = useQueryClient();
               </Typography.Text>
             </>
           ) : codeCtx ? (
-            <pre style={{ background: '#0b1021', color: '#d6e2ff', padding: 12, borderRadius: 6, overflowX: 'auto', fontSize: 13, lineHeight: 1.5 }}>
+            <pre style={{ background: EVIDENCE.bg, color: EVIDENCE.text, fontFamily: MONO_FONT, padding: 12, borderRadius: 6, overflowX: 'auto', fontSize: 13, lineHeight: 1.5 }}>
               {codeCtx.text.split('\n').map((line, i) => (
                 <div key={i} style={{ display: 'flex' }}>
-                  <span style={{ width: 44, textAlign: 'right', marginRight: 12, color: '#5b6b8c', userSelect: 'none' }}>
+                  <span style={{ width: 44, textAlign: 'right', marginRight: 12, color: EVIDENCE.textMuted, userSelect: 'none' }}>
                     {startLine > 0 ? startLine + i : i + 1}
                   </span>
                   <span style={{ whiteSpace: 'pre-wrap' }}>{line}</span>
@@ -543,7 +587,7 @@ function SourceFileViewer({ lines, findingRange, hopRange }: {
       <div
         ref={ref}
         data-testid="source-viewer"
-        style={{ position: 'relative', height: 432, overflow: 'auto', background: '#0b1021', color: '#d6e2ff', padding: 12, borderRadius: 6, fontSize: 13, lineHeight: 1.5 }}
+        style={{ position: 'relative', height: 432, overflow: 'auto', background: EVIDENCE.bg, color: EVIDENCE.text, fontFamily: MONO_FONT, padding: 12, borderRadius: 6, fontSize: 13, lineHeight: 1.5 }}
       >
         {shown.map((line, i) => {
           const ln = i + 1;
@@ -555,12 +599,12 @@ function SourceFileViewer({ lines, findingRange, hopRange }: {
               data-line={ln}
               style={{
                 display: 'flex',
-                background: inHop ? 'rgba(64,169,255,0.10)' : inFinding ? 'rgba(255,208,75,0.12)' : undefined,
-                boxShadow: inHop ? 'inset 2px 0 0 #40a9ff' : undefined,
+                background: inHop ? EVIDENCE.hopBg : inFinding ? EVIDENCE.matchBg : undefined,
+                boxShadow: inHop ? `inset 2px 0 0 ${EVIDENCE.link}` : undefined,
               }}
             >
-              <span style={{ width: 44, flex: '0 0 auto', textAlign: 'right', marginRight: 12, color: '#5b6b8c', userSelect: 'none' }}>{ln}</span>
-              <span style={{ whiteSpace: 'pre-wrap', color: inHop ? '#69c0ff' : inFinding ? '#ffd24b' : undefined }}>{line}</span>
+              <span style={{ width: 44, flex: '0 0 auto', textAlign: 'right', marginRight: 12, color: EVIDENCE.textMuted, userSelect: 'none' }}>{ln}</span>
+              <span style={{ whiteSpace: 'pre-wrap', color: inHop ? EVIDENCE.link : inFinding ? EVIDENCE.matchText : undefined }}>{line}</span>
             </div>
           );
         })}

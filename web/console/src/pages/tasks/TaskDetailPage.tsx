@@ -85,7 +85,7 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
       if (!d?.task) return pollIntervalMs(10_000);
       const aiDone = !!d.ai?.complete && aiCursorRef.current >= Number(d.ai?.total_bytes ?? 0);
       if (isTerminal(d.task.status) && aiDone) return false; // 终态且日志收束 → 自停
-      return pollIntervalMs(10_000); // WS 断线回退 10s/次（人类指令 2026-09-01；限流余量进一步扩大）
+      return pollIntervalMs(10_000); // WS 断线回退 10s/次（限流余量进一步扩大）
     },
   });
 

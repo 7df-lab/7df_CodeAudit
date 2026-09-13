@@ -396,7 +396,7 @@ export class PatchParser {
 }
 
 // —— findContext（对标 cline apply-patch-parser.ts findContext，含 eof 语义）———
-// 相似度判定复用 diffParse 的共享实现（B2-8 收敛：删除本文件曾有的
+// 相似度判定复用 diffParse 的共享实现（收敛：删除本文件曾有的
 // calculateSimilarity/levenshteinDistance 双副本，防两路锚定阈值漂移）。
 
 /**
