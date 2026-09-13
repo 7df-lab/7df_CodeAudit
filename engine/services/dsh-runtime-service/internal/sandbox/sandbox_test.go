@@ -193,10 +193,12 @@ func (f *fakeManager) handler() http.Handler {
 		f.created[name] = true
 		f.mu.Unlock()
 		spec, _ := body["spec"].(map[string]any)
-		policy, _ := spec["policy"].(map[string]any)
-		if v, _ := policy["version"].(float64); v != 1 {
+		// spec 不得携带 policy：spec.policy 会整体覆盖镜像 policy.yaml（替换语义），
+		// 极简清单缺基路径令 supervisor 自举即毙（ContainerExited → error phase）。
+		// 镜像 policy.yaml 是唯一权威。
+		if _, has := spec["policy"]; has {
 			w.WriteHeader(400)
-			fmt.Fprintf(w, `{"error":"policy version must be 1"}`)
+			fmt.Fprintf(w, `{"error":"spec must not carry policy (image policy.yaml is authoritative)"}`)
 			return
 		}
 		fmt.Fprintf(w, `{"id":"sbx-%s","name":%q,"workspace":%q,"phase":2,"phase_name":"PHASE_READY"}`,
