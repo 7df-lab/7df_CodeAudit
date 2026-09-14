@@ -8,7 +8,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import TaskNewPage, { DEFAULT_SCAN_MODE, MODE_SPECS } from '../pages/tasks/TaskNewPage';
+// 2026-09-14 弹窗化重构：向导主体=TaskNewModal（TasksPage 按钮直开，与新建项目 Modal 同构）；
+// 默认导出为 /tasks/new 薄壳宿主页。测试直接渲染 Modal（portal 挂 body，screen 查询兼容）。
+import { TaskNewModal, DEFAULT_SCAN_MODE, MODE_SPECS } from '../pages/tasks/TaskNewPage';
 import { httpError, useFakeGateway } from '../testsupport/fakeGateway';
 
 // 向导共用的最小网关模型（文件级注册，beforeEach 对全部用例生效；请求日志按用例隔离）
@@ -55,7 +57,7 @@ function renderWizard(initialEntry = '/tasks/new') {
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[initialEntry]}>
-        <TaskNewPage />
+        <TaskNewModal open onClose={() => {}} />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -142,7 +144,9 @@ describe('TaskNewPage 项目级源码来源（项目层级决定源码仓库）'
     fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step0 → 1
     fireEvent.click(await screen.findByText(/模式B 纯AI/));
     fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step1 → 2
-    await screen.findByText(/源码来源|未配置源码来源/);
+    // 2026-09-14 视觉重设计后"源码来源"在参数步 Alert 与常驻任务简报栏两处出现——
+    // 等待意图不变（该信息已渲染），findAllByText 容忍多元素
+    await screen.findAllByText(/源码来源|未配置源码来源/);
   }
 
   // ADR-203 资金流：关掉自动启动（start 链路属 stateMachine 测试域），触发创建并捕获请求体
@@ -242,5 +246,17 @@ describe('TaskNewPage 建任务引导（2026-09-11 报障修复）', () => {
     );
     expect(document.body.querySelector('.ant-select-selection-item')).toBeNull();
     expect(screen.getByRole('button', { name: '下一步' })).toHaveProperty('disabled', true);
+  });
+});
+
+// 任务简报栏（2026-09-14 弹窗化重构中移除：Modal 内双栏过挤，简报定稿并入确认步，
+// 由"源码来源/引擎编排"等确认步断言覆盖）——原侧栏用例随形态一并退役。
+describe('TaskNewPage 创建向导弹窗形态（2026-09-14 二期）', () => {
+  it('ADR-154 行为锁在弹窗形态下仍成立：前 3 步不渲染"创建任务"按钮（footer 集中）', async () => {
+    renderWizard();
+    await screen.findByText('选择项目');
+    expect(screen.queryByRole('button', { name: '创建任务' })).toBeNull();
+    // antd 两字按钮自动插空格（"取 消"），正则容忍
+    expect(screen.getByRole('button', { name: /取\s*消/ })).toBeTruthy(); // footer 常驻取消
   });
 });

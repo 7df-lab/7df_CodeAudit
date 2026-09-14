@@ -27,10 +27,13 @@ tmp/
 .idea
 mise.toml
 dist-exe/
+/dist/
+apps/desktop/.desktop-build/
 python/sdk-runtime/src/deepseek_harness_runtime/runtime/deepseek-harness-sdk-runtime-*
 python/sdk-runtime/src/deepseek_harness_runtime/runtime/node/
 python/**/__pycache__/
 python/**/.pytest_cache/
+packages/**/__pycache__/
 apps/web/dist/
 .artifacts/
 .dsh-build/
@@ -40,6 +43,12 @@ apps/web/dist/
 worktrees/
 .agents/worktrees/
 .typert-*/
+native/system/test/bin/
 
 # 人类指令 2026-09-08: .agent(单数)过程文档目录预防性禁入 git; 上游自带 .agents/ 不受影响
 .agent/
+
+# 本机调试残留（2026-09-14 审计 P2：防误提交）
+sse*.log
+error.log
+.zcode/

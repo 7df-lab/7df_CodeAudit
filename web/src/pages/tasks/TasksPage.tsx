@@ -4,7 +4,7 @@
 import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import { Button, Card, Select, Space, Statistic, Table, Tag, Typography } from 'antd';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useState } from 'react';
 import { api, listAllProjects } from '../../api/client';
 import type { PaginationResponse, ScanTask, TaskStage } from '../../api/types';
@@ -13,6 +13,7 @@ import { MONO_FONT, SEVERITY_COLOR, STAGE_DOT_COLOR, STATUS_COLOR } from '../../
 import PageHeader from '../../components/PageHeader';
 import { EmptyState, ListSkeleton } from '../../components/states';
 import { isTerminal } from '../../tasks/stateMachine';
+import { TaskNewModal } from './TaskNewPage';
 import { usePageTitle } from '../../hooks/usePageTitle';
 
 // 2026-09-09 对标竞品: Stage 进度点（行内迷你阶段进度，悬停看阶段名与状态）
@@ -67,11 +68,11 @@ function FindingCountCell({ taskId }: { taskId: string }) {
 
 export default function TasksPage() {
   usePageTitle('任务');
-  const navigate = useNavigate();
   // ADR-160: 项目/模式筛选；ADR-164: 服务端游标翻页（offset 游标+total），改筛选回第一页
   const [projectFilter, setProjectFilter] = useState<string>('');
   const [modeFilter, setModeFilter] = useState<string>('');
   const [page, setPage] = useState(1);
+  const [newOpen, setNewOpen] = useState(false); // 新建任务弹窗（与新建项目 Modal 同构，2026-09-14）
   const PAGE_SIZE = 20;
 
   const { data: projects } = useQuery({
@@ -184,7 +185,9 @@ export default function TasksPage() {
   return (
     <div>
       {/*  页首置顶（此前统计卡带在标题之上，"任务"大标题出现在首屏中部） */}
-      <PageHeader title="任务" extra={<Button type="primary" onClick={() => navigate('/tasks/new')}>新建任务</Button>} />
+      <PageHeader title="任务" extra={<Button type="primary" onClick={() => setNewOpen(true)}>新建任务</Button>} />
+      {/* 创建向导弹窗：与新建项目 Modal 同构（创建成功后跳详情页）；/tasks/new 深链由薄壳宿主页承接 */}
+      <TaskNewModal open={newOpen} onClose={() => setNewOpen(false)} />
       {/* 2026-09-09 对标竞品统计卡带: 任务域概览（数值来自近 200 条一次性聚合） */}
       <Card size="small" style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-around', flexWrap: 'wrap', gap: 8 }}>

@@ -75,6 +75,7 @@ mutation-check **要求工作区干净**（git status 无未提交改动）—�
 | P-29 | 登出不清 query 缓存 | 软登出（SPA 跳 /login）后 TanStack 缓存留存至 gcTime，共享机器另一账号先见上一账号列表数据；401 硬跳路径整页刷新反而干净——两登出径行为不一致（web-audit-2026-09-12 P2 实证） | QueryClient 在 main.tsx 模块内创建不导出，logout 只清 token | session.test.tsx「B5-P2-6: logout 清空 QueryClient 缓存」 | — | M19 |
 | P-30 | 项目下拉/索引截断 | getProjects() 缺省页只拿最新 20 条（服务端缺省 20 上限 100），项目 >20 后旧项目在新建任务/筛选/深链预选永不可达（web-audit-2026-09-12 P2 实证） | 调用方依赖缺省分页形状；page_size:200 索引也被钳 100 | clientContract.test.ts「B5-P2-7 listAllProjects 循环翻页」两例（合并+熔断） | — | M20 |
 | P-31 | AI 增量按字节切块撕裂多字节字符 | 服务端日志块按任意字节偏移切（256KB maxBytes），逐帧独立 TextDecoder 把跨块残余解成 U+FFFD 并随"下载完整日志"持久化（web-audit-2026-09-12 P3 实证；中文为主场景高频） | 每帧新建 decoder 而非流式（stream:true） | TaskDetailSnapshot.test.tsx「B5: AI 文本流式解码（多字节跨块边界）」 | — | — |
+| P-32 | 链路 chip 文件误挂接 | AI 原文里的代码表达式（C++ `new_size.x`）形似文件名被 FILE_REF 当文件 token，裸行引用 `(line 86)/(lines 213-218)` 误挂其上 → 指向不存在文件的 chip、全文复核 404 黄条、且降级片段把 finding 自己的扫描片段冒充该"文件"的片段（gw-7c26f71c1771c76444baddd0 sbx-14 实证；行号其实准确，RafDecoder.cpp:213-218 恰是所引代码） | 正则层 `名字.小写扩展名` 与真实文件无法区分（isFileToken 全过：非反引号/非调用形/扩展名小写）；解析为纯同步函数拿不到项目文件树 | chainParser.test.ts 两阶段组（SBX14_CASE 逐字：无 opts=旧行为回归锚/注入 fileExists 重挂+inferred/显式幻觉 unresolved/全 false 丢弃）+ codeContext.test.tsx 三态组件组（重挂/未定位解释视图/探测 500 fail-open）+ clientContract E-24b（missing 仅认 404+file not found in project，根级 404→unknown） | **G-07a..e** | M21 |
 
 ## 4. 锁的三种形态（写法规范）
 

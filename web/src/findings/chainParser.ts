@@ -11,6 +11,16 @@
 //   5. lines 49-60 / line 49      —— 英文行引用，挂接最近文件
 //   6. 标识符（153-167）           —— 全角/半角括号内纯数字区间（"publish（153-167）"类），
 //                                      挂接最近文件；真实调用形如 filter(x) 含非数字不匹配
+//
+// 第二阶段·存在性校验（2026-09-13 误挂接根治，gw-7c26f71c1771c76444baddd0 sbx-14 实证）：
+// AI 原文里的代码表达式（如 `new_size.x`）形似文件名，裸行引用 "(line 86)" 会被挂接到它，
+// 产出指向不存在文件的 chip。opts.fileExists 注入探测结果后：
+//   - 不存在的文件 token 不进 files、不抢挂接语境、不产 hop；
+//   - 其上的显式 file:line 保留为 unresolved hop（真·幻觉引用，复核者可见）；
+//   - 挂其上的裸行引用重挂到最近有效 token，全文无有效 token 则回落 fallbackFile
+//     （漏洞所在文件）；
+//   - 裸行引用的文件归属一律标 inferred（解析器推断，非 AI 原文显式写出）。
+//   - fileExists 缺省/返回 undefined = 现行为逐字节等价（探测未返回或故障时 fail-open）。
 
 export interface ChainHop {
   path: string;            // 原文写法（可能是裸文件名或截断路径——服务端 source-file 端点回退解析）
@@ -18,11 +28,21 @@ export interface ChainHop {
   endLine?: number;
   snippet: string;         // 引用所在原文片段（人工核对解析是否成立的第一手材料）
   role?: 'source' | 'sink'; // 仅关键词命中才标注，否则缺省
+  inferred?: boolean;      // 裸行引用：文件归属由解析器挂接（AI 原文未写明该文件）
+  unresolved?: boolean;    // 显式 file:line 但文件不在项目树（疑似 AI 幻觉引用）
 }
 
 export interface ChainParseResult {
   hops: ChainHop[];        // 按原文出现顺序（去重）
   files: string[];         // 提及的全部文件（含无行号者），按首次出现顺序
+}
+
+export interface ChainParseOpts {
+  // 文件存在性探测（source-file resolve_only，见 FindingDetailBody useChainFileExists）：
+  // true=存在 / false=不存在 / undefined=未知（等价无探测，fail-open）
+  fileExists?: (path: string) => boolean | undefined;
+  // 裸行引用兜底挂接目标（漏洞所在文件）；仅当原文中没有任何有效文件 token 时使用
+  fallbackFile?: string;
 }
 
 // 文件 token：(目录/)?名字.扩展名——扩展名以字母开头（排除 IP/版本号 1.2.1、gateway.internal）
@@ -60,7 +80,7 @@ const SINK_KW = /(?:sink|汇点|危险|暴露|端点|可达|执行点)/i;
 
 interface Ev { offset: number; end: number; path?: string; line?: number; endLine?: number; refOnly: boolean }
 
-export function parseChain(text?: string | null): ChainParseResult {
+export function parseChain(text?: string | null, opts?: ChainParseOpts): ChainParseResult {
   if (!text) return { hops: [], files: [] };
   // 反引号代码段置空（等长占位保偏移）：`HttpBasicAuth.enable`/`httpRouter.filter(`/
   // `foo(123)` 类 属性/方法调用/伪调用 噪声主产地；真实 file:line 引用在本实例语料中
@@ -87,27 +107,49 @@ export function parseChain(text?: string | null): ChainParseResult {
 
   events.sort((a, b) => a.offset - b.offset);
 
+  const exists = (p: string): boolean | undefined => opts?.fileExists?.(p);
   const hops: ChainHop[] = [];
   const files: string[] = [];
   const seen = new Set<string>();
-  let currentFile: string | null = null;
+  let currentFile: string | null = null; // 最近一个存在性非 false 的文件 token（false 不抢语境）
   let segStart = 0;      // 当前文件段起点（该文件 token 出现处）——role 关键词归属上界
   let segFresh = true;   // 段内首跳：下界回溯到上一事件末（捕获"来源 App.py:10"式前导关键词）
   let prevEnd = 0;       // 上一事件（文件/行引用）结束位置
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     if (!ev.refOnly) {
+      if (exists(ev.path!) === false) {
+        // 不存在的文件 token：显式 file:line 保留为 unresolved（幻觉引用可见），
+        // 无行号者整体跳过（new_size.x 形态——不得进 files/抢挂接/产 hop）
+        if (ev.line !== undefined && Number.isFinite(ev.line) && ev.line > 0) {
+          const key = `${ev.path}|${ev.line}|${ev.endLine ?? ''}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            const before = text.slice(prevEnd, ev.end);
+            hops.push({
+              path: ev.path!, line: ev.line,
+              endLine: ev.endLine && ev.endLine > ev.line ? ev.endLine : undefined,
+              snippet: snippetOf(text, ev.offset, ev.end),
+              role: SINK_KW.test(before) ? 'sink' : SOURCE_KW.test(before) ? 'source' : undefined,
+              unresolved: true,
+            });
+          }
+        }
+        prevEnd = ev.end;
+        continue;
+      }
       currentFile = ev.path!;
       segStart = ev.offset;
       segFresh = true;
       if (!files.includes(ev.path!)) files.push(ev.path!);
       if (ev.line === undefined) { prevEnd = ev.end; continue; } // 无行号 → 进 files、不产 hop
-    } else if (!currentFile) {
-      continue; // 行引用先于任何文件提及 → 无挂接对象，丢弃
+    } else if (!currentFile && !opts?.fallbackFile) {
+      continue; // 行引用先于任何有效文件提及且无兜底 → 无挂接对象，丢弃
     }
     const line = ev.line!;
     if (!Number.isFinite(line) || line <= 0) { prevEnd = ev.end; continue; }
-    const path = ev.refOnly ? currentFile : ev.path!;
+    const isFallback = ev.refOnly && !currentFile; // 兜底挂接：原文无任何有效文件 token
+    const path = ev.refOnly ? (currentFile ?? opts!.fallbackFile!) : ev.path!;
     const key = `${path}|${line}|${ev.endLine ?? ''}`;
     if (!seen.has(key)) {
       seen.add(key);
@@ -121,6 +163,7 @@ export function parseChain(text?: string | null): ChainParseResult {
         path, line, endLine: ev.endLine && ev.endLine > line ? ev.endLine : undefined,
         snippet,
         role: SINK_KW.test(before) ? 'sink' : SOURCE_KW.test(before) ? 'source' : undefined,
+        inferred: ev.refOnly ? true : undefined,
       });
     }
     segFresh = false;

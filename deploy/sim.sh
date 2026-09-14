@@ -98,6 +98,12 @@ case "$cmd" in
     ensure_sandbox_chain
     wait_gateway
     seed_db
+    # 空卷首启时序自愈：task/result 于 compose 拉起时即连各自业务库，而库由
+    # seed_db 建（healthcheck 只验 PG 进程不验业务库）；两服务 restart=no，
+    # destroy 后首次 up / 全新安装必崩躺尸。库就绪后回拉——已在跑者为 no-op。
+    # 不采用 postgres initdb.d 挂载：嵌套 docker 场景 bind mount 路径失效
+    # （ADR-111 否决在案），seed 步骤保留为幂等兜底。
+    dc up -d --no-deps task result
     echo "--- 模拟栈入口 ---"
     echo "  gateway : $(gw_url)  （宿主 ${CODEAUDIT_HOST_GATEWAY:-18080}）"
     echo "  console : http://localhost:${CODEAUDIT_SIM_CONSOLE_PORT:-18088}"

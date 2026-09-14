@@ -193,7 +193,7 @@ export async function uploadArchive(file: File): Promise<UploadArchiveResponse> 
 // REST 响应形状在此单点锚定：锚 = proto 响应消息的 protojson 序列化（gateway transcode 直转，
 // services/gateway-service/internal/handler/transcode.go）或 gateway 手写 JSON（/v1/tools）。
 // 页面禁止 `.data as {手写形状}`——此前 20 处散落 as-cast 是臆造空间（ProjectsPage res.dir 死链路
-// 存活三个版本的实证）；形状漂移由类型门禁的 tsc 红在消费点，而非等 GUI 事故揭发。
+// 存活三个版本的实证）；形状漂移由 verify.sh G3 的 tsc 红在消费点，而非等 GUI 事故揭发。
 
 export async function getProjects(pagination?: { page_size: number; cursor?: string }): Promise<ListProjectsResponse> {
   const params = pagination
@@ -388,7 +388,7 @@ export function openReportWindow(content: string, mime: 'text/html' | 'text/plai
   return w;
 }
 
-// 重新生成报告（审计 接线，D4 裁定）：POST /v1/tasks/{task_id}/report →
+// 重新生成报告（ 接线，D4 裁定）：POST /v1/tasks/{task_id}/report →
 // ReportService/GenerateReport（幂等，网关生成幂等键；旧报告保留，新报告入列后经
 // ['reports'] 失效刷新）。报告中心"重新生成"按钮消费。
 export async function regenerateReport(taskId: string): Promise<{ result?: { report_id: string } }> {
@@ -413,5 +413,25 @@ export async function getSourceFile(taskId: string, path: string): Promise<Sourc
     // 服务端 writeError 的 {error} 详情比 axios 通用 "status code 404" 更可读（降级横幅展示用）
     const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
     throw new Error(detail || (e as Error).message);
+  }
+}
+
+// 链路 chip 文件存在性探测（2026-09-13 误挂接根治）：resolve_only=1 只做根内解析
+// 不读内容（engine bfd47b42）。三态语义：
+//   'exists'  = 命中（200，含超限/二进制文件——存在性 ≠ 可读性）；
+//   'missing' = 仅认 404 且 {error} 含 "file not found in project"（文件级未命中）——
+//               源根不可解析（404 同码）或网关故障等一律 'unknown'，fail-open 等价现状，
+//               避免把"树被清理"误判为"AI 幻觉引用"；
+//   'unknown' = 老网关（忽略未知参数照常回全文 → 200 也是 'exists'，平滑兼容）。
+export type SourceFileProbe = 'exists' | 'missing' | 'unknown';
+export async function probeSourceFile(taskId: string, path: string): Promise<SourceFileProbe> {
+  try {
+    await api.get(`/v1/tasks/${taskId}/source-file`, { params: { path, resolve_only: 1 } });
+    return 'exists';
+  } catch (e) {
+    const status = errStatus(e);
+    const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? '';
+    if (status === 404 && detail.includes('file not found in project')) return 'missing';
+    return 'unknown';
   }
 }

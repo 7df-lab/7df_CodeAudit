@@ -16,8 +16,10 @@ token，否则拒绝启动（`config.py validate()`）；`/api/*` 全部 Bearer 
 
 ## 仓库位置
 
-本目录是伞仓 `codeaudit` 的 manager 子仓：**源码与部署事实源同居一仓**
-（部署配方见 `deploy/`）。
+本仓是 `codeaudit-umbrella` 的子模块 `manager/`（GitLab
+`admins/codeaudit/manager`）。2026-09-05 仓库重构时由原 `openshell-manager`
+源码仓 + `CD/openshell-manager` 部署 overlay 合并而成：**源码与部署事实源
+同居一仓**（部署配方见 `deploy/`；CD 已析出归档）。
 
 架构沿革：stdlib `http.server` 起家 → ADR-174（2026-09-01）整体
 迁移 FastAPI/uvicorn，南向 gRPC 与对外 JSON 契约逐字节不变（契约测试锁定）；
@@ -32,10 +34,10 @@ token，否则拒绝启动（`config.py validate()`）；`/api/*` 全部 Bearer 
 | `openshell_manager/gateway.py` | `GatewayFacade`：懒加载 vendored SDK、南向 gRPC 全操作、沙箱 name→UUID 解析（ADR-173） |
 | `openshell_manager/upload.py` | 手写流式 multipart 解析器：720 KiB 分块（3 字节对齐 base64，编码后 960KiB < 网关 gRPC 实测 1 MiB 收包上限）经 exec stdin 写入沙箱，先建父目录再写 `.part` 后原子 mv，失败自清理 |
 | `openshell_manager/config.py` | 配置解析（env > config.json > 内置默认）+ `validate()` 绑定纪律 |
-| `tests/test_contract.py` | 契约测试（假 SDK 门面 + 真 HTTP 层，离线无需网关）；可 pytest 或直跑；用例数以 pytest 汇总为准 |
+| `tests/test_contract.py` | 契约测试（假 SDK 门面 + 真 HTTP 层，离线无需网关）；可 pytest 或直跑；用例数以 `verify.sh` 输出为准 |
 | `tests/test_guardrails.py` | 守门测试：鉴权全覆盖/路由快照/README 文档实测化/分块上限/常量时间比较/SDK 在库/档案完整/根 Dockerfile 纪律 |
 | `REGRESSIONS.md` | 缺陷档案：R1 起每条缺陷绑定具名锁定测试 + 修复流程纪律（先红后修再记档）；末条编号以档案为准 |
-| `tests/deploy_cases.sh` | deploy.sh 行为锁定关卡：PATH 桩 docker/pct/ssh/curl，断言脚本侧命令形态（不模拟远端语义） |
+| `make verify` | 交付门禁：pytest 全量 + 直跑模式 + deploy.sh 行为关卡三绿才可交付 |
 | `docs/` | 接口文档三件套：`api-external.md`（外部 HTTP 契约）/`api-internal.md`（内部模块契约）/`data-flows.md`（数据流转与部署链） |
 | `libs/OpenShell/python` | vendored openshell SDK（供应商树；整树 7.2G 几乎全是 Rust 构建产物，仅 python 子树 <1M 入镜像）。**python 子树 2026-09-05 起纳管入库**（Dockerfile COPY 输入，gitignored 会让 fresh clone 构建必败）；`libs/OpenShell` 本体是嵌套上游仓（NVIDIA/OpenShell），仅存于开发机本地 |
 | `config.json` | 全局配置——与引擎共享的 SSOT（引擎 `openshell_manager_client.py` 读同一份 `url`/`token`/`tokenFile`，两端不会漂移） |
@@ -50,7 +52,8 @@ token，否则拒绝启动（`config.py validate()`）；`/api/*` 全部 Bearer 
 ./run.sh                          # = python3 -m openshell_manager，127.0.0.1:18800
 
 # 契约+守门测试（离线；交付门禁）：
-python3 -m pytest tests/ -q      # 或 python3 tests/test_contract.py 直跑
+make verify            # = pytest tests/ 全量 + 直跑模式双检
+python3 -m pytest tests/ -q      # 或 python3 tests/test_contract.py
 
 # 生产（LXC 107 docker，容器 openshell-manager，镜像 openshell-manager:2.0.0）：
 deploy/deploy.sh deploy           # 同步源码+产物+.env → compose build+up → healthz → 网关可达性

@@ -1410,7 +1410,7 @@ def test_auth_rejects_lowercase_bearer_scheme():
 
 
 # ---------------------------------------------------------------------------
-# 修复批（§5，先红后修）
+# 修复批
 # ---------------------------------------------------------------------------
 
 class SlowExecClient(FakeSandboxClient):
@@ -1631,7 +1631,7 @@ def test_max_upload_bytes_defaults_to_2gib():
 
 
 # ---------------------------------------------------------------------------
-# 修复批（§2，先红后修）
+# 修复批
 # ---------------------------------------------------------------------------
 
 class RaceAdminStub(FakeAdminStub):
@@ -1742,7 +1742,7 @@ def test_exec_timeout_server_side_cap():
     """（R23）：exec timeout_seconds 服务端上限 600（wait_ready
     同族漏修——客户端曾可传 1e9 抬 gRPC deadline 无限占线程池令牌+南向
     连接）+ 严格 int（bool/float/字符串数字一律 400，R21 口径）。engine
-    现役实参 60/20/600 内，兼容性已核（§0）。"""
+    现役实参 60/20/600 内，兼容性已核。"""
     server, req = make_app(token_env=None)
     try:
         for bad in (601, 10**9, -1, "30", True, 30.5):

@@ -49,9 +49,14 @@ export default function ReviewView({ taskId }: { taskId: string }) {
           rowKey="finding_id"
           size="small"
           dataSource={findings}
+          // 2026-09-13 间距整改（与 FindingsPage 同批）：fixed 布局 + 显式列宽——内嵌行展开
+          // 的表格在 auto 布局下长结论/长路径会把列挤失衡，fixed 下宽度只由容器决定
+          tableLayout="fixed"
+          scroll={{ x: 640 }}
           expandable={{
             expandedRowRender: (rec: UnifiedFinding) => <FindingDetailBody findingId={rec.finding_id} />,
             rowExpandable: () => true,
+            columnWidth: 84,
             expandIcon: (props: import('rc-table/es/interface').RenderExpandIconProps<UnifiedFinding>) => (
               <Button
                 size="small"
@@ -64,16 +69,16 @@ export default function ReviewView({ taskId }: { taskId: string }) {
           }}
           pagination={false}
           columns={[
-            { title: '发现', dataIndex: 'title' },
-            { title: '来源', dataIndex: 'source_tool', width: 110 },
+            { title: '发现', dataIndex: 'title', ellipsis: true },
+            { title: '来源', dataIndex: 'source_tool', width: 96 },
             {
-              title: '已落盘结论', dataIndex: 'ai_verdict', width: 140,
+              title: '已落盘结论', dataIndex: 'ai_verdict', width: 128,
               // 空值显式归一"未判定"（zh 已无枚举特判，B3-5；展示行为不变）
               render: (v: string) => <Tag color={VERDICT_COLOR[v]}>{zh(AI_VERDICT, v || 'AI_VERDICT_UNSPECIFIED')}</Tag>,
             },
             {
               title: '结论理由（原文）', dataIndex: 'ai_reasoning',
-              render: (v: string) => <Typography.Text style={{ whiteSpace: 'pre-wrap' }}>{v || '—'}</Typography.Text>,
+              render: (v: string) => <Typography.Text style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{v || '—'}</Typography.Text>,
             },
           ]}
           locale={{ emptyText: '暂无发现' }}

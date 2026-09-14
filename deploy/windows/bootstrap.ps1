@@ -21,15 +21,20 @@ WSL 壳）只是 bash 部署脚本的运行环境——容器永远在 Docker De
   winget 亦缺时给手工指引）；Git Bash 壳额外需要 Python（缺则 winget 装；
   商店占位 stub 以"可真实执行"为判据，不认 command -v 命中）。
 
-Git Bash 壳的两道特有防线：
+两壳共有的三道防线：
   - CRLF：克隆统一 -c core.autocrlf=false；autocrlf=false 无条件落盘伞仓+子仓
     （防后续 git 操作按全局配置 re-smudge）；哨兵 deploy/windows/crlf_check.sh
-    全量扫描伞仓+子仓的跟踪 .sh/Dockerfile*，命中才走修复（修复=checkout-index
-    强制重检出、会丢弃未提交改动，脏树先行拦截拒绝执行）；
-  - MSYS 工具面：bash 入口已内置 netstat/ipconfig 回退；python3 缺失且有 python
-    时自动建 ~/bin/python3 垫片(shim)；unzip 缺失仅告警（只影响素材全量拉取分支）。
-  传参口径：所有值经环境变量（CA_REPO_DIR/CA_ACTION/WSLENV）下发，bash 侧一律
-  单引号静态脚本 + "$VAR" 引用——路径含空格/单引号安全，无 shell 插值注入面。
+    全量扫描伞仓+子仓的跟踪 .sh/Dockerfile*，命中才走修复——修复守卫内建于
+    crlf_check.sh：与行尾无关的未提交改动退出 3 拒修（防丢数据），纯行尾脏
+    （re-smudge 形态）自动归一且不丢内容；
+  - 脚本传输（PS5.1 根治）：PS5.1 原生传参对内嵌双引号不转义（7.3 才修），
+    bash.exe 按 MSVCRT 规则剥引号/切参——bash -lc 脚本串经命令行到达即碎
+    （探测恒假/守卫碎裂/空格路径 cd 断）。全部 bash 脚本改经临时文件（Git Bash
+    壳）或 stdin→WSL 内固定路径（WSL 壳）下发，脚本内容不经命令行；
+  - 参数与工具面：所有值经环境变量（CA_REPO_DIR/CA_ACTION/WSLENV）下发，bash 侧
+    "$VAR" 引用，无 shell 插值注入面，路径含空格/单引号安全；bash 入口已内置
+    netstat/ipconfig 回退；python3 缺失且有 python 时自动建 ~/bin/python3 垫片
+    (shim)；unzip 缺失仅告警（只影响素材全量拉取分支）。
 
 访问：Windows 本机浏览器 http://localhost:<控制台口/网关口>；局域网其它设备
   运行 deploy\windows\expose-lan.ps1（netsh portproxy）或 Win11 镜像网络。
@@ -43,6 +48,8 @@ param(
     [string]$Distro = "Ubuntu-22.04"
 )
 $ErrorActionPreference = "Stop"
+# PS5.1 管道到原生命令默认 ASCII——WSL 壳脚本经 stdin 下发，显式抬到 UTF-8 无 BOM
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 function Say($m){ Write-Host "[win-deploy] $m" }
 function Die($m){ Write-Host "[win-deploy] ERROR: $m" -ForegroundColor Red; exit 1 }
 function Probe {
@@ -56,9 +63,48 @@ function Probe {
 }
 function To-PosixPath([string]$p){
     $p = $p.TrimEnd('\')
+    if ($p -match '^[A-Za-z]:$') { Die "不要把仓库放在盘根 '$p'——请用子目录（如 C:\Users\me\codeaudit-umbrella）。" }
     if ($p -match '^[A-Za-z]:[^\\/]') { Die "不支持盘符相对路径 '$p'——请用完整路径（如 C:\Users\me\codeaudit-umbrella）。" }
     if ($p -match '^([A-Za-z]):[\\/](.*)$') { return '/' + $Matches[1].ToLower() + '/' + ($Matches[2] -replace '\\','/') }
     return ($p -replace '\\','/')
+}
+function Invoke-GitBashSh {
+    # PS5.1→bash 脚本传输（2026-09-13 审计根治）：PS5.1 原生传参对内嵌双引号不转义
+    # （7.3 经 PSNativeCommandArgumentPassing 才修），bash.exe 按 MSVCRT 规则把内嵌
+    # 引号当定界符剥除、在落出引用态的空格处切断 argv——任何内嵌引号的 bash -lc 串
+    # 到达即碎（python 探测恒假死循环/守卫脚本语法错空转/含空格路径 cd 断）。
+    # 改为：脚本串落临时 .sh 文件（UTF-8 无 BOM、LF，内容不经命令行），argv 只传
+    # 文件路径；参数值仍走环境变量。-l 保持原 -lc 登录壳语义（~/bin 进 PATH，
+    # python3 垫片可见）。$LASTEXITCODE = bash 退出码，调用方沿用原判错模式。
+    param([string]$BashExe, [string]$ScriptText)
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("ca_" + [Guid]::NewGuid().ToString('N') + ".sh")
+    [IO.File]::WriteAllText($tmp, ($ScriptText -replace "`r", "") + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    try { & $BashExe -l $tmp }
+    finally { Remove-Item $tmp -ErrorAction SilentlyContinue }
+}
+function Probe-GitBashSh {
+    # 同 Probe 的语义（EAP=Continue 吞 stderr 合流，成败只看 $LASTEXITCODE），
+    # 但脚本经临时文件下发——碎裂根因与修法见 Invoke-GitBashSh 头注
+    param([string]$BashExe, [string]$ScriptText)
+    $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { Invoke-GitBashSh -BashExe $BashExe -ScriptText $ScriptText 2>&1 | Out-Null } finally { $ErrorActionPreference = $eap }
+    return ($LASTEXITCODE -eq 0)
+}
+function Invoke-WslSh {
+    # WSL 壳传输：wsl.exe 对 argv 再重组 + WSL 默认 shell 二次解析，同一碎裂更甚。
+    # 脚本串经 stdin 灌入发行版内固定路径 /tmp/ca_bootstrap_run.sh——cat 先整体
+    # 耗尽 stdin 再 exec，杜绝 bash -s 增量读被中间命令（apt/git）吃掉的隐患。
+    param([string]$Distro, [string]$ScriptText, [switch]$AsRoot)
+    $s = ($ScriptText -replace "`r", "") + "`n"
+    if ($AsRoot) { $s | wsl -d $Distro -u root -- sh -c 'cat > /tmp/ca_bootstrap_run.sh && exec bash /tmp/ca_bootstrap_run.sh' }
+    else { $s | wsl -d $Distro -- sh -c 'cat > /tmp/ca_bootstrap_run.sh && exec bash /tmp/ca_bootstrap_run.sh' }
+}
+function Probe-WslSh {
+    # 同 Probe 的语义，脚本经 stdin 下发——见 Invoke-WslSh 头注
+    param([string]$Distro, [string]$ScriptText)
+    $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { Invoke-WslSh -Distro $Distro -ScriptText $ScriptText 2>&1 | Out-Null } finally { $ErrorActionPreference = $eap }
+    return ($LASTEXITCODE -eq 0)
 }
 
 # ---- [1/3] Docker Desktop（Windows 侧，两壳共用同一 daemon）--------------------
@@ -119,22 +165,25 @@ if ($gitBash) {
     if ($LASTEXITCODE -ne 0) { Die "子仓 core.autocrlf 落盘失败（子仓状态异常，检查 git submodule status）。" }
 
     # CRLF 哨兵：crlf_check.sh 全量扫伞仓+子仓的跟踪 .sh/Dockerfile*（审计 P1-3）
-    & $gitBash -lc 'cd "$CA_REPO_DIR" || exit 9; sh deploy/windows/crlf_check.sh "$CA_REPO_DIR"'
-    if ($LASTEXITCODE -ne 0) {
+    # 退出码契约：0 干净 / 1 命中 / 2 用法环境错 / 3 真实内容脏拒修；9=cd 失败（本行置位）
+    Invoke-GitBashSh -BashExe $gitBash -ScriptText 'cd "$CA_REPO_DIR" || exit 9; sh deploy/windows/crlf_check.sh "$CA_REPO_DIR"'
+    if ($LASTEXITCODE -eq 9) { Die "仓库路径不可达（cd 失败）——检查 -Dir 是否正确（当前：$Dir）。" }
+    if ($LASTEXITCODE -eq 2) { Die "crlf_check.sh 用法/环境错误（git 缺失或缺参），详见上方输出。" }
+    if ($LASTEXITCODE -eq 1) {
         Say "检出含 CRLF —— 归一化为 LF（autocrlf=false + checkout-index 强制重检出）..."
-        # 修复=checkout-index 按索引重检出，会丢弃未提交改动——脏树先行拦截（审计 P2-9）
-        $dirty = & $gitBash -lc 'cd "$CA_REPO_DIR" && { git status --porcelain; git submodule --quiet foreach --recursive "git status --porcelain"; }'
-        if ($dirty) { Die "工作树/子仓存在未提交改动，CRLF 修复会丢弃它们——请先 commit 或 stash 后重跑。" }
-        & $gitBash -lc 'cd "$CA_REPO_DIR" && sh deploy/windows/crlf_check.sh --repair "$CA_REPO_DIR"'
+        # 修复守卫内建于 crlf_check.sh --repair：与行尾无关的未提交改动退出 3 拒修
+        # （防丢数据），纯行尾脏（re-smudge 形态）自动归一且不丢内容（审计 B2/B10）
+        Invoke-GitBashSh -BashExe $gitBash -ScriptText 'cd "$CA_REPO_DIR" && sh deploy/windows/crlf_check.sh --repair "$CA_REPO_DIR"'
+        if ($LASTEXITCODE -eq 3) { Die "存在与行尾无关的未提交改动，CRLF 修复会丢弃它们——请 stash（含各子仓）后重跑；勿直接 commit（autocrlf=false 下会把 CRLF 写进仓库）。" }
         if ($LASTEXITCODE -ne 0) { Die "CRLF 归一化失败，请手工重克隆（-c core.autocrlf=false）。" }
-        & $gitBash -lc 'cd "$CA_REPO_DIR" && sh deploy/windows/crlf_check.sh "$CA_REPO_DIR"'
+        Invoke-GitBashSh -BashExe $gitBash -ScriptText 'cd "$CA_REPO_DIR" && sh deploy/windows/crlf_check.sh "$CA_REPO_DIR"'
         if ($LASTEXITCODE -ne 0) { Die "CRLF 归一化后复查仍命中，请手工重克隆（-c core.autocrlf=false）。" }
         Say "CRLF 已归一化"
     }
 
     # python（审计 P2-5：商店占位 stub 在 command -v 命中但执行必败——以真实执行为判据）
-    & $gitBash -lc 'command -v python3 >/dev/null 2>&1 && python3 -c "import sys" >/dev/null 2>&1'; $hasPy3 = ($LASTEXITCODE -eq 0)
-    & $gitBash -lc 'command -v python  >/dev/null 2>&1 && python  -c "import sys" >/dev/null 2>&1'; $hasPy  = ($LASTEXITCODE -eq 0)
+    $hasPy3 = Probe-GitBashSh -BashExe $gitBash -ScriptText 'command -v python3 >/dev/null 2>&1 && python3 -c "import sys" >/dev/null 2>&1'
+    $hasPy  = Probe-GitBashSh -BashExe $gitBash -ScriptText 'command -v python  >/dev/null 2>&1 && python  -c "import sys" >/dev/null 2>&1'
     if (-not $hasPy3 -and -not $hasPy) {
         if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
             Die "缺 Python 且本机无 winget —— 请手工安装 Python 3（python.org，勿用商店占位 stub）后重跑。"
@@ -144,15 +193,16 @@ if ($gitBash) {
         Die "Python 已安装：请重开 PowerShell/Git Bash 后重跑本脚本。"
     }
     if (-not $hasPy3 -and $hasPy) {
-        & $gitBash -lc 'mkdir -p ~/bin && printf "#!/bin/sh\nexec python \"\$@\"\n" > ~/bin/python3 && chmod +x ~/bin/python3'
+        Invoke-GitBashSh -BashExe $gitBash -ScriptText 'mkdir -p ~/bin && printf "#!/bin/sh\nexec python \"\$@\"\n" > ~/bin/python3 && chmod +x ~/bin/python3'
+        if ($LASTEXITCODE -ne 0) { Die "~/bin/python3 垫片创建失败。" }
         Say "已建 ~/bin/python3 垫片(指向 python)"
     }
-    if (-not (Probe $gitBash -lc 'command -v unzip >/dev/null 2>&1')) {
+    if (-not (Probe-GitBashSh -BashExe $gitBash -ScriptText 'command -v unzip >/dev/null 2>&1')) {
         Say "△ Git Bash 缺 unzip：仅影响'沙箱素材缺失需全量拉取'的分支（在位即零下载不受影响）。"
     }
 
     Say "== [3/3] Git Bash 壳执行（$Action）=="
-    & $gitBash -lc 'cd "$CA_REPO_DIR" && exec bash deploy/production-deploy.sh "$CA_ACTION"'
+    Invoke-GitBashSh -BashExe $gitBash -ScriptText 'cd "$CA_REPO_DIR" && exec bash deploy/production-deploy.sh "$CA_ACTION"'
     if ($LASTEXITCODE -ne 0) { Die "部署动作 '$Action' 失败（输出见上）。" }
 }
 else {
@@ -191,7 +241,7 @@ else {
         if ($LASTEXITCODE -ne 0) { Die "发行版安装失败。可用 wsl -l -o 查看列表后用 -Distro 指定。" }
     }
     # Docker Desktop WSL 集成：发行版内 docker 必须可用
-    if (-not (Probe wsl -d $Distro -- bash -lc 'docker version >/dev/null 2>&1')) {
+    if (-not (Probe-WslSh -Distro $Distro -ScriptText 'docker version >/dev/null 2>&1')) {
         Die "WSL 发行版 $Distro 内 docker 不可用 —— 打开 Docker Desktop → Settings → Resources → WSL Integration 勾选 $Distro → Apply & Restart，然后重跑本脚本。"
     }
     if (-not $Dir) { $Dir = "~/codeaudit-umbrella" }
@@ -204,17 +254,33 @@ else {
     $env:CA_ACTION = $Action
     $caPre = 'case "$CA_DIR" in "~"*) CA_DIR="$HOME${CA_DIR#\~}";; esac'
     if ($RepoUrl) {
-        wsl -d $Distro -u root -- bash -lc 'command -v git >/dev/null || { apt-get update && apt-get install -y git; }'
-        wsl -d $Distro -- bash -lc ($caPre + '; test -d "$CA_DIR/.git" || git clone --recurse-submodules "$CA_REPO_URL" "$CA_DIR"')
+        Invoke-WslSh -Distro $Distro -AsRoot -ScriptText 'command -v git >/dev/null || { apt-get update && apt-get install -y git; }'
+        if ($LASTEXITCODE -ne 0) { Die "WSL 发行版 $Distro 内 git 安装失败（检查网络与 apt 源）。" }
+        Invoke-WslSh -Distro $Distro -ScriptText ($caPre + '; test -d "$CA_DIR/.git" || git clone -c core.autocrlf=false --recurse-submodules "$CA_REPO_URL" "$CA_DIR"')
         if ($LASTEXITCODE -ne 0) { Die "仓库克隆失败（检查 -RepoUrl 与网络）。" }
     } else {
-        if (-not (Probe wsl -d $Distro -- bash -lc ($caPre + '; test -d "$CA_DIR/.git"'))) {
+        if (-not (Probe-WslSh -Distro $Distro -ScriptText ($caPre + '; test -d "$CA_DIR/.git"'))) {
             Die "WSL 内未发现仓库 $Dir —— 首次使用请提供 -RepoUrl。"
         }
         Say "使用 WSL 内已存在的 $Dir"
     }
+    # CRLF 防线（审计 B7 补齐，与 Git Bash 壳同款）：autocrlf=false 无条件落盘伞仓+子仓
+    # 后过哨兵，命中走 repair/recheck；退出码契约同 Git Bash 壳，另 8=配置落盘失败
+    Invoke-WslSh -Distro $Distro -ScriptText ($caPre + '; cd "$CA_DIR" || exit 9; git config core.autocrlf false && git submodule --quiet foreach --recursive "git config core.autocrlf false" || exit 8; sh deploy/windows/crlf_check.sh "$CA_DIR"')
+    if ($LASTEXITCODE -eq 9) { Die "WSL 内仓库路径不可达（cd 失败）——检查 -Dir 是否正确（当前：$Dir）。" }
+    if ($LASTEXITCODE -eq 8) { Die "WSL 内 core.autocrlf 落盘失败（仓库状态异常）。" }
+    if ($LASTEXITCODE -eq 2) { Die "crlf_check.sh 用法/环境错误（WSL 内 git 缺失？），详见上方输出。" }
+    if ($LASTEXITCODE -eq 1) {
+        Say "检出含 CRLF —— 归一化为 LF（autocrlf=false + checkout-index 强制重检出）..."
+        Invoke-WslSh -Distro $Distro -ScriptText ($caPre + '; cd "$CA_DIR" && sh deploy/windows/crlf_check.sh --repair "$CA_DIR"')
+        if ($LASTEXITCODE -eq 3) { Die "存在与行尾无关的未提交改动，CRLF 修复会丢弃它们——请 stash（含各子仓）后重跑；勿直接 commit。" }
+        if ($LASTEXITCODE -ne 0) { Die "CRLF 归一化失败，请手工重克隆（-c core.autocrlf=false）。" }
+        Invoke-WslSh -Distro $Distro -ScriptText ($caPre + '; cd "$CA_DIR" && sh deploy/windows/crlf_check.sh "$CA_DIR"')
+        if ($LASTEXITCODE -ne 0) { Die "CRLF 归一化后复查仍命中，请手工重克隆（-c core.autocrlf=false）。" }
+        Say "CRLF 已归一化"
+    }
     Say "== [3/3] WSL 壳执行（$Action）=="
-    wsl -d $Distro -- bash -lc ($caPre + '; cd "$CA_DIR" && exec bash deploy/production-deploy.sh "$CA_ACTION"')
+    Invoke-WslSh -Distro $Distro -ScriptText ($caPre + '; cd "$CA_DIR" && exec bash deploy/production-deploy.sh "$CA_ACTION"')
     if ($LASTEXITCODE -ne 0) { Die "部署动作 '$Action' 失败（输出见上）。" }
 }
 

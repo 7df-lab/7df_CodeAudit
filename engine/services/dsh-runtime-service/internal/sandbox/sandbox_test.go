@@ -1382,3 +1382,120 @@ func TestRun_CreateFailure_DeregistersActiveEntry(t *testing.T) {
 		t.Fatalf("create failure leaked registry entry: before=%d after=%d", before, after)
 	}
 }
+
+// feedAssistantAttempt — assistant 正文契约两测试共用的帧注入：stream 记录串经
+// json.Unmarshal+Marshal 构造 wire——手写转义层数错误会被 consume 静默吞帧
+// （曾致 R92 测试假红，见 8d16613d）。
+func feedAssistantAttempt(t *testing.T, p *sseParser, records string) {
+	t.Helper()
+	var parsed []any
+	if err := json.Unmarshal([]byte(records), &parsed); err != nil {
+		t.Fatalf("test fixture records must be valid JSON: %v", err)
+	}
+	wire, err := json.Marshal(map[string]any{"sessionId": "main", "event": map[string]any{
+		"type": "assistant/attempt", "data": map[string]any{"turn": 1, "step": 2, "stream": parsed},
+	}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	p.line([]byte("event: session.event\n"))
+	p.line([]byte("data: " + string(wire) + "\n"))
+	p.line([]byte("\n"))
+}
+
+// TestSSEParser_AssistantAttempt — dsh 0.1.5 正文契约回归锁（R86）：
+// assistant 正文从逐 chunk 事件（0.1.2）改为步骤收敛时一次性 assistant/attempt
+// （data={turn,step,stream}，记录形态=上游 expandAssistantStream 输入）。
+// 渲染必须与 0.1.2 流式路径等价：💭/✍ 分块头+正文原样+块尾换行；
+// tool-call-chunks（工具参数流）与 usage 静默（ADR-181）；
+// 空正文不出头；assistant/message 仍只作收敛投影不重复输出。
+func TestSSEParser_AssistantAttempt(t *testing.T) {
+	var human syncwriter
+	p := &sseParser{onHuman: human.writeString}
+	feed := func(lines ...string) (evs []bridgeEvent) {
+		for _, l := range lines {
+			if ev := p.line([]byte(l + "\n")); ev != nil {
+				evs = append(evs, *ev)
+			}
+		}
+		return evs
+	}
+	feedAssistantAttempt(t, p, `[{"type":"reasoning-chunks","index":0,"time0":1,"dt":[1],"texts":["分析 ","app.py"]},{"type":"text-chunks","index":1,"time0":3,"dt":[1],"texts":["发现 1 处 SQL 注入"]}]`)
+	if !strings.Contains(human.String(), "💭 [思考]\n分析 app.py") {
+		t.Fatalf("reasoning block must render with head and joined deltas, got %q", human.String())
+	}
+	if !strings.Contains(human.String(), "✍ [输出]\n发现 1 处 SQL 注入") {
+		t.Fatalf("text block must render with head and joined deltas, got %q", human.String())
+	}
+	// 单 chunk 记录形态等价（上游 expandAssistantStream 对 chunk 记录原样透传）
+	feedAssistantAttempt(t, p, `[{"type":"chunk","time":9,"chunk":{"type":"text-delta","index":1,"text":"补充说明"}}]`)
+	if !strings.Contains(human.String(), "✍ [输出]\n补充说明") {
+		t.Fatalf("single chunk record must render like text-chunks, got %q", human.String())
+	}
+	// tool-call-chunks 静默（ADR-181）；空 texts 不出头。args 曾误写多一 } 成非法
+	// JSON，被 consume 静默吞帧致静默断言空转假绿——Marshal 通道后显形。
+	before := len(human.String())
+	feedAssistantAttempt(t, p, `[{"type":"tool-call-chunks","index":2,"time0":5,"dt":[1],"args":["{\"cmd\":","x\"}"]}]`)
+	feedAssistantAttempt(t, p, `[{"type":"text-chunks","index":3,"time0":7,"dt":[],"texts":[]}]`)
+	if after := human.String(); len(after) != before {
+		t.Fatalf("tool-call-chunks and empty texts must be silent, got %q", after[before:])
+	}
+	// assistant/message（0.1.5 帧形，自带 data.stream）：正文唯一载体——必须渲染
+	// 且同时投 assistantText（turn() 收敛判据）。
+	evs := feed("event: session.event\n",
+		"data: {\"sessionId\":\"main\",\"event\":{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":3,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"最终摘要\"}]},\"stream\":[{\"type\":\"text-chunks\",\"index\":4,\"time0\":8,\"dt\":[1],\"texts\":[\"最终摘要\"]}]}}}\n", "\n")
+	if len(evs) == 0 || evs[0].assistantText != "最终摘要" {
+		t.Fatalf("assistant/message must project assistantText, got %+v", evs)
+	}
+	if !strings.Contains(human.String(), "✍ [输出]\n最终摘要") {
+		t.Fatalf("assistant/message with stream must render body, got %q", human.String())
+	}
+	// assistant/message（0.1.2 帧形，无 stream）：正文已由 chunk 流式呈现——静默防双渲染
+	n := len(human.String())
+	if evs := feed("event: session.event\n",
+		"data: {\"sessionId\":\"main\",\"event\":{\"type\":\"assistant/message\",\"data\":{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"012时代的重复正文\"}]}}}}\n", "\n"); len(evs) == 0 {
+		t.Fatal("assistant/message must still project assistantText for settlement")
+	}
+	if after := human.String(); strings.Contains(after[n:], "012时代的重复正文") {
+		t.Fatalf("assistant/message without stream must not re-render body, got %q", after)
+	}
+}
+
+// TestSSEParser_AssistantAttemptBlockBoundaries — R92 补强（审计 P3-3/P3-4）：
+// ①块身份=(记录类型,index)：同类型不同 index 的两个 text 块不得粘连——index 变化
+//   须补块尾换行+新头（对齐 0.1.2 的 block-end/block-start 语义）；
+// ②tool-call-chunks 关闭当前正文块（0.1.2 中 tool 块的 block-start 会终结前块）；
+// ③精确等值锁：头/换行/块尾逐字节锁定（Contains 断言锁不住边界换行回潮）；
+// ④混合到达：0.1.2 chunk 路径的 p.mode 残态不得影响 0.1.5 message 路径（局部 mode 隔离）。
+func TestSSEParser_AssistantAttemptBlockBoundaries(t *testing.T) {
+	var human syncwriter
+	p := &sseParser{onHuman: human.writeString}
+	// ①+②：多 index 交替流——精确等值（先红：旧实现第二块粘连且无头、tool 块不闭前块）
+	feedAssistantAttempt(t, p, `[{"type":"reasoning-chunks","index":0,"time0":1,"dt":[1],"texts":["推演"]},`+
+		`{"type":"text-chunks","index":1,"time0":2,"dt":[1,2],"texts":["第一块","续"]},`+
+		`{"type":"tool-call-chunks","index":2,"time0":5,"dt":[1],"args":["{\"c\":"]},`+
+		`{"type":"text-chunks","index":3,"time0":7,"dt":[1],"texts":["第二块"]}]`)
+	want := "\n💭 [思考]\n推演\n" +
+		"\n✍ [输出]\n第一块续\n" +
+		"\n✍ [输出]\n第二块\n"
+	if got := human.String(); got != want {
+		t.Fatalf("block boundaries mismatch\n got=%q\nwant=%q", got, want)
+	}
+	// ④混合到达：0.1.2 chunk 路径留下未闭合的 p.mode 残态（block-start 无 block-end），
+	// 随后的 0.1.5 message 路径必须不受影响（局部 mode 隔离——头照发、边界正确）。
+	p.line([]byte("event: session.event\n"))
+	p.line([]byte("data: {\"sessionId\":\"main\",\"event\":{\"type\":\"assistant/chunk\",\"data\":{\"chunk\":{\"type\":\"block-start\",\"blockType\":\"text\"}}}}\n"))
+	p.line([]byte("\n"))
+	p.line([]byte("event: session.event\n"))
+	p.line([]byte("data: {\"sessionId\":\"main\",\"event\":{\"type\":\"assistant/chunk\",\"data\":{\"chunk\":{\"type\":\"text-delta\",\"text\":\"旧路径残文\"}}}}\n"))
+	p.line([]byte("\n"))
+	n := len(human.String())
+	feedAssistantAttempt(t, p, `[{"type":"text-chunks","index":4,"time0":9,"dt":[1],"texts":["新路径正文"]}]`)
+	mixed := human.String()[n:]
+	if mixed != "\n✍ [输出]\n新路径正文\n" {
+		t.Fatalf("message path must be isolated from chunk-path p.mode residue\n got=%q", mixed)
+	}
+	if !strings.Contains(human.String(), "旧路径残文") {
+		t.Fatal("chunk-path body must remain rendered")
+	}
+}

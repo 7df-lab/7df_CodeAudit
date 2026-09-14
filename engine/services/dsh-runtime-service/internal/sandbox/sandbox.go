@@ -834,8 +834,23 @@ func (p *sseParser) sessionEvent(ev map[string]any) *bridgeEvent {
 	case "assistant/chunk":
 		chunk, _ := data["chunk"].(map[string]any)
 		return p.assistantChunk(chunk)
+	case "assistant/attempt":
+		// dsh 0.1.5 事件契约（上游 packages/core/agent-loop/src/agent.ts settle）：
+		// assistant 正文改为步骤收敛时一次性 append assistant/attempt
+		// （data={turn,step,stream}）。实证（gw-976edd733e4ceb2f1a90fab1.sse.log）：
+		// 该类型只落持久层、通知面 0 条——通知面正文走 assistant/message 自带的
+		// stream（下方 message case）。此 case 兜底防上游未来上抛。stream 记录
+		// 形态对齐上游 expandAssistantStream（packages/llm/llm/src/assistant-stream.ts）。
+		return p.assistantAttempt(data)
 	case "assistant/message":
-		// 最终消息已由 text-delta 流式呈现，不重复输出；仅作收敛投影
+		// dsh 0.1.5（gw-976edd733e4ceb2f1a90fab1.sse.log 实证）：正文唯一到达
+		// 形式=assistant/message 自带的 data.stream（0.1.2 的 assistant/chunk 实时
+		// 流已废弃；assistant/attempt 只落持久层，通知面 0 条）。stream 存在时
+		// 展开渲染（与 chunk 流式路径同语义）；0.1.2 帧形无 stream，仍静默防双
+		// 渲染。收敛投影 assistantText 两种形态都必须返回（turn() 收敛判据）。
+		if stream, _ := data["stream"].([]any); len(stream) > 0 {
+			p.assistantAttempt(data)
+		}
 		return &bridgeEvent{assistantText: messageText(data)}
 	case "tool/call":
 		// ADR-184：结构化提交通道——submit_findings/submit_patches 的参数经模型
@@ -959,6 +974,91 @@ func (p *sseParser) assistantChunk(chunk map[string]any) *bridgeEvent {
 	case "tool-call-delta", "usage", "finish":
 		// 工具参数为机器 JSON 片段；用量为记账信息——均静默（ADR-181）
 	}
+	return nil
+}
+
+// assistantAttempt — dsh 0.1.5 的 assistant 正文聚合事件展开：渲染语义与
+// assistantChunk 的 0.1.2 流式路径等价（💭/✍ 分块头 + 正文原样 + 块尾换行），
+// 差别仅在到达时机——步骤收敛一次性到达 vs 逐 chunk 实时流。
+func (p *sseParser) assistantAttempt(data map[string]any) *bridgeEvent {
+	stream, _ := data["stream"].([]any)
+	// 块身份=(类型,index)——index 是上游 content block 序号（assistant-stream.ts），
+	// 同类型不同 index 是不同正文块：index 变化须补块尾换行+新头，否则第二块正文
+	// 粘连进第一块（审计 P3-3）。tool-call-chunks 关闭当前正文块（对齐 0.1.2 中
+	// tool 块 block-start 终结前块的边界语义），参数流本身静默（ADR-181）。
+	mode := ""
+	idx := -1
+	closeBlock := func() {
+		if mode != "" {
+			p.emit("\n")
+			mode = ""
+			idx = -1
+		}
+	}
+	open := func(want string, index int, head string) {
+		if mode != want || idx != index {
+			closeBlock() // 先终结前块（补块尾换行），再开新头
+			mode = want
+			idx = index
+			p.emit(head)
+		}
+	}
+	// recordIndex — 无 index 的记录归 -1（=idx 初值哨兵：同类型无 index 记录不另开块）
+	recordIndex := func(rec map[string]any) int {
+		if f, ok := rec["index"].(float64); ok {
+			return int(f)
+		}
+		return -1
+	}
+	texts := func(v any) []string {
+		arr, _ := v.([]any)
+		out := make([]string, 0, len(arr))
+		for _, t := range arr {
+			if s, ok := t.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	// emitTexts — 空 texts 不出头；非空按 (类型,index) 开块后逐段原样流出。
+	emitTexts := func(want, head string, index int, ss []string) {
+		if len(ss) == 0 {
+			return
+		}
+		open(want, index, head)
+		for _, s := range ss {
+			p.emit(s)
+		}
+	}
+	for _, item := range stream {
+		rec, _ := item.(map[string]any)
+		if rec == nil {
+			continue
+		}
+		switch rt, _ := rec["type"].(string); rt {
+		case "text-chunks":
+			emitTexts("text", "\n✍ [输出]\n", recordIndex(rec), texts(rec["texts"]))
+		case "reasoning-chunks":
+			emitTexts("reasoning", "\n💭 [思考]\n", recordIndex(rec), texts(rec["texts"]))
+		case "tool-call-chunks":
+			closeBlock()
+		case "chunk":
+			cm, _ := rec["chunk"].(map[string]any)
+			switch ct, _ := cm["type"].(string); ct {
+			case "text-delta":
+				open("text", recordIndex(cm), "\n✍ [输出]\n")
+				if t, _ := cm["text"].(string); t != "" {
+					p.emit(t)
+				}
+			case "reasoning-delta":
+				open("reasoning", recordIndex(cm), "\n💭 [思考]\n")
+				if t, _ := cm["text"].(string); t != "" {
+					p.emit(t)
+				}
+			}
+		}
+	}
+	closeBlock()
 	return nil
 }
 

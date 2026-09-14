@@ -2,7 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Card, Descriptions, Input, Select, Space, Spin, Tag, Tooltip, Typography, message } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, getSourceFile } from '../../api/client';
+import { api, getSourceFile, probeSourceFile } from '../../api/client';
 import type { UnifiedFinding } from '../../api/types';
 import { AI_VERDICT, SEVERITY, zh } from '../../dict';
 import { MONO_FONT, SEVERITY_COLOR, VERDICT_COLOR } from '../../dict/tokens';
@@ -155,9 +155,38 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
   });
   const f = resp?.finding;
 
-  // ADR-195: AI 结论 Source→Sink 链路解析（普适解析器，原文顺序 hops）
-  const chain = useMemo(() => parseChain(f?.ai_reasoning), [f?.ai_reasoning]);
+  // ADR-195: AI 结论 Source→Sink 链路解析（普适解析器，原文顺序 hops）。
+  // 两阶段（2026-09-13 误挂接根治）：chainRaw=无校验解析（现行为，提供待探测文件表）；
+  // probeQuery 对链路文件 resolve_only 探测；chain=注入存在性后的终态——假文件 token
+  // 摘除、其上裸行引用重挂到最近有效文件（无则漏洞所在文件）、裸行引用标 inferred、
+  // 显式幻觉引用标 unresolved。探测未返回/失败 = undefined → 等价现行为（fail-open）。
   const findingFile = f?.location?.file_path ?? null;
+  const chainRaw = useMemo(() => parseChain(f?.ai_reasoning), [f?.ai_reasoning]);
+  // 探测上限：链路提及文件 >10 个放弃校验（fail-open，防病态发现拖垮面板）
+  const MAX_PROBE_FILES = 10;
+  const probeTargets = useMemo(
+    () => (chainRaw.files.length > 0 && chainRaw.files.length <= MAX_PROBE_FILES ? chainRaw.files : []),
+    [chainRaw.files],
+  );
+  const probeKey = probeTargets.join('\n');
+  const probeQuery = useQuery({
+    queryKey: ['source-file-exists', f?.task_id, probeKey],
+    queryFn: async () => {
+      const map: Record<string, boolean | undefined> = {};
+      await Promise.all(probeTargets.map(async (p) => {
+        const r = await probeSourceFile(f!.task_id, p);
+        map[p] = r === 'exists' ? true : r === 'missing' ? false : undefined;
+      }));
+      return map;
+    },
+    enabled: !!f?.task_id && probeKey.length > 0,
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const chain = useMemo(() => parseChain(f?.ai_reasoning, {
+    fileExists: (p) => probeQuery.data?.[p],
+    fallbackFile: findingFile ?? undefined,
+  }), [f?.ai_reasoning, probeQuery.data, findingFile]);
   // 复核文件选择器：链路文件 ∪ 漏洞所在文件（基名去重、漏洞文件优先；无链路时仅漏洞文件）
   const fileOptions = useMemo(() => {
     const out: string[] = [];
@@ -172,6 +201,9 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
     return out;
   }, [findingFile, chain.files]);
   const openPath = selHop?.path ?? findingFile;
+  // 当前打开文件已被探测判为不存在（幻觉引用 chip 点开/探测已知缺失）——降级展示走
+  // "未定位"解释分支，不再把 finding 自己的扫描片段冒充该"文件"的片段
+  const openPathMissing = !!openPath && probeQuery.data?.[openPath] === false;
   // 链路点选：AI 写的常是裸文件名/截断路径——若选择器里已有同基名条目（如 location
   // 全路径），对齐到该条目，避免 Select 值与选项集脱节
   const selectHop = (h: { path: string; line?: number; endLine?: number }) => {
@@ -272,7 +304,8 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
           </Descriptions.Item>
           <Descriptions.Item label="来源工具">{f.source_tool}</Descriptions.Item>
           <Descriptions.Item label="位置">
-            {loc ? <span style={{ fontFamily: MONO_FONT }}>{loc.file_path}:{loc.start_line}</span> : '—'}
+            {/* overflowWrap:anywhere：容器内绝对路径无空格不可断行，会冲破 Descriptions 栅格（2026-09-13 间距整改） */}
+            {loc ? <span style={{ fontFamily: MONO_FONT, overflowWrap: 'anywhere' }}>{loc.file_path}:{loc.start_line}</span> : '—'}
           </Descriptions.Item>
         </Descriptions>
         <Typography.Paragraph style={{ marginTop: 12, whiteSpace: 'pre-wrap' }}>{f.description}</Typography.Paragraph>
@@ -281,7 +314,11 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
       <Card
         title="代码上下文"
         style={{ marginBottom: 16 }}
-        extra={srcQuery.isSuccess ? <Tag color="blue">源码全文</Tag> : codeCtx ? <Tag>{codeCtx.kind}</Tag> : <Tag>工具未提供代码片段</Tag>}
+        extra={srcQuery.isSuccess
+          ? <Tag color="blue">源码全文</Tag>
+          : openPathMissing
+            ? <Tag color="orange">未定位</Tag>
+            : codeCtx ? <Tag>{codeCtx.kind}</Tag> : <Tag>工具未提供代码片段</Tag>}
       >
         {/* ADR-195: AI 结论链路（普适解析器产出，按原文顺序；点击=选文件并居中定位行） */}
         {isAI && (
@@ -292,22 +329,34 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
             <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {chain.hops.length === 0 ? (
                 <Typography.Text type="secondary">结论未引用其他代码位置，仅可查看漏洞所在文件。</Typography.Text>
-              ) : chain.hops.map((h, i) => (
-                <Tooltip key={`${h.path}:${h.line}-${h.endLine ?? ''}`} title={h.snippet}>
-                  <Button
-                    size="small"
-                    data-testid={`chain-hop-${i}`}
-                    onClick={() => selectHop({ path: h.path, line: h.line, endLine: h.endLine })}
-                    style={{
-                      padding: '0 8px',
-                      borderColor: selHop && selHop.path === h.path && selHop.line === h.line ? EVIDENCE.link : undefined,
-                    }}
-                  >
-                    {i + 1}. {h.role === 'source' ? '源 ' : h.role === 'sink' ? '汇 ' : ''}
-                    {baseName(h.path)}{h.line ? `:${h.line}${h.endLine ? `-${h.endLine}` : ''}` : ''}
-                  </Button>
-                </Tooltip>
-              ))}
+              ) : chain.hops.map((h, i) => {
+                // 三态标记（2026-09-13 误挂接根治）：* = 裸行引用解析器推断挂接；
+                // （未定位）= AI 显式引用但项目源树无此文件（幻觉引用可见，复核者可判 AI 可靠性）
+                const marker = h.unresolved ? '（未定位）' : h.inferred ? '*' : '';
+                const tip = h.unresolved
+                  ? `项目源树中未定位到「${h.path}」——AI 显式引用了不存在的位置（疑似幻觉引用）｜原文：${h.snippet}`
+                  : h.inferred
+                    ? `该行引用未写明文件，文件归属由解析器挂接｜原文：${h.snippet}`
+                    : h.snippet;
+                return (
+                  <Tooltip key={`${h.path}:${h.line}-${h.endLine ?? ''}`} title={tip}>
+                    <Button
+                      size="small"
+                      data-testid={`chain-hop-${i}`}
+                      onClick={() => selectHop({ path: h.path, line: h.line, endLine: h.endLine })}
+                      style={{
+                        padding: '0 8px',
+                        borderColor: selHop && selHop.path === h.path && selHop.line === h.line ? EVIDENCE.link
+                          : h.unresolved ? '#d46b08' : undefined,
+                      }}
+                    >
+                      {i + 1}. {h.role === 'source' ? '源 ' : h.role === 'sink' ? '汇 ' : ''}
+                      {baseName(h.path)}{h.line ? `:${h.line}${h.endLine ? `-${h.endLine}` : ''}` : ''}
+                      {marker}
+                    </Button>
+                  </Tooltip>
+                );
+              })}
             </div>
           </div>
         )}
@@ -335,8 +384,17 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
         )}
 
         {/* ADR-195: 源码全文滚动视图（保持既有面板尺寸；自动居中到目标行） */}
-        {openPath && srcQuery.isLoading && <Spin size="small" style={{ display: 'block', margin: '24px auto' }} />}
-        {openPath && srcQuery.isError && (
+        {openPath && srcQuery.isLoading && !openPathMissing && <Spin size="small" style={{ display: 'block', margin: '24px auto' }} />}
+        {openPath && openPathMissing && (
+          <Alert
+            style={{ marginBottom: 8 }}
+            type="warning"
+            showIcon
+            message="该引用位置未在项目源树中定位到对应文件"
+            description={`「${openPath}」不存在于本任务的项目源树——可能是 AI 结论引用了不存在的位置（幻觉引用），无可展示源码；可切换复核文件查看漏洞所在文件或链路文件。`}
+          />
+        )}
+        {openPath && srcQuery.isError && !openPathMissing && (
           <Alert
             style={{ marginBottom: 8 }}
             type="warning"
@@ -345,7 +403,7 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
             description={`原因：${((srcQuery.error as Error)?.message ?? '未知').slice(0, 220)}。上传压缩包或仓库拉取方式创建的任务支持全文复核。`}
           />
         )}
-        {openPath && !srcQuery.isLoading && (srcQuery.isError || !srcQuery.data) && (
+        {openPath && !srcQuery.isLoading && (srcQuery.isError || !srcQuery.data) && !openPathMissing && (
           codeCtx?.context ? (
             <>
               <pre style={{ background: EVIDENCE.bg, color: EVIDENCE.text, fontFamily: MONO_FONT, padding: 12, borderRadius: 6, overflowX: 'auto', fontSize: 13, lineHeight: 1.5, margin: 0 }}>
@@ -398,7 +456,7 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
           </Typography.Text>
         )}
         {loc && (
-          <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
+          <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, overflowWrap: 'anywhere' }}>
             位置：{loc.file_path}:{loc.start_line}
             {loc.end_line && loc.end_line > startLine ? `-${loc.end_line}` : ''}
           </Typography.Paragraph>
@@ -415,7 +473,7 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
                 {dfTrace.source && (
                   <div style={{ marginBottom: 6 }}>
                     <Tag color="volcano">污点来源 SOURCE</Tag>
-                    <Typography.Text code>
+                    <Typography.Text code style={{ overflowWrap: 'anywhere' }}>
                       {dfTrace.source.path ? `${dfTrace.source.path.split('/').pop()}:${dfTrace.source.line} — ` : ''}
                       {dfTrace.source.content}
                     </Typography.Text>
@@ -433,7 +491,7 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
                 {dfTrace.sink && (
                   <div style={{ marginBottom: 6 }}>
                     <Tag color="red">汇点 SINK</Tag>
-                    <Typography.Text code>
+                    <Typography.Text code style={{ overflowWrap: 'anywhere' }}>
                       {dfTrace.sink.path ? `${dfTrace.sink.path.split('/').pop()}:${dfTrace.sink.line} — ` : ''}
                       {dfTrace.sink.content}
                     </Typography.Text>
@@ -506,7 +564,8 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
               type="info"
               showIcon
               message={`AI 分析结论（${f.ai_reasoning?.startsWith('[DSH-sandbox]') ? '沙箱语义分析' : 'LLM 审查'}）`}
-              description={<Typography.Text style={{ whiteSpace: 'pre-wrap' }}>{f.ai_reasoning}</Typography.Text>}
+              // pre-wrap 按空白断行，长 token（URL/哈希/base64）仍会溢出——anywhere 兜底
+              description={<Typography.Text style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{f.ai_reasoning}</Typography.Text>}
             />
           )}
           {/* 系统降级标记（规则兜底等）：原文展示，说明其非 AI 语义判定亦非人工 */}
@@ -514,8 +573,8 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
             <Alert
               type="warning"
               showIcon
-              message="系统自动标记"
-              description={<Typography.Text style={{ whiteSpace: 'pre-wrap' }}>{f.ai_reasoning}</Typography.Text>}
+          message="系统自动标记"
+          description={<Typography.Text style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{f.ai_reasoning}</Typography.Text>}
             />
           )}
           {/* P4：裁决理由必须原文展示 */}
@@ -523,13 +582,13 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
             <Alert
               type={f.ai_verdict === 'AI_VERDICT_NEEDS_MANUAL' ? 'warning' : 'info'}
               showIcon
-              message="裁决理由"
-              description={<Typography.Text style={{ whiteSpace: 'pre-wrap' }}>{f.ai_reasoning}</Typography.Text>}
+            message="裁决理由"
+            description={<Typography.Text style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{f.ai_reasoning}</Typography.Text>}
             />
           )}
           {f.ai_fix_suggestion && (
             <Card size="small" title="修复建议">
-              <Typography.Text style={{ whiteSpace: 'pre-wrap' }}>{f.ai_fix_suggestion}</Typography.Text>
+              <Typography.Text style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{f.ai_fix_suggestion}</Typography.Text>
               {f.ai_fix_suggestion.startsWith('MANUAL_REVIEW_REQUIRED') && (
                 <Alert type="warning" showIcon style={{ marginTop: 8 }} message="该条目为“需人工处置”标记，非自动生成的修复方案" />
               )}

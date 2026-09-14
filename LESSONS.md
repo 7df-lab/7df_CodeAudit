@@ -18,6 +18,11 @@
 | 9 | 多智能体会话并行写同一文件 | web 侧 ADR-202/203 期间互覆写，按裁决恢复 | 按文件归属分工 + 后发指令优先 |
 | 10 | 测试架构盲区：部署接线缺陷对全部既有测试隐形 | 伞仓 235f1ce 前后一系列 GUI 实测修复（engine 8de1a4d9/c24fb917 等） | check-wiring 静态审计 + e2e 入口多样化（08/09）+ 真实栈必跑纪律 |
 | 11 | 遇到新问题先发明新方案，不查往期实证；手工应急成功后不固化 | 智谱 provider `../` 绕过（往期 llm-config.json 原文在先，nginx shim 在后）；kafka 镜像逐个手试拉取 | 新问题先 grep 往期（ADR/账本/兄弟仓 runtime 配置）再动手；手工步骤成功即入工具链/文档 |
+| 12 | 纸面修复/死代码：兜底机制不存在、接线缺失、索引恒空——组件写了但从未真正生效 | storage minio panic 宣称"gRPC recover 兜底"（grpc-go 无此机制）；engine session.StartJanitor 零调用方；fusion conflict/confidence 组员索引建在 dedup 后集合上（AI 成员恒查不到，阶段死代码）；对账器把标签 VALUE 当 KEY 查 | 评审必答"这段代码的调用方/命中路径在哪"；兜底机制必须有触发它的测试；假体测试要实现真实 RPC（既有 WS 假体未实现流式=流式路零覆盖三缺陷潜伏） |
+| 13 | 客户端错误泄漏为上游失败口径；注释里的环境/库断言未实测 | manager 非法参数/spec 错误全报 502（上游按网关不可达重试降级）；gateway 注释"网关 4MiB 默认"实测为 1MiB（上传 >750KiB 恒败）；protobuf 新版 ParseError 已非 ValueError 子类 | 错误码当契约管（400/404/502 分类有测试）；注释中环境数值/库行为断言一律实测后落笔（ADR-212/213/214/215） |
+| 14 | 重构迁移改了布局/契约，依赖旧布局的旁路读路径不进回归视野 | gw-f6a3523 三连实证（source-file 四流全落空/解包不剥壳/流式中间态无断言+sim-sync 漏 web） | 改布局时 grep 旧布局常量盘点全部读方；读路径测试数据用当前生产布局构造；断言覆盖被修缺陷的中间态；部署产物与验证产物同源 |
+| 15 | 长时脚本经管道取尾，被后台监听子进程钉死不退出 | gateway tests/run.sh 监听器 accept 无超时持有 stdout（伞仓侧跑门禁踩雷两次） | 验证调用落盘（`> file 2>&1`）不套管道；读工具脚本先查后台驻留子进程（监听器/watcher） |
+| 16 | compose 生命周期操作与部署落点的项目名错位，静默无效果 | production-deploy.sh down 对 manager 报"完成"但容器仍在（deploy 落 .manager-stage、down 指 manager/deploy，项目名对不上） | up/down/stop/ps 必须复用同一 compose 包装（同 project+env-file）；deploy 与 down 目录不同构的组件是高危位 |
 
 ## 10. 测试架构盲区：部署接线缺陷对全部既有测试隐形
 
@@ -46,6 +51,18 @@ storage 生产档位（通知恒空、文件不落 MinIO）。单元/契约测�
 挂 sandbox-deploy check 与 production-deploy 预检）+ e2e 08/09（用户路径回归，
 断言发现数与可观测面非空）+ 纪律：tests/ 套件入库的同一个变更原子必须含一次
 真实执行的证据。
+
+追加实录（2026-09-14 空卷完全重启，两例同族——健康面绿不等于供给链活）：
+⑤ task/result 于 compose 拉起时即连业务库，而业务库由 `sim.sh up` 末尾的 seed
+建；healthcheck 只验 PG 进程不验业务库，两服务 `restart=no` 崩后躺尸——增量
+up（库已存在）永远暴露不了，destroy 后首次 up/全新安装必崩且 gateway 拨 task
+报 DNS no such host。修复：seed 后自愈回拉（sim.sh，已跑者 no-op）。
+⑥ storage 的 Kafka consumer 日志打印 "consumer started" 但消费组从未完成分区
+分配（describe 空输出），通知恒空、e2e 09 通知锚挂——错误日志为零（ReadMessage
+阻塞在组 join 内部，err 路径的退避重试根本不触发）。重启 storage 立即恢复并从头
+回放。教训：**"started/healthy 日志"是自述不是证明**；消费侧的活性判据只能来自
+broker 侧（消费组分区分配+LAG），engine 侧容错盲区（join 卡死无 err 不重试）
+待子仓修复。
 
 ## 11. 先查往期实证，再发明新方案；手工应急成功即固化
 
@@ -150,3 +167,108 @@ deploy 收敛。处置顺序：先 `compose build` 确认新镜像可建 → `do
 会话按文件归属分工**（一方认领的文件另一方只审不改）；冲突已发生时以时间
 上更后的人类指令为准，机械回滚对方改动会破坏已授权工作；提交前 `git status`
 核对文件归属。防线：本档案 + 会话记忆（裁决先例）。
+
+## 12. 纸面修复/死代码：兜底机制不存在、接线缺失、索引恒空
+
+现象（2026-09-06 ADR-212/213/214 三批复查一次暴露六处）：①storage panic 注释宣称
+"由 gRPC recover 语义兜底"——grpc-go 根本没有内建 recover，任一 handler panic 即
+杀进程；②`session.Manager.StartJanitor`（ADR-134 的内存泄漏修复）零调用方——
+修复从未接线，泄漏照旧；③fusion 冲突/置信度两阶段在 dedup 后的
+`FusedFindings` 上建组员索引，AI 成员恒查不到——`Conflicts` 恒空、加权恒 1.0，
+04 §3.3 的融合语义对合并组从未生效；④SandboxReconciler 归属标签把 VALUE 当
+KEY 查，名字正则之外的第二重圈定从未命中。
+
+根因：修复只交付了"组件"，没有交付"生效路径"——接线点、索引键、触发机制无人
+验证；且测试假体没实现真实 RPC（gateway WS 用例的假体未实现
+`StreamTaskSnapshot`，全部用例落入轮询路，流式三缺陷零覆盖长期潜伏）。
+
+普适教训：**声称存在的机制必须实证被触发过一次**。写兜底先问"谁调它"；写索
+引先问"这个集合在此时还含不含我要的东西"；测试假体实现到真实契约的深度，决定
+了测试能看见什么。
+
+防线落点：引擎 verify（G2 单测+G4 契约）+ 评审三问（调用方/触发路径/假体保真
+度）；ADR-212① 的 grpcrecover 拦截器与 ADR-213② 的流式假体测试是本条的固化。
+
+## 13. 客户端错误泄漏为上游失败口径；注释里的环境断言未实测
+
+现象：①manager 把非法数值参数、坏 base64、未知 spec 字段一律报 502——上游把
+502 当"网关不可达"做重试/降级，掩盖真实原因（客户端格式错误）；②gateway 上传
+分块注释按"gRPC 默认 4MiB"设 2MiB 分块，实测网关收包上限是 1MiB——任何
+>~750KiB 文件上传从来不可能成功，注释里的假设从未被实测。
+
+根因：异常兜底一锅端（不分类），环境数值抄默认值不实测。
+
+普适教训：**错误码是契约**（400=改请求重试、502=上游降级——语义污染直接改变
+调用方行为）；**注释里的环境/库行为断言一律实测后落笔**（4MiB 是 gRPC 默认值
+不等于网关的实际配置；protobuf 新版 ParseError 已不是 ValueError 子类，同类
+"库行为随版本漂移"还有 examples）。
+
+防线落点：每服务统一错误分类（ADR-212③ 的 400 映射 + 错误映射测试）；环境
+约束类断言在 ADR 记录实测方法与数值（manager UPLOAD_CHUNK_BYTES 注释即样例）。
+
+## 14. 重构迁移改了布局/契约，依赖旧布局的旁路读路径不进回归视野（gw-f6a3523 三连实证）
+
+现象：①ADR-200/203/209 把上传流任务源从 gateway uploads_dir 迁到
+`repos_dir/uploads-<task_id>/unpacked` 后，ADR-195 的 source-file 解析链四流
+（repo 目录/链接文件/project_path/唯一内容回退）对该布局**全部落空**——发现详情
+"源码全文不可用、Sink 链路不可用"，而端点单元测试全绿（测试造的数据还是旧布局）；
+②解包不剥压缩包顶层壳目录（`<repo>-master/`），fixpatch 校验、沙箱模型视角、
+source-file 三方根错位 → 7/7 补丁静默误杀 + 17 分钟 fixretry 白跑；③GUI 全流程
+对实时性的断言只有"等待期执行日志有增长 + AI 日志终态非空"，AI 阶段中途增量到达
+从未被断言——WS 30min 硬断×token 竞态的流式回归直通交付；④sim-sync 只同步
+engine 不同步 web，console 容器永远用残留旧树重建——前端修复不进部署产物。
+
+根因：重构只迁移了"写路径"（谁生产数据），没有盘点"读路径"（谁按旧布局消费
+数据）；旁路读路径（源码回查/补丁校验/GUI 断言）各自有单元测试，测试数据沿用
+旧布局，绿一片而链路已断。
+
+普适教训：**改布局/契约时，盘点动作必须覆盖"全部按旧假设读盘的一方"**——grep
+旧布局常量（uploads_dir/链接文件名/unpacked）逐个裁决；每个读路径的测试数据
+必须用**当前生产布局**构造；前端验证断言必须覆盖被修缺陷的**中间态**（流式=
+运行中采样增长），终态断言抓不住渐进类回归；**部署产物必须与验证产物同源**
+（sim-sync 同步 web 与 engine 同批）。
+
+防线落点：source-file ①b 流回归锁（uploads-unpacked 布局+剥壳）+
+ResolveProjectRoot 单测（task/gateway 双份同语义）；e2e 用例04 增
+source-file 200 冒烟；deploy/tests/gui_streaming_check.py（AI 阶段运行中
+增量到达断言）；sim-sync.sh 纳入 web 同步。
+
+## 15. 管道跑 openshell-gateway tests/run.sh 会挂死（监听器持管道写端）
+
+症状：`bash tests/run.sh | tail` 永不返回；后台任务无输出、无退出，`tail` 独活。
+
+根因：tests/run.sh 的 start_listener 用后台 python3 起 TCP 监听器供 /dev/tcp 探测，
+`accept()` 无超时、deadline 在 accept 阻塞下永远检查不到——探测完成后监听器最长
+滞留 300s 且持有 stdout；`| tail` 等"全部管道写端 EOF"，被滞留监听器钉死。
+仓内正常用法（裸跑终端/pre-commit）不等待后台任务，从无此现象——**坑只在使用者
+给套了管道时引爆**。
+
+普适教训：**长时脚本的验证调用不要经管道取尾**——直接落盘（`> file 2>&1; echo $?`）
+或裸跑；读别人的测试/工具脚本时，先看有没有后台驻留子进程（监听器/watcher），
+它们会把"管道 EOF 语义"变成"最长寿命语义"。
+
+防线落点：gateway tests/run.sh 的监听器可加 `settimeout`（上游代码，未改）；伞仓侧
+跑该门禁一律落盘方式（本账本行即为凭证，2026-09-08 踩雷两次后固化）。
+
+## 16. production-deploy.sh down/stop/status 对 manager 项目名错位（漏删运行容器）
+
+症状：`production-deploy.sh down` 报"down（卷保留）完成"，但 `openshell-manager`
+容器仍在运行占着 18800；下次部署 compose 撞容器名 `Conflict. The container name
+"/openshell-manager" is already in use`。
+
+根因：manager 的部署落点与下电落点不是同一 compose 项目——`deploy_manager` 装配到
+`deploy/.manager-stage`（项目名归一为 manager-stage），而 `compose_manager`（被
+status/stop/down 复用）指向 `manager/deploy`（项目名 deploy）。项目名对不上，
+compose 对着空项目做 stop/down，静默无效果且退出码 0。engine/web/gateway 三家
+部署目录=下电目录，无此病；**坑只在 deploy 与 down 目录不同构的组件上引爆**。
+
+普适教训：**compose 生命周期操作（up/down/stop/ps）必须用与当初部署完全相同的
+project 定位（目录+env-file）**——容器归属看 `docker inspect` 的
+`com.docker.compose.project` 标签，不看脚本里"应该在哪"；写部署脚本时，deploy 与
+down 若不能共享同一个 compose 包装函数，就必然漂移。
+
+防线落点：production-deploy.sh `compose_manager` 已改指运行态 stage 目录并对未
+部署态静默跳过（2026-09-08，107 实测 down 幂等空跑 exit=0）。附：107 上沙箱网关
+是 sim 与生产共用的（项目 openshell-gateway，checkout 在 /root/ca-umbrella）——
+在 107 跑 `production-deploy.sh down` 会连网关一起下电，sim 沙箱链随断，须重跑
+`gateway_lifecycle.sh ensure`（8080/8081）复位。

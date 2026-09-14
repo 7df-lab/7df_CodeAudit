@@ -19,9 +19,9 @@ interface OpenBlock {
   index: number
   kind: 'text' | 'reasoning' | 'tool-call'
   text: string
-  /** tool-call only */
-  callId?: string
-  name?: string
+  /** tool-call only, absent until a delta carries a non-empty value. */
+  callId?: string | undefined
+  name?: string | undefined
 }
 
 /**
@@ -51,14 +51,18 @@ export function mapFinishReason(reason: string): FinishReason {
  * @param usage - wire usage from the finish chunk or the trailing usage-only chunk.
  * @returns disjoint harness counts; an exact total is present only when the
  *   aggregate prompt/completion counters are valid and agree with any wire total.
+ *   Returns `undefined` — dropping the whole usage object — when either
+ *   aggregate counter is missing or not a safe integer: a malformed accounting
+ *   frame must not propagate `NaN` into billing and telemetry totals.
  */
-export function mapUsage(usage: WireUsage): TokenUsage {
+export function mapUsage(usage: WireUsage): TokenUsage | undefined {
+  if (!Number.isSafeInteger(usage.prompt_tokens) || !Number.isSafeInteger(usage.completion_tokens)) {
+    return undefined
+  }
   const cacheRead = usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens
   const reasoning = usage.completion_tokens_details?.reasoning_tokens
   const combined = usage.prompt_tokens + usage.completion_tokens
-  const hasExactTotal = Number.isSafeInteger(usage.prompt_tokens)
-    && usage.prompt_tokens >= 0
-    && Number.isSafeInteger(usage.completion_tokens)
+  const hasExactTotal = usage.prompt_tokens >= 0
     && usage.completion_tokens >= 0
     && Number.isSafeInteger(combined)
     && (usage.total_tokens === undefined || usage.total_tokens === combined)
@@ -69,6 +73,21 @@ export function mapUsage(usage: WireUsage): TokenUsage {
     ...cacheRead !== undefined ? { cacheReadTokens: cacheRead } : {},
     ...reasoning !== undefined ? { reasoningTokens: reasoning } : {},
   }
+}
+
+/**
+ * Accept one streamed identity field for a tool call. `id` and `name` are
+ * identity, not accumulation: the wire sends each once, on the call's first
+ * delta. A continuation delta that re-sends the field empty — or `null`, which
+ * some OpenAI-compatible gateways fill in — means "no update", never "clear".
+ * @param current - the identity established by an earlier delta of this call.
+ * @param incoming - the field as parsed from this delta. The wire type is a
+ *   claim about a remote encoder, so anything but a non-empty string leaves the
+ *   established value alone rather than overwriting it.
+ * @returns the identity in force after this delta.
+ */
+function acceptIdentity(current: string | undefined, incoming: unknown): string | undefined {
+  return typeof incoming === 'string' && incoming.length > 0 ? incoming : current
 }
 
 /** Assemble the final ContentBlock for one open block. */
@@ -166,8 +185,8 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
           toolBlocks.set(call.index, block)
           yield { type: 'block-start', index: block.index, blockType: 'tool-call' }
         }
-        if (call.id !== undefined) block.callId = call.id
-        if (call.function?.name !== undefined) block.name = call.function.name
+        block.callId = acceptIdentity(block.callId, call.id)
+        block.name = acceptIdentity(block.name, call.function?.name)
         const fragment = call.function?.arguments ?? ''
         block.text += fragment
         yield {
@@ -185,8 +204,12 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
     }
 
     // Usage may arrive attached to the finish chunk or as a trailing
-    // usage-only chunk — keep the latest.
-    if (chunk.usage) pendingUsage = mapUsage(chunk.usage)
+    // usage-only chunk — keep the latest. A malformed frame is dropped whole
+    // rather than replacing a previously recorded valid usage.
+    if (chunk.usage) {
+      const mapped = mapUsage(chunk.usage)
+      if (mapped !== undefined) pendingUsage = mapped
+    }
   }
 
   // parseSse guarantees the [DONE] sentinel (or throws); reaching here means

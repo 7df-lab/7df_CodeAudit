@@ -400,7 +400,7 @@ task-service 同卷——source-file 读的就是 task 解包/clone 的树）。
 | # | 漂移 | 事实（代码） | 影响 |
 |---|---|---|---|
 | D1 | `configs/codeaudit.yaml:48-50` `gateway.jwt.access_ttl_min(30)/refresh_ttl_day(7)` 无任何代码消费 | TTL 曾硬编码 access 1h / refresh 24h（user.go:19-21，注释引 03 §4 但值不符）；**2026-09-11 D2 裁决：改代码对齐契约 30min/7d，死配置登记保留待接线** | 已裁决消解：实现=契约=30min/7d（`TestTokenTTL_MatchesContract` 锁定） |
-| D2 | gateway-service 历史文档（README/实现总结/构建说明）路由表/端口/中间件序/TTL 多处过时（宣称 /v1/results、/v1/storage 域、task PUT/DELETE、50053/50054 端口、per-IP 限流） | 以本文 §2 为准 | 历史文档已删除；本文即 SSOT |
+| D2 | `services/gateway-service/README.md` / `IMPLEMENTATION_SUMMARY.md` / `BUILD_INSTRUCTIONS.md` 路由表/端口/中间件序/TTL 多处过时（宣称 /v1/results、/v1/storage 域、task PUT/DELETE、50053/50054 端口、per-IP 限流） | 以本文 §2 为准 | 三份历史文档不再维护路由事实；新文档即 SSOT |
 | D3 | `03_接口规范.md` §1.1 宣称 gateway "gRPC 直通"与 ValidatePermission 转发 | 网关无 gRPC 服务端、无 ValidatePermission 调用；实际暴露面远超该表 | 设计文档滞后，本文为准 |
 | D4 | transcode.go:550 注释宣称 snapshot 支持 `log_limit` | 代码固定 `Limit:500` 未读该参数 | 注释失真；参数未实现 |
 

@@ -83,6 +83,19 @@ describe('TasksPage（任务↔报告对称）', () => {
 // （审计修复）：发现数单元格——带 pagination:{page_size:100}（契约形状分页缺省命中
 // 服务端极小缺省页，>缺省条数任务的发现数被截断）；计数优先消费 pagination.total（服务端
 // 权威总数），缺失回退已加载行数（上一用例的无 pagination 载荷即回退路径）。
+// 创建向导弹窗化（2026-09-14）：与新建项目 Modal 同构——列表页按钮直开弹窗，不再跳页
+describe('TasksPage 新建任务弹窗（与新建项目同构）', () => {
+  it('点"新建任务"开创建向导弹窗（含四步步骤条），取消可关闭', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: '新建任务' }));
+    const title = await screen.findByText('新建扫描任务'); // Modal 标题（dialog）
+    expect(await screen.findByText('选择项目')).toBeTruthy(); // 第 1 步内容就绪
+    fireEvent.click(screen.getByRole('button', { name: /取\s*消/ }));
+    // Modal 关闭走隐藏（非卸载）路径，断言不可见而非不存在
+    await waitFor(() => expect(title).not.toBeVisible());
+  });
+});
+
 describe('TasksPage FindingCountCell 分页形状与 total 消费', () => {
   it('请求带 page_size:100；显示服务端 pagination.total（157）而非已加载行数（2）', async () => {
     routes['GET /v1/findings'] = () => ({

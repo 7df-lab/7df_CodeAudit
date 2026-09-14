@@ -76,6 +76,18 @@ g02 G-06 "document.write/dangerouslySetInnerHTML/insertAdjacentHTML/srcdoc（含
 check_anchor G-06b "报告窗 iframe sandbox 空 token（无 allow-scripts/allow-same-origin，B3AuditFixes 行为锁之外的第二道锚）" \
   "setAttribute\('sandbox', ''\)" src/api/client.ts
 
+echo "== G-07 链路 chip 两阶段解析锚点（P-32：new_size.x 表达式误判文件名/裸行引用误挂不存在文件，2026-09-13 根治）=="
+check_anchor G-07a "parseChain 存在性校验 opts 在位（fileExists/fallbackFile）" \
+  "fallbackFile" src/findings/chainParser.ts
+check_anchor G-07b "假文件 token 摘除分支（exists===false → 不进 files/不抢挂接）" \
+  "if \(exists\(ev\.path!\) === false\)" src/findings/chainParser.ts
+check_anchor G-07c "三态标记：裸行引用 inferred + 显式幻觉 unresolved" \
+  "inferred: ev\.refOnly \? true : undefined" src/findings/chainParser.ts
+check_anchor G-07d "探测三态判别锚：missing 仅认 404+file not found in project（根级 404 不判幻觉）" \
+  "file not found in project" src/api/client.ts
+check_anchor G-07e "sbx-14 真实语料回归锁在位" \
+  "SBX14_CASE" src/__tests__/chainParser.test.ts
+
 echo
 if [[ $fail -ne 0 ]]; then
   echo "guard: 存在 FAIL（$ok 项通过）——禁区模式复活或防御锚点丢失，交付被拦截。"

@@ -11,6 +11,7 @@ import {
   listAllProjects,
   getReportContent,
   getSourceFile,
+  probeSourceFile,
   getTools,
   updateProjectConfig,
   uploadArchive,
@@ -30,6 +31,8 @@ const routes: Record<string, unknown> = {
     ctx.params.reportId === 'r-html' ? '<html><body>报告</body></html>' : '{"summary":{"total_findings":3}}',
   'GET /v1/tasks/:taskId/source-file': (ctx: HandlerCtx) => {
     if (ctx.query.get('path') === 'missing.py') httpError(404, { error: 'source root unavailable' });
+    // 文件级未命中（engine resolve_only 口径的 404 文案）：存在性探测判 missing 的唯一依据
+    if (ctx.query.get('path') === 'ghost.py') httpError(404, { error: 'root=uploads_unpacked: file not found in project: ghost.py' });
     return { path: 'app.py', content: 'a\nb', total_lines: 2, bytes: 3, root_via: 'upload_link', resolved_via: 'exact' };
   },
 };
@@ -172,5 +175,20 @@ describe('E-24 getSourceFile 请求形状与错误详情提取', () => {
   });
   it('失败时 Error.message = 服务端 {error} 详情（降级横幅可读），非 axios 通用语', async () => {
     await expect(getSourceFile('t-9', 'missing.py')).rejects.toThrow('source root unavailable');
+  });
+});
+
+describe('E-24b probeSourceFile 三态（resolve_only 存在性探测, 2026-09-13 误挂接根治）', () => {
+  it('命中：200 → exists；请求带 path 与 resolve_only=1', async () => {
+    const r = await probeSourceFile('t-9', 'app.py');
+    expect(r).toBe('exists');
+    const req = gateway.requests.filter((x) => x.url === '/v1/tasks/t-9/source-file' && x.query.includes('resolve_only=1')).pop();
+    expect(req?.query).toContain('path=app.py');
+  });
+  it('404 且 {error} 含 file not found in project → missing（文件级未命中）', async () => {
+    expect(await probeSourceFile('t-9', 'ghost.py')).toBe('missing');
+  });
+  it('根级 404（源根不可解析）≠ 文件不存在 → unknown（fail-open 防误判幻觉引用）', async () => {
+    expect(await probeSourceFile('t-9', 'missing.py')).toBe('unknown');
   });
 });

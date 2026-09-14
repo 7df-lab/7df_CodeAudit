@@ -242,8 +242,12 @@ func resolveWithinRoot(root, path string) (string, string, error) {
 	return "", "", fmt.Errorf("file not found in project: %s", path)
 }
 
-// sourceFile — GET /v1/tasks/{id}/source-file?path=<项目相对路径|裸文件名>。
+// sourceFile — GET /v1/tasks/{id}/source-file?path=<项目相对路径|裸文件名>[&resolve_only=1]。
 // 响应: {path, content, total_lines, bytes, root_via, resolved_via}。
+// resolve_only=1（2026-09-13 链路 chip 文件存在性探测）：命中只返回
+// {path, bytes, root_via, resolved_via}，不读内容、不受大小上限/二进制探测约束——
+// 存在性与可读性是两个语义：超限/二进制文件存在但全文复核降级，chip 不应因此标"未定位"。
+// 兼容：老网关忽略未知 query 参数照常返回全文，前端探测把 200 一律视为存在。
 func (t *Transcoder) sourceFile(w http.ResponseWriter, r *http.Request, taskID string) {
 	pathParam := r.URL.Query().Get("path")
 	if pathParam == "" {
@@ -278,6 +282,17 @@ func (t *Transcoder) sourceFile(w http.ResponseWriter, r *http.Request, taskID s
 	fi, err := os.Stat(abs)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "stat: "+err.Error())
+		return
+	}
+	if r.URL.Query().Get("resolve_only") == "1" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"path":         rel,
+			"bytes":        fi.Size(),
+			"root_via":     rootVia,
+			"resolved_via": via,
+		})
 		return
 	}
 	if fi.Size() > maxSourceFileBytes {

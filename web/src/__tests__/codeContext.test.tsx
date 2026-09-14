@@ -160,6 +160,100 @@ describe('源码全文滚动视图（ADR-195）', () => {
   });
 });
 
+// ---- 两阶段存在性校验（2026-09-13 误挂接根治，gw-7c26f71c1771c76444baddd0-sbx-14 实证）----
+// AI 原文反复出现 C++ 成员表达式 new_size.x（形似文件名），裸行引用 (line 86)/(lines 213-218)
+// 旧解析误挂其上 → 指向不存在文件的 chip + 全文 404 黄条。根治后：resolve_only 探测判存，
+// 假文件 token 摘除、裸行引用重挂 RafDecoder.cpp 并标 *；显式幻觉引用保留标（未定位）。
+describe('链路 chip 存在性校验（两阶段解析）', () => {
+  const SBX14_REASONING =
+    '[DSH-sandbox] Verified RafDecoder.cpp:247-265: the guard tests only the dims; with alt_layout and odd ' +
+    'new_size.x, h = new_size.x/2 - 1 evaluates wrong at (0, new_size.x-1). alt_layout is set from the ' +
+    'FUJI_LAYOUT tag high bit (line 86). The relative-crop branch (lines 213-218) derives new_size from mRaw->dim.';
+  const FULL100 = Array.from({ length: 100 }, (_, i) => `line-${i + 1}`).join('\n');
+  const MISS_404 = { error: 'root=uploads_unpacked: file not found in project: new_size.x' };
+
+  function sbx14Payload() {
+    return {
+      finding_id: 'f-sbx', task_id: 't1', source_tool: 'ai_agent', source_rule_id: '',
+      cwe_id: '', title: 'Fuji rotate OOB', description: '', severity: 'SEVERITY_HIGH', confidence: 0.9,
+      ai_verdict: 'AI_VERDICT_LIKELY_TRUE', ai_confidence: 0.9, ai_fix_suggestion: '',
+      ai_reasoning: SBX14_REASONING,
+      location: { file_path: 'RafDecoder.cpp', start_line: 258 },
+      source_raw: '',
+    };
+  }
+
+  it('探测判存后重挂：new_size.x chip 摘除，裸行引用落到 RafDecoder.cpp 并带 *，全文可跳', async () => {
+    detailPayload = sbx14Payload();
+    sourceFileHandler = (ctx: HandlerCtx) => {
+      const path = String(ctx.query.get('path') ?? '');
+      if (ctx.query.get('resolve_only') === '1') {
+        if (path === 'new_size.x') httpError(404, MISS_404); // 探测：表达式不是文件
+        return { path, bytes: 12684, root_via: 'uploads_unpacked', resolved_via: 'basename' };
+      }
+      if (path === 'new_size.x') httpError(404, MISS_404);
+      return { path, content: FULL100, total_lines: 100, bytes: 900, root_via: 'uploads_unpacked', resolved_via: 'exact' };
+    };
+    renderPage();
+    // 重挂完成（探测返回后 chips 更新为终态）
+    await waitFor(() => expect(screen.getByTestId('chain-hop-1').textContent).toContain('RafDecoder.cpp:86*'));
+    expect(screen.getByTestId('chain-hop-0').textContent).toContain('RafDecoder.cpp:247-265');
+    expect(screen.getByTestId('chain-hop-2').textContent).toContain('RafDecoder.cpp:213-218*');
+    expect(screen.getByTestId('chain-hop-1').textContent).not.toContain('new_size.x');
+    // 链路 chips 全部不再出现 new_size.x（AI 结论原文 Alert 展示原文不受影响）
+    [0, 1, 2].forEach((i) => expect(screen.getByTestId(`chain-hop-${i}`).textContent).not.toContain('new_size.x'));
+    // 下拉仅漏洞所在文件（RafDecoder.cpp 与 location 基名去重合并）
+    expect(screen.getByText(/（仅漏洞所在文件）/)).toBeTruthy();
+    // 点击重挂后的裸行引用 → 全文请求 RafDecoder.cpp 并居中 86 行
+    fireEvent.click(screen.getByTestId('chain-hop-1'));
+    await waitFor(() => {
+      const srcReq = gateway.requests.filter((r) => r.url === '/v1/tasks/t1/source-file' && !r.query.includes('resolve_only')).pop();
+      expect(srcReq?.query).toContain('path=RafDecoder.cpp');
+    });
+    expect(screen.getByText(/已居中定位到第 86 行（链路引用）/)).toBeTruthy();
+    expect(screen.queryByText(/该引用位置未在项目源树中定位/)).toBeNull();
+  });
+
+  it('显式幻觉引用：chip 保留标（未定位），点击出解释视图而非冒充片段', async () => {
+    detailPayload = {
+      ...sbx14Payload(),
+      ai_reasoning: '[DSH-sandbox] Verified RafDecoder.cpp:247-265: 相关传播路径见 Ghost.py:12 的中间变量。',
+    };
+    sourceFileHandler = (ctx: HandlerCtx) => {
+      const path = String(ctx.query.get('path') ?? '');
+      if (path === 'Ghost.py') httpError(404, { error: 'root=uploads_unpacked: file not found in project: Ghost.py' });
+      if (ctx.query.get('resolve_only') === '1') {
+        return { path, bytes: 12684, root_via: 'uploads_unpacked', resolved_via: 'basename' };
+      }
+      return { path, content: FULL100, total_lines: 100, bytes: 900, root_via: 'uploads_unpacked', resolved_via: 'exact' };
+    };
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('chain-hop-1').textContent).toContain('Ghost.py:12（未定位）'));
+    // 点击幻觉引用 chip → 解释视图，而非"源码全文不可用已降级"片段冒充
+    fireEvent.click(screen.getByTestId('chain-hop-1'));
+    await waitFor(() => expect(screen.getByText(/该引用位置未在项目源树中定位到对应文件/)).toBeTruthy());
+    expect(screen.queryByText(/已降级为扫描时捕获的代码片段/)).toBeNull();
+    expect(screen.getByText('未定位')).toBeTruthy(); // 卡头 Tag
+  });
+
+  it('探测故障（500）fail-open：chips 与旧行为一致，不误判为不存在', async () => {
+    detailPayload = sbx14Payload();
+    sourceFileHandler = (): SourceFileResp => ({
+      path: 'x', content: FULL100, total_lines: 100, bytes: 900, root_via: 'uploads_unpacked', resolved_via: 'exact',
+    });
+    // 探测与全文同路由：这里只需断言 resolve_only 请求 500 时解析结果不劣化——
+    // 用路由级计数不可行（同 handler），改在响应里对 resolve_only 抛 500
+    const full = sourceFileHandler;
+    sourceFileHandler = (ctx: HandlerCtx) => {
+      if (ctx.query.get('resolve_only') === '1') httpError(500, { error: 'boom' });
+      return full(ctx);
+    };
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('chain-hop-1').textContent).toContain('new_size.x:86'));
+    expect(screen.getByTestId('chain-hop-2').textContent).toContain('new_size.x:213-218');
+  });
+});
+
 // ADR-158 回归：OpenGrep dataflow_trace 经 source_raw 透传 → 变量级污点链路渲染
 it('taint 发现携带 dataflow_trace 时渲染 SOURCE/传播/SINK 变量级链路', async () => {
   const trace = {

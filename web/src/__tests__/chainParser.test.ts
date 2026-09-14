@@ -99,3 +99,84 @@ describe('baseName', () => {
     expect(baseName('c.java')).toBe('c.java');
   });
 });
+
+// ---- 两阶段·存在性校验（2026-09-13 误挂接根治，gw-7c26f71c1771c76444baddd0-sbx-14 实证）----
+// 真实语料：AI 原文反复出现 C++ 成员表达式 new_size.x（形似文件名），且对真实文件
+// RafDecoder.cpp 写裸行引用 (line 86)/(lines 213-218)——旧解析把裸行引用挂到 new_size.x
+// 上，产出指向不存在文件的 chip（全文复核 404 降级）。
+const SBX14_CASE =
+  '[DSH-sandbox] Verified RafDecoder.cpp:247-265: the guard tests only `h < rotated->dim.y && w < rotated->dim.x`; ' +
+  'with alt_layout and odd new_size.x, h = new_size.x/2 - 1 + y - (x>>1) evaluates to -1 at (0, new_size.x-1) ' +
+  '(integer division of odd n: n/2 == (n-1)/2), and dst[w + h*dest_pitch] then targets one row before the buffer start. ' +
+  'alt_layout is set from the FUJI_LAYOUT tag high bit (line 86). The relative-crop branch (lines 213-218) derives ' +
+  'new_size from attacker-controlled mRaw->dim; hints.has("fuji_rotate") comes from the camera DB, so the loop is ' +
+  'gated on a populated DB - hence production-only severity.';
+
+describe('parseChain 两阶段——sbx-14 真实语料（new_size.x 误挂根治）', () => {
+  const existsMock = (p: string) => (p === 'RafDecoder.cpp' ? true : p === 'new_size.x' ? false : undefined);
+
+  it('无 opts 调用 = 旧行为逐字节等价（回归锚）：裸行引用误挂 new_size.x', () => {
+    const r = parseChain(SBX14_CASE);
+    expect(r.hops.map((h) => [h.path, h.line, h.endLine])).toEqual([
+      ['RafDecoder.cpp', 247, 265],
+      ['new_size.x', 86, undefined],
+      ['new_size.x', 213, 218],
+    ]);
+    expect(r.files).toEqual(['RafDecoder.cpp', 'new_size.x']);
+  });
+
+  it('注入 fileExists：假文件 token 摘除，裸行引用重挂最近有效文件并标 inferred', () => {
+    const r = parseChain(SBX14_CASE, { fileExists: existsMock });
+    expect(r.hops.map((h) => [h.path, h.line, h.endLine])).toEqual([
+      ['RafDecoder.cpp', 247, 265],
+      ['RafDecoder.cpp', 86, undefined],
+      ['RafDecoder.cpp', 213, 218],
+    ]);
+    // 显式引用（第 1 跳）不标 inferred；裸行引用（2/3 跳）统一标推断
+    expect(r.hops[0].inferred).toBeUndefined();
+    expect(r.hops[1].inferred).toBe(true);
+    expect(r.hops[2].inferred).toBe(true);
+    expect(r.files).toEqual(['RafDecoder.cpp']); // new_size.x 不进文件表/下拉
+  });
+
+  it('fileExists 全 undefined（探测未返回）→ fail-open 等价旧行为', () => {
+    const r = parseChain(SBX14_CASE, { fileExists: () => undefined, fallbackFile: 'RafDecoder.cpp' });
+    expect(r.hops.map((h) => [h.path, h.line, h.endLine])).toEqual(
+      parseChain(SBX14_CASE).hops.map((h) => [h.path, h.line, h.endLine]),
+    );
+  });
+});
+
+describe('parseChain 两阶段——幻觉引用/兜底挂接', () => {
+  it('显式 file:line 指向不存在文件：保留 hop 标 unresolved，不进 files（幻觉可见）', () => {
+    const r = parseChain('Config.java:8 入口；另见 Ghost.py:12 数据流', {
+      fileExists: (p) => (p === 'Config.java' ? true : p === 'Ghost.py' ? false : undefined),
+    });
+    expect(r.hops).toHaveLength(2);
+    expect(r.hops[0]).toMatchObject({ path: 'Config.java', line: 8 });
+    expect(r.hops[0].unresolved).toBeUndefined();
+    expect(r.hops[1]).toMatchObject({ path: 'Ghost.py', line: 12, unresolved: true });
+    expect(r.files).toEqual(['Config.java']);
+  });
+
+  it('无行号的假文件 token 不产 hop、不抢挂接语境', () => {
+    const r = parseChain('RafDecoder.cpp:10 讨论到 new_size.x 之后的 (line 5) 发生越界', {
+      fileExists: (p) => (p === 'RafDecoder.cpp' ? true : p === 'new_size.x' ? false : undefined),
+    });
+    expect(r.hops).toEqual([
+      expect.objectContaining({ path: 'RafDecoder.cpp', line: 10 }),
+      expect.objectContaining({ path: 'RafDecoder.cpp', line: 5, inferred: true }),
+    ]);
+  });
+
+  it('全文无有效文件 token：裸行引用兜底挂 fallbackFile（漏洞所在文件）', () => {
+    const r = parseChain('校验缺失处 (line 42) 直接写出', { fallbackFile: 'Vuln.py' });
+    expect(r.hops).toEqual([expect.objectContaining({ path: 'Vuln.py', line: 42, inferred: true })]);
+  });
+
+  it('全部 token 不存在且无 fallback：显式引用保留 unresolved，裸行引用丢弃', () => {
+    const r = parseChain('Foo.rb:3 x；随后 (line 7) 崩溃', { fileExists: () => false });
+    expect(r.hops).toEqual([expect.objectContaining({ path: 'Foo.rb', line: 3, unresolved: true })]);
+    expect(r.files).toEqual([]);
+  });
+});

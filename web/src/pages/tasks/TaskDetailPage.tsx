@@ -389,6 +389,12 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
           .task-detail-cols { flex-direction: column; }
           .task-detail-cols > * { width: 100% !important; height: auto !important; position: static !important; }
         }
+        /* 产出视图（2026-09-13 用户报障"两白框中间漏出黑色页面"根治）：原结构=卡体作滚动
+           容器+tabBar sticky 吸顶——卡体顶部 padding 形成一条缝隙，滚动时经过的内容（发现
+           详情里的深色源码面板/Alert）在缝隙里可见，视觉上"内容从两框之间漏出"。改为
+           Tab 条常驻、内容区（content-holder）自滚动：无吸顶即无缝隙。 */
+        .output-tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+        .output-tabs > .ant-tabs-content-holder { flex: 1; min-height: 0; overflow-y: auto; }
       `}</style>
       <div className="task-detail-cols" style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         <div style={{ width: '50%', minWidth: 0, position: 'sticky', top: 16, height: 'calc(100vh - 126px)' }}>
@@ -510,11 +516,13 @@ export default function TaskDetailPage({ taskId }: { taskId: string }) {
               flex: 1, minHeight: 120,
               display: 'flex', flexDirection: 'column', overflow: 'hidden',
             }} styles={{ body: {
-              flex: 1, minHeight: 0, overflowY: 'auto',
-              display: 'flex', flexDirection: 'column',
+              flex: 1, minHeight: 0,
+              display: 'flex', flexDirection: 'column', overflow: 'hidden',
+              /* 上下留白收进内部：Tab 条常驻贴顶（原卡体自滚动+sticky 吸顶结构已废，见 style 注） */
+              padding: '0 16px 12px',
             } }}>
               <Tabs
-                tabBarStyle={{ position: 'sticky', top: 0, zIndex: 1, background: '#fff', marginBottom: 8 }}
+                className="output-tabs"
                 items={[
                   { key: 'findings', label: '发现', children: <FindingsPage taskId={task.task_id} /> },
                   // ADR-186: 融合视图=产出融合去重清单的模式（C 并行融合 / A 纯SAST 去重合并 / D AI增强SAST 验证后融合 / 旧B 历史兼容）

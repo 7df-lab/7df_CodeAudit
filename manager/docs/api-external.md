@@ -3,7 +3,7 @@
 > 事实源：`openshell_manager/api.py`（路由与校验）+ `tests/test_contract.py`（行为锁定）。
 > 本文档由守门测试 `tests/test_guardrails.py::test_readme_api_table_matches_routes`
 > 与路由快照共同看护：接口或本文与代码漂移，门禁即红。
-> 最后核对：2026-09-12（C1 修复批 §2：沙箱不存在
+> 最后核对：2026-09-12（C1 修复批 ：沙箱不存在
 > 404 契约真实生效（R22，南向 NOT_FOUND→404 映射）、exec timeout 服务端上限
 > 600+严格 int（R23）、空 tokenFile fail-closed（R24）、multipart 前导/头块上限
 > （R25）、数值范围钳制与严格数值收尾/upsert 竞态收敛/mv 清理兜底（R26）、exec

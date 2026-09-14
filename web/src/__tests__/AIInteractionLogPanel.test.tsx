@@ -73,6 +73,8 @@ describe('AIInteractionLogPanel（AI 交互日志，ADR-168/170/181/188）', () 
     renderPanel({ text: TEXT, totalBytes: 2048, complete: false });
     const box = screen.getByTestId('ai-interaction-log-box');
     expect(box.textContent!).toContain('Let me analyze…'); // 流式展开
+    // 2026-09-14 用户报障回归锁：实时态思考块也须有"💭 模型思考"标题（此前裸正文）
+    expect(screen.getByText('💭 模型思考')).toBeTruthy();
     expect(screen.queryByText('💭 模型思考（已归档，点击展开）')).toBeNull();
     expect(box.textContent!).toMatch(/任务下发（3295 字节）/);
     expect(screen.getByText('实时接收中')).toBeTruthy();

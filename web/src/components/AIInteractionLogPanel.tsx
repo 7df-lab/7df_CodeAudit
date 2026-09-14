@@ -97,22 +97,26 @@ function parseTimeline(text: string): TimelineEntry[] {
 
 function ReasoningBody({ entry, archived }: { entry: TimelineEntry; archived: boolean }) {
   const st = KIND_STYLE.reasoning;
-  // ADR-181：执行未收束前思考流式展开（不折叠）；归档后才允许折叠长思考
+  // ADR-181：执行未收束前思考流式展开（不折叠）；归档后才允许折叠长思考。
+  // 2026-09-14 用户报障：实时态此前只有裸正文（💭 [思考] 行被 parseTimeline 消费为
+  // kind 标记后 label 未渲染），标题只在归档 summary 出现——两态不一致。实时态补
+  // 同源标题头（无"已归档"字样，收束与否由面板顶部 Tag 表达）。
+  // 标题头与正文元素两态各只持一份单源（两态样式曾手抄漂移），收束瞬间零跳变。
+  const headStyle = { fontSize: FONT, color: st.labelColor, fontWeight: 600 };
+  const body = <pre style={{ margin: '2px 0 0', fontFamily: MONO_FONT, fontSize: FONT, lineHeight: LINE_HEIGHT,
+    whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: st.bodyColor }}>{entry.body}</pre>;
   if (!archived) {
     return (
-      <pre style={{ margin: '2px 0 0', fontFamily: MONO_FONT, fontSize: FONT, lineHeight: LINE_HEIGHT,
-        whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: st.bodyColor }}>
-        {entry.body}
-      </pre>
+      <>
+        <div style={headStyle}>💭 {entry.label}</div>
+        {body}
+      </>
     );
   }
   return (
     <details>
-      <summary style={{ cursor: 'pointer', fontSize: FONT, color: st.labelColor }}>💭 模型思考（已归档，点击展开）</summary>
-      <pre style={{ margin: '2px 0 0', fontFamily: MONO_FONT, fontSize: FONT, lineHeight: LINE_HEIGHT,
-        whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: st.bodyColor }}>
-        {entry.body}
-      </pre>
+      <summary style={{ cursor: 'pointer', ...headStyle }}>💭 {entry.label}（已归档，点击展开）</summary>
+      {body}
     </details>
   );
 }
@@ -325,10 +329,18 @@ export default function AIInteractionLogPanel(
         open={modalOpen}
         onCancel={() => setModalOpen(false)}
         footer={null}
-        width="min(96vw, 1500px)"
-        styles={{ body: { padding: 0 }, content: { top: 24 } }}
+        // 2026-09-13 间距整改（人类反馈"整页查看没铺满整页、只是居中浮窗且要下滑页面才能
+        // 看全"）：改真全屏——100vw×100vh 铺满视口（原 width=min(96vw,1500px)+top:24 使总高
+        // 超出视口、外层页面出滚动），头部定高、时间线占满余高内部滚动，全图一屏尽收。
+        width="100vw"
+        style={{ top: 0, maxWidth: '100vw', paddingBottom: 0 }}
+        styles={{
+          content: { height: '100vh', borderRadius: 0, padding: 0, display: 'flex', flexDirection: 'column' },
+          header: { padding: '14px 56px 14px 20px', borderBottom: `1px solid ${EVIDENCE.border}`, flex: '0 0 auto' },
+          body: { padding: 0, flex: '1 1 auto', minHeight: 0, display: 'flex' },
+        }}
       >
-        {timeline('ai-interaction-log-box-modal', { height: 'calc(100vh - 140px)' }, modalBoxRef)}
+        {timeline('ai-interaction-log-box-modal', { flex: 1, minHeight: 0, borderRadius: 0 }, modalBoxRef)}
       </Modal>
     </Card>
   );

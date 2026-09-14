@@ -368,7 +368,7 @@ PYSTUB
     check "validated_endpoints 非空（端点可达被记录）" test -n "$(echo "$out" | tail -n +2 | grep -o '"validated_endpoints":\[[^]]\+\]')"
     http DELETE "/v1/inference/providers/$name-stub" "" "$ACCESS" >/dev/null
   else
-    check "真实验证路径（stub 端点）" test 0 = 1 "SKIP：本地 stub 未就绪（端口 $stub_port）"
+    check_skip "真实验证路径：本地 stub 未就绪（端口 $stub_port）"
   fi
   [ -n "$stub_pid" ] && kill "$stub_pid" 2>/dev/null
 
@@ -554,7 +554,7 @@ fi
 
 echo ""
 echo "================ e2e 结果 ================"
-echo "通过=$PASS 失败=$FAIL"
+echo "通过=$PASS 失败=$FAIL 跳过=$SKIP"
 if [ "$FAIL" -gt 0 ]; then
   printf '失败项:\n'; printf '  - %s\n' "${FAILED_CASES[@]}"
   exit 1

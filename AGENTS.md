@@ -14,9 +14,9 @@
 AGENTS.md（本文件）     宪法层：模式路由 / 红线 / 并行协议 / 权限边界
 docs/dev-prod-map.md    事实地图：逐仓开发/测试/生产命令与关键文件、端口总表、SSOT 清单
 docs/playbooks/         操作手册：五类会话的步骤级流程（含命令、DoD、失败出口）
-LESSONS.md              九类可复发问题档案（改部署/写配置/跑迁移前先翻）
+LESSONS.md              十六类可复发问题档案（改部署/写配置/跑迁移前先翻）
 deploy/README.md        部署纪律事实源：三层环境口径、四步自检清单
-.agent/status.md        伞仓工作账本（跨会话对账，只增不删）
+.agent/status.md        伞仓工作账本（跨会话对账，只增不删；2026-09-08 起为本机文件不入 git）
 .agent/session.sh       并行互斥：claim/release/show（锁在 .agent/sessions/，本机）
 ```
 
@@ -45,14 +45,14 @@ deploy/README.md        部署纪律事实源：三层环境口径、四步自�
 | U5 | **生产部署是外向动作**：只读 `check` 通过 + 四步自检（deploy/README）+ 有人类指令，三者齐备才执行；生产容器只允许经 deploy.sh 变更（LESSONS #6） |
 | U6 | **结构化配置提交前必须 parse 验证**（compose config / yaml 查重键 / toml 解析，LESSONS #8） |
 | U7 | **事实源纪律**：改了入口命令、端口口径、SSOT 文件，必须同 commit 同步 `docs/dev-prod-map.md` 与受影响 playbook；文档断言必须实测，禁止想当然（LESSONS #5） |
-| U8 | **诚实降级**：门禁跑不了 / 环境缺失 → 账本记 blocked 并写明差距；e2e / 部署的结论只认命令原始输出（归档 `.agent/evidence/`，本机不入 git），不认任何转述 |
+| U8 | **诚实降级**：门禁跑不了 / 环境缺失 → 账本记 blocked 并写明差距；e2e / 部署的结论只认命令原始输出（归档 `.agent/evidence/`，本机不入 git），不认任何转述。**2026-09-08 人类指令扩展**：各仓 `.agent/` 下过程文档（账本/决策/roadmap/研究/证据等）一律禁入 git/GitLab，已退订+ignore，仅 `*.sh` 工具脚本随仓 |
 
 ## 3. 并行会话协议
 
 - **认领**：`bash .agent/session.sh claim <scope> "<说明>"`
   scope = 子仓名（engine / web / vscode-plugin / manager / openshell-gateway / dsh-runtime / dsh-pentest-sse）
   或 `codeaudit-sim`（模拟栈整体，栈级互斥）。原子创建，被占则报持有者并拒绝。
-- **释放**：收尾必 `release`。锁是本机文件；跨机器的协同可见性靠 status.md 账本行（随 git 走）。
+- **释放**：收尾必 `release`。锁是本机文件；账本 `.agent/status.md` 亦是本机文件（2026-09-08 人类指令：各仓 `.agent/` 过程文档禁上传 GitLab，已退订 git——原"账本随 git 走"的跨机可见性同步废止）。
 - **账本**：`.agent/status.md` 只增不删——认领、完成、部署、协同事件各记一行，收尾时回写。
 - **陈锁**：`show` 对超过 24h 的锁标注 ⚠；确认持有会话已消亡才可 rm，并在账本记一行清理原因。
 - **冲突已发生**：以时间上更后的人类指令为准；禁止机械回滚他人改动（可能破坏已授权工作，LESSONS #9）。

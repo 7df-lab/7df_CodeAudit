@@ -8,7 +8,7 @@ USERNAME="${CODEAUDIT_SIM_USER:-admin}"
 PASSWORD="${CODEAUDIT_SIM_PASS:-admin}"
 TASK_TIMEOUT="${TASK_TIMEOUT:-600}"
 
-PASS=0; FAIL=0; FAILED_CASES=()
+PASS=0; FAIL=0; SKIP=0; FAILED_CASES=()
 
 check() { # check <说明> <退出码式命令>
   local desc="$1"; shift
@@ -17,6 +17,11 @@ check() { # check <说明> <退出码式命令>
   else
     echo "  ✗ $desc"; FAIL=$((FAIL+1)); FAILED_CASES+=("$desc"); return 1
   fi
+}
+
+check_skip() { # check_skip <说明> —— 环境性跳过：如实计数、不计失败（2026-09-13 审计 B1：
+               # 原写法把 SKIP 理由当 test 第 4 操作数，"参数太多"恒 FAIL 误报挂红）
+  echo "  ⊘ SKIP $1"; SKIP=$((SKIP+1)); return 0
 }
 
 eq() { [ "$1" = "$2" ]; }                    # eq <实际> <期望>

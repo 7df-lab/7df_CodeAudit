@@ -106,7 +106,7 @@ npm run preview         # 本地预览生产构建（/v1 代理配置与 dev 相
 
 ## 已知取舍
 
-有意识接受并留档的设计取舍（审计 建档；"知道并接受"≠"不知道"）：
+有意识接受并留档的设计取舍（ 建档；"知道并接受"≠"不知道"）：
 
 - **WS token 走 URL 参数**（`/v1/tasks/{id}/ws?token=…`）：浏览器 WebSocket API 无法自定义
   请求头，`Authorization` 头方案在握手期不可行。接受依据：内网部署边界 + access token 短时

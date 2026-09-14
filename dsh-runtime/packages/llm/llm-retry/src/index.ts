@@ -227,12 +227,10 @@ export function apply(ctx: Context, config: Config = {}, internals: RetryInterna
     if (failure.providerRetryAfterMs !== undefined
       && Number.isFinite(failure.providerRetryAfterMs)
       && failure.providerRetryAfterMs > 0) {
-      if (failure.providerRetryAfterMs > policy.maxDelayMs) {
-        if (policy.mode === 'normal') return next()
-        delayMs = localDelay(policy, retry, random)
-      } else {
-        delayMs = failure.providerRetryAfterMs
-      }
+      // Respect the provider window up to the policy cap: an over-cap
+      // instruction still retries after the longest wait the policy allows
+      // instead of abandoning recovery (human ruling 2026-09-11).
+      delayMs = Math.min(failure.providerRetryAfterMs, policy.maxDelayMs)
     } else {
       delayMs = localDelay(policy, retry, random)
     }

@@ -112,7 +112,8 @@ def login(page, base, user, password):
     page.locator("input").nth(0).fill(user)
     page.locator("input").nth(1).fill(password)
     page.get_by_role("button", name="登 录").click()
-    page.wait_for_url("**/projects**", timeout=15_000)
+    # 登录后落总览'/'（App P4：登录后落总览页；旧口径'/'仅重定向 /projects 已失效）——判离登录页
+    page.wait_for_url(lambda url: not url.rstrip("/").endswith("/login"), timeout=15_000)
 
 
 def snap_status(snap):
@@ -252,7 +253,10 @@ def mode_walkthrough(args):
         snap(1)
 
         # ---- 2. 新建项目（UI 上传）----
-        page.get_by_text("新建项目", exact=False).first.click()
+        # 登录后落总览（App P4）：总览的"新建项目"按钮跳 /projects?new=1（项目页暂不
+        # 消费该参数自动开弹窗）——GUI 门禁需到项目页点 PageHeader 的按钮开 Modal
+        page.goto(args.base + "/projects", wait_until="domcontentloaded")
+        page.get_by_role("button", name="新建项目").click()
         dlg = page.locator(".ant-modal:visible, [role='dialog']").first
         dlg.wait_for(state="visible")
         name = f"ui-全流程-{time.strftime('%H%M%S')}"
@@ -433,8 +437,11 @@ def mode_walkthrough(args):
                         centered = st and 0 <= st["top"] - st["scrollTop"] <= st["vh"]
                         check("点选链路 hop：切换为「链路引用」定位且行号一致",
                               bool(m2) and int(m2.group(1)) == hop_line, f"caption={m2.groups() if m2 else None}")
+                        # 高亮色 = web src/theme/evidence.ts EVIDENCE.link（2026-09-13 P1
+                        # 设计整改换装 #58A6FF=rgb(88,166,255)；旧值 64,169,255 已废）——
+                        # 再换主题须同步此处字面量
                         check("链路行蓝色高亮且居中（自动滚动）",
-                              bool(st) and "64, 169, 255" in st["boxShadow"] and centered)
+                              bool(st) and "88, 166, 255" in st["boxShadow"] and centered)
                   except Exception as e:
                     check("点选链路 hop：切换为「链路引用」定位且行号一致", False,
                           f"hop 点选块异常（定位器失稳/源文件切换）：{str(e)[:90]}")

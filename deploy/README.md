@@ -96,8 +96,10 @@ bash deploy/production-deploy.sh status | stop | down [-v]
   `net.LookupHost`）。用户以 **IP+端口**直接访问 console（`http://<IP>:8088`）与网关 API
   （`http://<IP>:8090`，部署完成横幅打印实际地址）。唯一出网依赖 = 部署后自注册的
   LLM provider endpoint（可达性由用户环境保证，可 IP 可域名）。
-- 部署前 opengrep 缺失时自动按 PROVENANCE.md 来源拉取（官方 release，sha256 复核；
-  无 GitHub 出口按文件内指引手工 vendor）。
+- 部署前 opengrep 缺失时自动按 PROVENANCE.md 来源拉取（官方 release 优先，
+  ghfast.top / gh-proxy.com / ghproxy.net 三加速镜像依序兜底——2026-09-13 劣化
+  窗口官方直连 TLS 握手超时实测驱动；sha256 统一复核不动完整性；无任何出口按
+  文件内指引手工 vendor）。
 - 网关侧 JWT 签名密钥与 supervisor 镜像由 `gateway_lifecycle.sh ensure` 自举
   （2026-09-05 前 = 隐藏手工步骤，107 全量退役实测暴露后固化）。
 
@@ -119,18 +121,23 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\bootstrap.ps1 -RepoUrl <
 powershell -ExecutionPolicy Bypass -File deploy\windows\expose-lan.ps1            # 8088/8090 → LAN
 ```
 
-- **Git Bash 壳**：克隆统一 `-c core.autocrlf=false` + CRLF 校验（残留则
-  checkout-index 强制重检出 LF）；bash 入口内置 MSYS 工具面回退——`ss`→`netstat`、
+- **两壳共有的 CRLF 防线**：克隆统一 `-c core.autocrlf=false`；autocrlf=false
+  无条件落盘伞仓+子仓；哨兵 `crlf_check.sh` 全量扫伞仓+子仓跟踪 .sh/Dockerfile*，
+  命中走修复——修复守卫内建于脚本：与行尾无关的未提交改动退出 3 拒修（防丢
+  数据），纯行尾脏（re-smudge 形态）自动归一且不丢内容；退出码契约
+  0 干净/1 命中/2 用法错/3 拒修，bootstrap 按码分诊（含 cd 失败 9 不再误诊 CRLF）。
+- **Git Bash 壳**：bash 入口内置 MSYS 工具面回退——`ss`→`netstat`、
   `ip`/`hostname -I`→`ipconfig`（port_listening/access_ip/host_ip_candidates 三处）、
   `python3`→`python`（bootstrap 缺 Python 时 winget 装，仅有 python 时自动建
   `~/bin/python3` 垫片）；unzip 缺失仅告警（只影响素材全量拉取分支，在位即零下载不受影响）。
 - **WSL 壳**：仓库克隆在 WSL 的 Linux 文件系统（`$HOME`）内——`/mnt/c` 又慢又可能因
-  CRLF 损坏 shell 脚本；bash 入口在 WSL 下自动把访问面缺省地址切为 `localhost`
+  CRLF 损坏 shell 脚本；克隆带 `-c core.autocrlf=false` + 同款哨兵/修复链（2026-09-13
+  二批补齐，防线两壳共有）；bash 入口在 WSL 下自动把访问面缺省地址切为 `localhost`
   （`is_wsl` 探测 /proc/version）并在汇总/横幅提示 portproxy。
 - 访问口径（两壳一致）：Windows 本机浏览器 `http://localhost:<口>`；局域网其它设备用
   `expose-lan.ps1`（netsh portproxy + 防火墙）或 Win11 22H2+ 的 WSL 镜像网络模式。
-- 状态（U8 如实记）：bootstrap/expose-lan 为静态编写，尚未在真实 Windows 上实测
-  （本机无 pwsh/Windows）；bash 入口的可移植性回退分支经本机可测面验证
+- 状态（U8 如实记）：bootstrap/expose-lan 未在真实 Windows 上实测（本机无
+  pwsh/Windows）；bash 入口的可移植性回退分支经本机可测面验证
   （netstat 正则实测命中、configure/deploy 全链回归绿），MSYS/WSL 分支待实机。
 - 2026-09-13 审计整改批（P1×4/P2×5/P3×4，代码审计发现全处置）：①双 ps1 加 UTF-8
   BOM（PS5.1 无 BOM 按 ANSI 解码中文，乱码乃至解析破裂）；②原生命令探测统一走
@@ -145,6 +152,29 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\expose-lan.ps1          
   ⑧WSL 按 --help 特征检测分派（inbox 19041 无 --no-distribution 不再误报 BIOS）；
   ⑨expose-lan 逐口核验退出码+防火墙限 Private/Domain+端口 ValidateRange。
   crlf 哨兵/修复逻辑（crlf_check.sh）本机实测绿；ps1 整体仍待实机回归。
+- 2026-09-13 二批（同日代码审计复核 4 坐实项+低分项全处置）：⑥的"消除引号断裂"
+  只在 bash 层成立——PS5.1 原生传参对内嵌双引号不转义（7.3 才修），单引号静态
+  脚本经命令行到达 bash.exe 即被 MSVCRT 规则剥引号/切参（python 探测恒假死循环/
+  守卫脚本语法错空转/含空格路径 cd 断，前批 ③ 的调用方脏树拦截因此空转）。本批
+  根治：⑩全部 bash 脚本改经临时文件（Git Bash 壳）或 stdin→WSL 内固定路径
+  （WSL 壳）下发，脚本内容不经命令行（静态门禁 deploy/tests/bootstrap_static_check.sh
+  断言无 `bash -lc '` 残留+全部字面量 bash -n/ASCII/LF 绿）；⑪修复守卫内化进
+  crlf_check.sh（原调用方约定）：`git diff --ignore-cr-at-eol` 工作树/暂存区双检
+  +子仓逐个同检判别脏树性质——纯行尾脏自动归一不丢内容，内容脏退出 3 拒修
+  （合成仓 8 场景实测 deploy/tests/crlf_check_test.sh 21/21 绿）；⑫WSL 壳补齐
+  CRLF 防线（clone `-c core.autocrlf=false`+autocrlf 落盘+哨兵/修复链，原仅
+  Git Bash 壳覆盖）；⑬哨兵/修复退出码分诊（cd 失败 9 不再误诊 CRLF，含空格
+  USERPROFILE 场景给出正确指引）；⑭To-PosixPath 拒盘符绝对路径补盘根形态
+  （`C:`/`C:\`）；⑮e2e 用例 10 的 stub 未就绪段改 `check_skip`（原把 SKIP 理由
+  当 test 第 4 操作数"参数太多"恒 FAIL 误报挂红）。
+- **真机验收清单**（U8 结题判据——PS 侧行为本机仅静态/传输层模拟验证，以下
+  须真实 Windows PowerShell 5.1 实机全过后本节整改批方可记闭环）：①健康机
+  （已装 Docker/Python/Git Bash）一遍过 configure/deploy，不再误装 Python 死循环；
+  ②`%USERPROFILE%` 含空格的机器走通（哨兵不再误诊"CRLF 归一化失败"）；③对
+  全局 autocrlf=true 克隆出的 smudged 树跑 bootstrap：哨兵命中→自动归一成功，
+  有真实未提交改动时拒修并给出 stash 指引；④WSL 兜底壳（无 Git Bash 机器）
+  克隆+部署全链走通，含 CRLF 哨兵；⑤e2e `run.sh` 在 stub 未就绪时报告
+  `跳过=1` 且退出 0。
 
 ## 4. 功能测试覆盖面（deploy/tests/run.sh）
 

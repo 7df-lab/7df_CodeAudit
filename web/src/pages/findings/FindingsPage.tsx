@@ -31,7 +31,7 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
 
   // （审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询——
   // "加载更多"翻页后前页保留（pages 累积），不再是整表替换。
-  // 过滤条件不进 queryKey（审计 复核结论）：结论/严重级/路径/来源筛选全是纯客户端行为
+  // 过滤条件不进 queryKey（ 复核结论）：结论/严重级/路径/来源筛选全是纯客户端行为
   // （服务端 ListFindings 未接线 filter——result-service repo.List 第 4 参硬编码空串，proto
   // FilterRequest 只认 conditions 形状且网关 DiscardUnknown 静默丢弃未知字段，发 {filter:…}
   // 等于没发）。筛选在渲染层对已累计页过滤，游标分页序列不受影响，无"过滤后翻页错位"面；
@@ -72,21 +72,28 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
     },
   });
 
+  // 2026-09-13 间距整改（用户报障"风险详情展开后左右无限宽+字段间距不合理"）：
+  // 改前 scroll={{x:'max-content'}} 与行展开（colSpan 单元格）组合会把表格内征宽度撑到
+  // 浏览器上限（实测展开态 1000082px、未展开也已溢出容器 1678/894）。改为 tableLayout
+  // fixed + 全列显式宽度 + scroll.x 数值下限（width:Npx + min-width:100%——容器宽则撑满、
+  // 窄则出界内滚动），展开行不再参与宽度计算。列预算按最窄桌面右栏（~860px）分配。
   const columns = [
     // 2026-09-09 GUI 评审: 窄容器（任务详情产出视图）下无宽度约束会把标题挤成竖排单字
-    { title: '发现', dataIndex: 'title', width: 220, ellipsis: true }, // ADR-150: 审核功能内嵌行展开，不再跳独立页
-    { title: '严重级', dataIndex: 'severity', render: (s: string) => <Tag color={SEVERITY_COLOR[s]}>{zh(SEVERITY, s)}</Tag> },
-    { title: 'CWE', dataIndex: 'cwe_id' },
+    { title: '发现', dataIndex: 'title', width: 150, ellipsis: true }, // ADR-150: 审核功能内嵌行展开，不再跳独立页
+    { title: '严重级', dataIndex: 'severity', width: 52, render: (s: string) => <Tag color={SEVERITY_COLOR[s]}>{zh(SEVERITY, s)}</Tag> },
+    // CWE 是代码型 token（CWE-1104），禁止连字符处折行（折行比溢出更伤可读性）
+    { title: 'CWE', dataIndex: 'cwe_id', width: 84, render: (v: string) => <span style={{ fontFamily: MONO_FONT, whiteSpace: 'nowrap' }}>{v || '—'}</span> },
     {
       // ADR-159: 链路可用性可见——真解析 source_raw 判 dataflow_trace（非按工具名猜测），
       // 有变量级污点链路的行给"污点链路"徽标, 用户不必逐个点开试探
       title: '来源',
       dataIndex: 'source_tool',
+      width: 88,
       render: (v: string, rec: UnifiedFinding) => {
         let hasTrace = false;
         try { hasTrace = !!extractDataflowTrace(rec.source_raw); } catch { hasTrace = false; }
         return (
-          <Space size={4}>
+          <Space size={4} wrap>
             <span>{v}</span>
             {hasTrace && <Tag color="orange" style={{ marginRight: 0 }}>污点链路</Tag>}
             {/* ADR-225: 继承项角标（增量扫描双视图的行级来源标记） */}
@@ -98,11 +105,17 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
     {
       // 2026-09-09 GUI 评审: 容器内绝对路径（/app/data/repos/...）冗长且非用户视角，
       // 显示文件名+行号，完整路径悬停可见
-      title: '位置', dataIndex: 'location',
+      title: '位置', dataIndex: 'location', width: 144,
       render: (loc: UnifiedFinding['location']) => {
         if (!loc) return '—';
         const base = loc.file_path.split('/').pop();
-        return <Tooltip title={`${loc.file_path}:${loc.start_line}`}><span style={{ fontFamily: MONO_FONT }}>{base}:{loc.start_line}</span></Tooltip>;
+        return (
+          <Tooltip title={`${loc.file_path}:${loc.start_line}`}>
+            <span style={{ fontFamily: MONO_FONT, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {base}:{loc.start_line}
+            </span>
+          </Tooltip>
+        );
       },
     },
     // ADR-153 方案A: V1 契约 AI/人工共用 ai_verdict（proto L78/L1240），列头如实标注并悬停说明
@@ -138,40 +151,39 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
       },
     },
     {
-      // ADR-152: 复核状态可见性——判定后行上不止标签变化，还有判定时间
-      title: '复核状态',
+      // ADR-152 + ADR-151 合并列（2026-09-13 间距整改）：复核状态（判定态+时间）与行内
+      // 快捷 triage 同属复核动作域，分开两列在 50% 窄容器里把"当前结论"挤到溢出——合并后
+      // 让位给结论预览。判定态/时间/快捷按钮三信息全保留。
+      title: '复核',
       dataIndex: 'ai_verdict',
-      width: 130,
+      width: 112,
       render: (v: string, rec: UnifiedFinding) => {
         const reviewed = v && v !== 'AI_VERDICT_UNSPECIFIED';
         return (
-          <Space size={2} direction="vertical">
-            <Tag color={reviewed ? 'green' : 'default'}>{reviewed ? '已判定' : '未判定'}</Tag>
+          <Space size={4} direction="vertical">
+            <Tag color={reviewed ? 'green' : 'default'} style={{ marginRight: 0 }}>
+              {reviewed ? '已判定' : '未判定'}
+            </Tag>
             {rec.updated_at && (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {dayjs(rec.updated_at).format('MM-DD HH:mm')}
               </Typography.Text>
             )}
+            <Space size={4}>
+              {/* 行内快捷 triage 不用 primary：表格里每行一个主色按钮会稀释真正的主操作
+                  ；与"误报"同级，仅语义文字区分 */}
+              <Button size="small"
+                onClick={() => quickTriage.mutate({ id: rec.finding_id, verdict: 'AI_VERDICT_TRUE_POSITIVE' })}>
+                确认
+              </Button>
+              <Button size="small"
+                onClick={() => quickTriage.mutate({ id: rec.finding_id, verdict: 'AI_VERDICT_FALSE_POSITIVE' })}>
+                误报
+              </Button>
+            </Space>
           </Space>
         );
       },
-    },
-    {
-      title: '人工复核',
-      render: (_: unknown, rec: UnifiedFinding) => (
-        <Space>
-          {/* 行内快捷 triage 不用 primary：表格里每行一个主色按钮会稀释真正的主操作
-              ；与"误报"同级，仅语义文字区分 */}
-          <Button size="small"
-            onClick={() => quickTriage.mutate({ id: rec.finding_id, verdict: 'AI_VERDICT_TRUE_POSITIVE' })}>
-            确认
-          </Button>
-          <Button size="small"
-            onClick={() => quickTriage.mutate({ id: rec.finding_id, verdict: 'AI_VERDICT_FALSE_POSITIVE' })}>
-            误报
-          </Button>
-        </Space>
-      ),
     },
   ];
 
@@ -278,15 +290,22 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
         dataSource={rows}
         columns={columns}
         pagination={false}
-        // 2026-09-09 GUI 评审: 任务详情产出视图是窄容器, 无横向滚动会把各列头挤压成
-        // 竖排单字——总宽超出即横向滚动, 列头保持可读
-        scroll={{ x: 'max-content', ...(rows.length > 50 ? { y: 480 } : {}) }}
+        // size=small：嵌入产出视图的紧凑密度，单元格水平内边距 16→8，为列宽预算省 ~64px
+        // 2026-09-13 间距整改（见 columns 注）：fixed 布局根除"max-content×行展开"把
+        // 表格撑到浏览器内征宽度上限的病理；scroll.x=820 仅作最窄桌面右栏（~1200px 视口
+        // 下 ~574px 容器）的下限保护，宽容器由 min-width:100% 撑满、无横向滚动。
+        // 2026-09-09 GUI 评审的"列头挤压竖排"由全列显式宽度兜住。
+        tableLayout="fixed"
+        size="small"
+        scroll={{ x: 820, ...(rows.length > 50 ? { y: 480 } : {}) }}
         virtual={rows.length > 50}
         rowClassName={(rec) => (rec.ai_verdict && rec.ai_verdict !== 'AI_VERDICT_UNSPECIFIED' ? 'finding-reviewed' : '')}
         expandable={{
           // ADR-150: 行展开=完整审核工作台（代码上下文/当前结论/裁决区），不再跳独立页
           expandedRowRender: (rec: UnifiedFinding) => <FindingDetailBody findingId={rec.finding_id} />,
           rowExpandable: () => true,
+          // fixed 布局下展开列必须显式给宽（缺省会参与剩余宽度分配，挤占"当前结论"）
+          columnWidth: 80,
           // ADR-151: 默认展开箭头过小不易发现——改为明确的"风险详情"按钮
           expandIcon: (props: import('rc-table/es/interface').RenderExpandIconProps<UnifiedFinding>) => (
             <Button

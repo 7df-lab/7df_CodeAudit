@@ -67,9 +67,9 @@
 
 | ID | 导出 | 输入 → 输出 | 契约要点 | 锚点 |
 |----|------|-------------|----------|------|
-| I-50 | `parseChain(text?: string \| null)` | 自由文本 → `{hops: ChainHop[], files: string[]}` | 六类引用形态（file:line / 行区间 / 中文行引用 / L 前缀 / lines 英文 / 全角括号数字区间）；反引号段置零抑制噪声；hops 按原文顺序去重；行引用挂接最近文件；role 仅关键词命中（sink 优先），**不推测**；行引用先于文件→丢弃 | chainParser.test.ts（真实实例逐字 + 普适形态） |
+| I-50 | `parseChain(text?, opts?)` | 自由文本 + `{fileExists?, fallbackFile?}` → `{hops: ChainHop[], files: string[]}` | 六类引用形态（file:line / 行区间 / 中文行引用 / L 前缀 / lines 英文 / 全角括号数字区间）；反引号段置零抑制噪声；hops 按原文顺序去重；行引用挂接最近文件；role 仅关键词命中（sink 优先），**不推测**；行引用先于文件→丢弃。**两阶段存在性校验**（2026-09-13 误挂接根治）：fileExists=false 的 token 不进 files/不产 hop/不抢挂接，其上显式引用标 `unresolved`（幻觉可见），挂其上的裸行引用重挂最近有效 token（无则 fallbackFile=漏洞所在文件）；裸行引用一律标 `inferred`；fileExists 缺省/undefined=旧行为逐字节等价（fail-open） | chainParser.test.ts（真实实例逐字 + sbx-14 两阶段语料 + 普适形态） |
 | I-51 | `baseName(p)` | 路径 → 末段 | 文件选择器基名对齐 | chainParser.test.ts |
-| I-52 | `ChainHop` | `{path, line?, endLine?, snippet, role?}` | path 为**原文写法**（裸文件名/截断路径），消费方交服务端回退解析（E-24） | codeContext.test.tsx |
+| I-52 | `ChainHop` | `{path, line?, endLine?, snippet, role?, inferred?, unresolved?}` | path 为**原文写法**（裸文件名/截断路径），消费方交服务端回退解析（E-24）；`inferred`=裸行引用的文件归属系解析器推断（chip 加 `*`）；`unresolved`=显式引用但源树无此文件（chip 标 `（未定位）`，不进下拉） | codeContext.test.tsx（两阶段三态组） |
 
 ## 6. dict/index.ts —— 枚举中文字典（展示翻译，值域=proto 枚举，不自造）
 

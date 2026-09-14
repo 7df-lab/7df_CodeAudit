@@ -5,6 +5,7 @@ package handler
 // 超限拒绝。进程内真实 gRPC 后端（同 transcode_test.go 口径，不 mock HTTP 层）。
 
 import (
+	"bytes"
 	"github.com/codeaudit/services/gateway-service/internal/middleware"
 	"context"
 	"encoding/json"
@@ -340,5 +341,61 @@ func TestSourceFile_UploadsUnpackedFlow(t *testing.T) {
 	code, m = getJSON(t, srv, "/v1/tasks/gw-newtask/source-file?path=Server.java")
 	if code != http.StatusOK || m["root_via"] != "uploads_unpacked" {
 		t.Fatalf("bare-name via shell-stripped root: code=%d m=%v", code, m)
+	}
+}
+
+// TestSourceFile_ResolveOnly — resolve_only=1 探测口径（2026-09-13 链路 chip 文件
+// 存在性校验）：命中返回元数据无 content；miss 404 与全文口径一致；超限文件
+// 仍 200（存在性 ≠ 可读性，chip 不因大小上限标"未定位"）；无参数行为不变。
+func TestSourceFile_ResolveOnly(t *testing.T) {
+	uploads, up1, _, _ := tree(t)
+	if err := os.WriteFile(filepath.Join(up1, taskLinkName("t-link")), []byte("t-link\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 超限文件（> 5MiB）
+	big := filepath.Join(up1, "big.py")
+	if err := os.WriteFile(big, bytes.Repeat([]byte("x = 1\n"), 1<<20), 0o644); err != nil { // 6MiB
+		t.Fatal(err)
+	}
+	b := startSrcBackend(t)
+	tr := newSrcTranscoder(t, b)
+	setSourceDirs(t, uploads, "")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), middleware.UserRoleKey, "ROLE_ADMIN") // R89: 机制测试按 admin 走门禁
+			tr.Handler().ServeHTTP(w, r.WithContext(ctx))
+		}))
+	defer srv.Close()
+
+	// 命中：200 + 元数据，无 content/total_lines
+	code, m := getJSON(t, srv, "/v1/tasks/t-link/source-file?path=Conf.java&resolve_only=1")
+	if code != http.StatusOK {
+		t.Fatalf("resolve_only hit: want 200, got %d: %v", code, m)
+	}
+	if m["path"] != "Conf.java" || m["root_via"] != "upload_link" || m["resolved_via"] != "exact" {
+		t.Fatalf("meta mismatch: %v", m)
+	}
+	if _, has := m["content"]; has {
+		t.Fatalf("resolve_only must not return content: %v", m)
+	}
+	if _, has := m["total_lines"]; has {
+		t.Fatalf("resolve_only must not return total_lines: %v", m)
+	}
+	if m["bytes"].(float64) != float64(len("conf v1\n")) {
+		t.Fatalf("bytes mismatch: %v", m["bytes"])
+	}
+	// miss：404 文案与全文口径一致（前端探测以 404=不存在）
+	code, m = getJSON(t, srv, "/v1/tasks/t-link/source-file?path=Nope.java&resolve_only=1")
+	if code != http.StatusNotFound || !strings.Contains(m["error"].(string), "file not found in project: Nope.java") {
+		t.Fatalf("resolve_only miss: code=%d m=%v", code, m)
+	}
+	// 超限文件：探测仍 200（不受 maxSourceFileBytes 约束）
+	code, m = getJSON(t, srv, "/v1/tasks/t-link/source-file?path=big.py&resolve_only=1")
+	if code != http.StatusOK {
+		t.Fatalf("resolve_only oversized: want 200 (existence != readability), got %d: %v", code, m)
+	}
+	// 全文口径对照：同一超限文件无参数仍 413（无参数行为不变）
+	code, _ = getJSON(t, srv, "/v1/tasks/t-link/source-file?path=big.py")
+	if code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("full fetch oversized: want 413, got %d", code)
 	}
 }

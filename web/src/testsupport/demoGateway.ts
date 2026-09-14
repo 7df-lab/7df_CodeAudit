@@ -55,17 +55,28 @@ const DEMO_LOGS = [
   { log_id: 'dL5', task_id: 'gw-t00000a1f', ts_ms: 1757155460000, level: 'TASK_LOG_LEVEL_ERROR', source: 'report', message: '报告模板变量缺失（已在本地兜底渲染）' },
 ];
 
+// 2026-09-14 审计 P3 对齐后端真实格式：标记行（💭/✍/📋）独立成行、正文另起行——
+// 此前"标记+正文同行"会被 parseTimeline 的 startKind 整行消费（同行正文静默丢失，
+// 实时态还渲染出带空正文的思考标题块）。会话头也对齐 bridge 真实帧文本。
 const DEMO_AI_TEXT = [
-  '══ 会话开始（task gw-t00000a1f）',
-  '💭 [思考] 用户代码中 SQL 拼接点集中在 dao 层；优先审计 OrderDao.findById 的参数流。',
-  '✍ [输出] 对 dao/OrderDao.java:49 的审计结论：orderNo 未参数化直拼 WHERE 子句，',
-  '✍ [输出] 调用链为 web/OrderController.java:93（来源）→ dao/OrderDao.java:49-51（汇点），',
-  '✍ [输出] 中间经 service/OrderService.java:120 透传，全程无净化器。判定：确认为真（高危）。',
+  '══ DSH 会话开始（bridge）══',
+  '── 第 1 轮开始 ──',
+  '💭 [思考]',
+  '用户代码中 SQL 拼接点集中在 dao 层；优先审计 OrderDao.findById 的参数流。',
+  '✍ [输出]',
+  '对 dao/OrderDao.java:49 的审计结论：orderNo 未参数化直拼 WHERE 子句，',
+  '调用链为 web/OrderController.java:93（来源）→ dao/OrderDao.java:49-51（汇点），',
+  '中间经 service/OrderService.java:120 透传，全程无净化器。判定：确认为真（高危）。',
   '📋 [任务下发]（512 字节）',
   '-- 对 web/UserController.java 进行同维度复查（关注反序列化入口）',
-  '🤖 [子任务 sub-3] 回报：UserController.java:210 存在 Jackson 多态反序列化默认开启，',
-  '✍ [输出] 建议开启 default typing 白名单；该点判定：可能为真（中危，需人工复核）。',
-  '■ 收束（共 2 轮，产出 9 条结论）',
+  '🤖 [子任务 sub-3] 启动',
+  '🤖 [子任务 sub-3] 任务（1977 字节）',
+  'UserController.java:210 存在 Jackson 多态反序列化默认开启（白盒证据见任务正文）。',
+  '🤖 [子任务 sub-3] 回合结束',
+  '✍ [输出]',
+  '建议开启 default typing 白名单；该点判定：可能为真（中危，需人工复核）。',
+  '── 回合结束: completed ──',
+  '■ 会话空闲（收束）',
 ].join('\n');
 
 // 演示源码（发现详情页代码上下文/Source→Sink 链路跳转都指向这份）

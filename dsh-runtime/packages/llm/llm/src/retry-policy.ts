@@ -22,6 +22,11 @@ const DEFAULT_RETRYABLE_CODES = Object.freeze([
   'TIMEOUT',
   'TRANSPORT',
 ])
+// STREAM_CLOSED is deliberately not retryable: a clean EOF ends the provider
+// response after deltas were already delivered, and re-sending would duplicate
+// those deltas and pollute the audit conclusion — costlier than a manual
+// resend. TRANSPORT stays retryable because those failures mostly occur before
+// the response is established (human ruling 2026-09-11).
 
 /** Bounded exponential backoff with symmetric jitter around each local delay. */
 export interface BackoffConfig {

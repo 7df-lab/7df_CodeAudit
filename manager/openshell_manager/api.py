@@ -1,6 +1,7 @@
 """OpenShell manager HTTP surface — FastAPI 架构（ADR-174）。
 
-原 stdlib http.server 实现（旧 http_api.py，2026-09-08 死代码清理中退役）整体迁移 FastAPI/uvicorn：
+原 stdlib http.server 实现（旧 http_api.py，2026-09-08 死代码清理中随
+退役，git 历史可考）整体迁移 FastAPI/uvicorn：
   - 路由声明式注册（替代 regex ROUTES 表 + 手写 dispatch）；
   - 鉴权收敛为依赖注入（/healthz 豁免，其余 Bearer token）；
   - 异常处理器统一错误契约 {"error": msg}（ApiError/LookupError/404 no route/

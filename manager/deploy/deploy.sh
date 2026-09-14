@@ -99,7 +99,7 @@ case "$cmd" in
         compose up -d --build
         wait_health
         echo "== gateway 可达性（经 manager，Bearer token）=="
-        # manager_token_of 按行前缀剥离（cut -f2- 保留 padding 口径）
+        # manager_token_of 按行前缀剥离（-f2- 保留 padding，口径）
         if curl -fsS --max-time 8 -H "Authorization: Bearer $(manager_token_of)" \
             "${HEALTH_URL%/healthz}/api/v1/gateway/health"; then
             echo
@@ -121,7 +121,7 @@ case "$cmd" in
                 echo "drift: .env"; d=1
             fi
         else
-        # env 缺失显式 SKIPPED——树比对照常，.env 对比不假失败
+            # env 缺失显式 SKIPPED——树比对照常，.env 对比不假失败
             echo "check: env 缺失 → .env 对比 SKIPPED（先补 deploy/env 再 deploy）"
         fi
         if [ "$d" = "0" ]; then echo "in sync"; else echo "^ 与本仓不一致，重新 deploy 收敛"; exit 1; fi

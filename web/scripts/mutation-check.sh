@@ -138,6 +138,12 @@ add src/api/client.ts \
   src/__tests__/clientContract.test.ts \
   "M20 P-30 listAllProjects 循环翻页退化单页（下拉只拿 20 条旧项目不可达，web-audit-2026-09-12）"
 
+add src/findings/chainParser.ts \
+  "if (exists(ev.path!) === false) {" \
+  "if (false) {" \
+  src/__tests__/chainParser.test.ts \
+  "M21 P-32 链路chip两阶段解析退化（假文件 token 不摘除——new_size.x 误挂接回归，sbx-14 实证）"
+
 # ── 执行 ──
 total=${#M_FILE[@]}
 killed=0
