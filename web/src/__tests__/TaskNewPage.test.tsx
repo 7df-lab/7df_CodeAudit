@@ -43,6 +43,11 @@ const gateway = useFakeGateway({
     ],
   },
   'POST /v1/tasks': { task_id: 't-new-1' },
+  // 就地创建项目（第 1 步闭环出路）：proto 裸 Project 回执
+  'POST /v1/projects': (ctx: { body: { project: { name: string } } }) => ({
+    project_id: 'p-new', name: ctx.body.project.name, repo_url: '',
+    default_branch: 'main', default_scan_mode: '', created_at: null,
+  }),
 });
 
 function renderWizard(initialEntry = '/tasks/new') {
@@ -94,6 +99,22 @@ describe('TaskNewPage 向导', () => {
     renderWizard();
     await screen.findByText('选择项目');
     expect(screen.queryByRole('button', { name: '创建任务' })).toBeNull();
+  });
+
+  // 无项目时的第 1 步闭环：就地创建项目 → POST /v1/projects 并自动选用（下一步解禁）
+  it('未选项目：就地创建项目 → POST /v1/projects 并自动选用', async () => {
+    renderWizard();
+    await screen.findByText('选择项目');
+    const next = screen.getByRole('button', { name: '下一步' });
+    expect(next).toHaveProperty('disabled', true); // 未选项目仍禁用（project_id 必填）
+    fireEvent.change(screen.getByPlaceholderText('或输入新项目名称，就地创建'), { target: { value: '现场新建' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建并选用' }));
+    await waitFor(() => expect(next).toHaveProperty('disabled', false)); // 创建成功即选用
+    const post = gateway.requests.find((r) => r.method === 'POST' && r.url === '/v1/projects');
+    expect(post).toBeTruthy();
+    expect(post!.body).toEqual({
+      project: { name: '现场新建', default_branch: 'main', default_scan_mode: 'SCAN_MODE_PARALLEL' },
+    });
   });
 });
 

@@ -979,8 +979,13 @@ func messageText(data map[string]any) string {
 }
 
 // sandboxSpec — openshell.v1.SandboxSpec dict。
-// 依据: 引擎 openshell_runtime_real.py build_sandbox_spec + sandbox_policy_dict
-// （policy.version=1 为网关不变量；landlock best_effort=docker driver 降级语义）。
+// 依据: 引擎 openshell_runtime_real.py build_sandbox_spec
+// （landlock best_effort=docker driver 降级语义）。
+// 【不携带 policy】spec.policy 会整体覆盖镜像内 /etc/openshell/policy.yaml
+// （替换语义，非合并）——极简清单（read_only=/skills,/tools,/input）缺
+// /usr /lib /proc /etc 等基路径，supervisor 自举即被 Landlock 拒 → 容器
+// ContainerExited → error phase（同 spec 去掉 policy 则 READY，双沙箱对照
+// 可复现）。镜像 policy.yaml 是唯一权威；/skills 等目录本镜像不存在。
 func sandboxSpec(name, taskID, image string) map[string]any {
 	return map[string]any{
 		"log_level": "info",
@@ -992,18 +997,6 @@ func sandboxSpec(name, taskID, image string) map[string]any {
 			"labels": map[string]string{
 				managedByLabelKey:   managedByLabelValue, // ADR-212: 与对账器同源常量
 				"openshell.io/sandbox-name": name,
-			},
-		},
-		"policy": map[string]any{
-			"version": 1, // 静态创建时策略版本必须为 1（网关不变量）
-			"filesystem": map[string]any{
-				"include_workdir": true,
-				"read_only":       []string{"/skills", "/tools", "/input"},
-				"read_write":      []string{"/sandbox", "/tmp"},
-			},
-			"landlock": map[string]any{"compatibility": "best_effort"},
-			"process": map[string]any{
-				"run_as_user": "sandbox", "run_as_group": "sandbox",
 			},
 		},
 		"providers": []string{},

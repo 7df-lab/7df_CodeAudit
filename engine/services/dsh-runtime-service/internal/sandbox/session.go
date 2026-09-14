@@ -101,40 +101,52 @@ func (r *ManagerRunner) launch(ctx context.Context, taskID string) (ls *liveSess
 	url, token := r.managerEndpoint()
 	waitTimeout := time.Duration(r.cfg.WaitReadyTimeoutS) * time.Second // 07 §8
 
-	name := "ca-" + randomHex12() // 15 字符 ≤ 网关沙箱服务路由 19 上限（manager ExposeService 实测报错口径）
-	// ADR-210: 前缀 am-→ca-（auditmind→codeaudit；对账正则 ^(am|ca)- 兼容存量旧名）。
-	// 进程级活跃注册表：launch 注册于创建动作之前（防对账竞态），teardown 注销。
-	activeSandboxes.Store(name, struct{}{})
-	r.event("info", "沙箱创建中 name=%s image=%s workspace=%s", name, r.cfg.Image, r.cfg.Workspace)
-	ref, err := r.call(ctx, "POST", url+"/api/v1/sandboxes", token, map[string]any{
-		"workspace": r.cfg.Workspace, "name": name, "spec": sandboxSpec(name, taskID, r.cfg.Image),
-	})
-	if err != nil {
-		// ADR-212: 注册先于创建（防对账竞态），失败必须注销——否则每次失败泄
-		// 一条注册表记录；最坏情形（manager 实际已建但响应丢失）真孤儿被本进程
-		// 注册表永久屏蔽，对账器（ADR-210）永不回收。
-		activeSandboxes.Delete(name)
-		r.event("error", "沙箱创建失败: %v", err)
-		return nil, fmt.Errorf("create sandbox: %w", err)
-	}
-	created := sandboxRefFrom(ref)
-	r.event("info", "沙箱已创建 id=%s name=%s phase=%s", created.ID, created.Name, created.PhaseName)
+	var created sandboxRef
+	// create→wait-ready 整体最多两轮：docker 驱动偶发 ContainerExited 会让
+	// wait-ready 一次失败即触发降级链过脆；每轮失败先回收本轮沙箱再重来。
+	for attempt := 1; ; attempt++ {
+		name := "ca-" + randomHex12() // 15 字符 ≤ 网关沙箱服务路由 19 上限（manager ExposeService 实测报错口径）
+		// ADR-210: 前缀 am-→ca-（auditmind→codeaudit；对账正则 ^(am|ca)- 兼容存量旧名）。
+		// 进程级活跃注册表：launch 注册于创建动作之前（防对账竞态），teardown 注销。
+		activeSandboxes.Store(name, struct{}{})
+		r.event("info", "沙箱创建中 name=%s image=%s workspace=%s（第 %d 次）", name, r.cfg.Image, r.cfg.Workspace, attempt)
+		ref, cerr := r.call(ctx, "POST", url+"/api/v1/sandboxes", token, map[string]any{
+			"workspace": r.cfg.Workspace, "name": name, "spec": sandboxSpec(name, taskID, r.cfg.Image),
+		})
+		if cerr != nil {
+			// ADR-212: 注册先于创建（防对账竞态），失败必须注销——否则每次失败泄
+			// 一条注册表记录；最坏情形（manager 实际已建但响应丢失）真孤儿被本进程
+			// 注册表永久屏蔽，对账器（ADR-210）永不回收。
+			activeSandboxes.Delete(name)
+			r.event("error", "沙箱创建失败（第 %d 次）: %v", attempt, cerr)
+			if attempt < 2 {
+				continue
+			}
+			return nil, fmt.Errorf("create sandbox: %w", cerr)
+		}
+		created = sandboxRefFrom(ref)
+		r.event("info", "沙箱已创建 id=%s name=%s phase=%s", created.ID, created.Name, created.PhaseName)
 
-	ls = &liveSession{r: r, url: url, token: token, ref: created}
-	// 创建成功后的任何一步失败：先回收沙箱再返回（恒 teardown 纪律；ls 为 nil 时未创建无需回收）
+		ls = &liveSession{r: r, url: url, token: token, ref: created}
+		if _, werr := r.call(ctx, "POST", url+"/api/v1/sandboxes/"+created.Name+"/wait-ready", token,
+			map[string]any{"workspace": r.cfg.Workspace, "timeout_seconds": int(waitTimeout.Seconds())}); werr != nil {
+			r.event("error", "沙箱等待就绪失败（第 %d 次）: %v", attempt, werr)
+			ls.teardown() // 回收本轮沙箱（含注册表注销）后重试/放弃
+			ls = nil
+			if attempt < 2 {
+				continue
+			}
+			return nil, fmt.Errorf("wait-ready: %w", werr)
+		}
+		break
+	}
+	r.event("info", "沙箱就绪（wait-ready 通过）")
+	// 循环内失败路径已自行 teardown；此处起恒 teardown 纪律（ls 为 nil 时未创建无需回收）
 	defer func() {
 		if err != nil && ls != nil {
 			ls.teardown()
 		}
 	}()
-
-	if _, err = r.call(ctx, "POST", url+"/api/v1/sandboxes/"+created.Name+"/wait-ready", token,
-		map[string]any{"workspace": r.cfg.Workspace, "timeout_seconds": int(waitTimeout.Seconds())}); err != nil {
-		r.event("error", "沙箱等待就绪失败: %v", err)
-		err = fmt.Errorf("wait-ready: %w", err)
-		return
-	}
-	r.event("info", "沙箱就绪（wait-ready 通过）")
 
 	// exec 拉起 bridge（openshell supervisor 覆盖镜像 ENTRYPOINT，bridge 不自启——
 	// CD/dsh-pentest-sse/README 已知接线点）。凭据为占位符：网关按引用注入真凭据。

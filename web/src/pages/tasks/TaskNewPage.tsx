@@ -4,12 +4,12 @@
 // （项目 config.upload_file_id / repo_url 由 task-service 启动时解析，ADR-203 兜底链）
 // 2026-09-11 用户报障（建任务引导）：项目列表加载失败 Alert+重试 / 空列表引导去项目页 /
 // 项目 Select 可搜索 / ?project_id= 深链预选（项目详情页直达）
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { Alert, Button, Card, Checkbox, Form, Radio, Select, Steps, Typography, message } from 'antd';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Alert, Button, Card, Checkbox, Form, Input, Radio, Select, Space, Steps, Typography, message } from 'antd';
 import { autoRunTask } from '../../tasks/stateMachine';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { createTask, getProject, getProjectConfig, getTools, listAllProjects } from '../../api/client';
+import { createProject, createTask, getProject, getProjectConfig, getTools, listAllProjects } from '../../api/client';
 import { SCAN_MODE, REVIEW_DEPTH, zh } from '../../dict';
 import PageHeader from '../../components/PageHeader';
 import { usePageTitle } from '../../hooks/usePageTitle';
@@ -37,9 +37,11 @@ export const DEFAULT_SCAN_MODE = 'SCAN_MODE_PARALLEL';
 export default function TaskNewPage() {
   usePageTitle('新建任务');
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const [searchParams] = useSearchParams();
   const [step, setStep] = useState(0);
   const [projectId, setProjectId] = useState<string>('');
+  const [newProjName, setNewProjName] = useState<string>('');
   const [mode, setMode] = useState<string>(DEFAULT_SCAN_MODE); // ADR-182: 默认推荐模式C
   // （文案纠偏）：审批流已废除——创建→启动直达，无"提交→批准"环节；
   // 勾掉自动启动则停在已创建，需在任务页手动点启动
@@ -74,6 +76,25 @@ export default function TaskNewPage() {
     queryFn: () => getProject(projectId),
     enabled: !!projectId,
   });
+
+  // 就地创建项目（第 1 步无项目时的第二条出路，与"前往项目页创建"并存）：
+  // 代码来源不在向导指定——项目页/项目详情后续配置（上传件或仓库地址均可），
+  // 参数步对无来源项目已有如实警告兜底。
+  const createProj = useMutation({
+    mutationFn: (name: string) => createProject({
+      name,
+      default_branch: 'main',
+      default_scan_mode: DEFAULT_SCAN_MODE,
+    }),
+    onSuccess: (p) => {
+      message.success(`项目「${p.name}」已创建并选用`);
+      setProjectId(p.project_id);
+      setNewProjName('');
+      qc.invalidateQueries({ queryKey: ['projects'] });
+    },
+    onError: (e) => message.error(`项目创建失败：${(e as Error).message}`),
+  });
+
   const repoURL = projInfo?.repo_url ?? '';
   // 项目级源码来源展示（源码由项目层级决定，向导只读呈现）
   const { data: projConfig } = useQuery({
@@ -162,11 +183,27 @@ export default function TaskNewPage() {
             : (
               // 空列表引导（2026-09-11 用户报障）：此前空态无任何出路提示
               <Typography.Text type="secondary">
-                暂无项目——<Link to="/projects">前往项目页创建</Link>
+                暂无项目——下方输入名称就地创建，或<Link to="/projects">前往项目页创建</Link>
               </Typography.Text>
             )}
           options={(projects?.projects ?? []).map((p) => ({ value: p.project_id, label: `${p.name} (${p.project_id})` }))}
         />
+        {/* 就地创建：输入名称即建项目并自动选用（第 1 步闭环，无项目时不必离开向导） */}
+        <Space.Compact style={{ width: 420, marginTop: 12 }}>
+          <Input
+            placeholder="或输入新项目名称，就地创建"
+            value={newProjName}
+            onChange={(e) => setNewProjName(e.target.value)}
+            onPressEnter={() => { const n = newProjName.trim(); if (n) createProj.mutate(n); }}
+          />
+          <Button
+            loading={createProj.isPending}
+            disabled={!newProjName.trim()}
+            onClick={() => createProj.mutate(newProjName.trim())}
+          >
+            创建并选用
+          </Button>
+        </Space.Compact>
       </div>
     ),
     1: (
