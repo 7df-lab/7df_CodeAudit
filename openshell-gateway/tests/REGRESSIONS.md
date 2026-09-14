@@ -76,7 +76,6 @@
 ## 三、机制维护纪律
 
 1. **新缺陷**：修复 commit = 代码修复 + 守卫用例 + 注入 + 本档案加行，一次收口；
-   伞仓账本（`.agent/status.md`）同步记一行。
 2. **改测试**：改完必跑 `--selfcheck`，守卫失效（注入不拦）即 FAIL。
 3. **信任链**：pre-commit 钩子（`git config core.hooksPath tests/githooks`）只跑
    `--fast` 静态层（秒级、离线），行为层与注入层按上表节奏跑；解锁提交用

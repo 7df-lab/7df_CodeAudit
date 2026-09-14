@@ -3,7 +3,7 @@ package service
 // ADR-183 补遗② 真实链路证据（env 门控，默认跳过——门禁不依赖外部沙箱）：
 // CODEAUDIT_LIVE_FIXRETRY=1 时，向真实沙箱（openshell-manager 通道）注入一条
 // 上下文被改写的坏补丁，验证"失败反馈再生成"全链：失败详情构建→真 LLM 自纠→
-// 严格复验→原位替换。证据归档 .agent/evidence/adr183_diff_patch/。
+// 严格复验→原位替换。证据归档 build/evidence/adr183_diff_patch/。
 
 import (
 	"context"

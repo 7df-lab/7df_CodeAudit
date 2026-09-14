@@ -368,7 +368,7 @@ def main():
         "task_id": test_data.get("task", {}).get("task_id")
     }
     
-    evidence_path = ".agent/evidence/SMK6_smoke_result.json"
+    evidence_path = "build/evidence/SMK6_smoke_result.json"
     os.makedirs(os.path.dirname(evidence_path), exist_ok=True)
     with open(evidence_path, "w") as f:
         json.dump(evidence, f, indent=2)
@@ -407,4 +407,4 @@ def test_smk6_mode_b_smoke():
         except OSError:
             pytest.skip(f"gateway 未在 {probe} 监听，SMK-6 要求的 docker 全栈未拉起（如实跳过）")
     rc = main()
-    assert rc == 0, "SMK-6 冒烟测试失败（详见输出与 .agent/evidence/SMK6_smoke_result.json）"
+    assert rc == 0, "SMK-6 冒烟测试失败（详见输出与 build/evidence/SMK6_smoke_result.json）"

@@ -2,7 +2,7 @@
 // 匹配/回放核心已抽至 mockAdapter.ts（ 2026-09-13，与 dev:mock 走查入口
 // 共用）；本文件保留 vitest 生命周期挂卸与测试台既有导出面（HttpError/httpError 等
 // re-export，21 个测试文件的既有 import 不动）。
-// 纪律（.agent/test-gates.md §8）：
+// 纪律（测试门禁）：
 //   1. 只在 HTTP 传输层造假——api/client 的真实代码（FormData/序列化/401刷新/503重试）全量执行；
 //   2. 未建模路由 = 抛错（响亮失败），禁止静默空成功；
 //   3. 错误用 httpError(status, body)——经真实拦截器链（401 刷新/429 退避/503 重试）回放；

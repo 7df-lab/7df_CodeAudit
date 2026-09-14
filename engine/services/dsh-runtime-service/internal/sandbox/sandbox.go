@@ -984,7 +984,7 @@ func (p *sseParser) assistantAttempt(data map[string]any) *bridgeEvent {
 	stream, _ := data["stream"].([]any)
 	// 块身份=(类型,index)——index 是上游 content block 序号（assistant-stream.ts），
 	// 同类型不同 index 是不同正文块：index 变化须补块尾换行+新头，否则第二块正文
-	// 粘连进第一块（审计 P3-3）。tool-call-chunks 关闭当前正文块（对齐 0.1.2 中
+	// 粘连进第一块。tool-call-chunks 关闭当前正文块（对齐 0.1.2 中
 	// tool 块 block-start 终结前块的边界语义），参数流本身静默（ADR-181）。
 	mode := ""
 	idx := -1

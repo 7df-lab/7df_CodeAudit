@@ -95,7 +95,7 @@ describe('TaskNewPage 向导', () => {
   });
 
   // ADR-154 回归（行为级锁）：确认页只随第4步出现；创建按钮不在向导前段渲染。
-  // （.agent/evidence/gui-audit/ 为一次性 GUI 取证脚本，非常设回归套件；
+  // （gui-audit 为一次性 GUI 取证脚本，非常设回归套件；
   //   行为锁由本文件 vitest 用例承担——ADR-203 mock 纪律）
   it('ADR-154: 确认页按钮不前漏（步骤边界正确）', async () => {
     renderWizard();

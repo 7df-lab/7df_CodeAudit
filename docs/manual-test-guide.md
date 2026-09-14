@@ -1,11 +1,8 @@
 # CodeAudit GUI 人工测试指引(模拟栈口径)
 
-> 2026-09-05 自 engine/.agent/MANUAL_TEST_GUIDE.md 迁移重写(原文件为宿主机 dev 裸栈时代
-> 文档,随裸栈退役作废,ADR-207 归档)。本文口径=**生产模拟栈**(deploy/README 三层环境之②)。
-> **生产栈同流程可用**:入口换 http://<服务器IP>:8088(console)/:8090(网关),2026-09-05 已在
-> LXC 107 生产栈按本流程 GUI 实测通过(登录/建项目+上传/自动任务全链/模式B向导/发现/报告/通知;
-> 证据=伞仓 .agent/evidence/gui-20260905/)。AI 全链需网关侧推理 provider 已配置——未配置时
-> 任务在 AI 阶段走诚实降级(RuleScan 兜底,发现标注 NEEDS_MANUAL),属设计行为非缺陷。
+> 本文口径=**生产模拟栈**(deploy/README 三层环境之②)。**生产栈同流程可用**:入口换
+> http://<服务器IP>:8088(console)/:8090(网关)。AI 全链需网关侧推理 provider 已配置——
+> 未配置时任务在 AI 阶段走诚实降级(RuleScan 兜底,发现标注 NEEDS_MANUAL),属设计行为非缺陷。
 > 依据:ADR-168(bridge 通道+AI 交互日志)、ADR-181(时间线/人性化渲染)、ADR-173/175(沙箱 DSH)。
 
 ## 0. 前置条件

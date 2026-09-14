@@ -69,7 +69,7 @@ mutation-check **要求工作区干净**（git status 无未提交改动）—�
 | P-24 | 报告 format 枚举形状漂移 | 报告中心"格式"列恒 '—'、下载文件名恒 `.json`（web-audit-2026-09-12 P1 实证；"恒 .bin"修复实际只失效成"恒 .json"） | types/dict 按**数值**枚举键控，而网关 protojson（EmitUnpopulated+UseProtoNames，无 UseEnumNumbers）实发**枚举名字符串**；假形状被夹具（format:3）锁死，tsc/vitest 双绿假象——形状类修复夹具必须先改真形状红一轮 | pages2.test.tsx（枚举名夹具→'JSON' 直出）；dict.test.ts（枚举名键控+扩展名） | — | M14 |
 | P-25 | 列表末页 pagination=null 塌空表 | 任务 >20 条翻到末页：分页器塌缩、无法回翻前页（web-audit-2026-09-12 P1 实证；task_service.go:1107 只在有下页时填 pagination，protojson EmitUnpopulated 对 unset message 发 null） | `total ?? 0` 把"末页无 pagination"当 0，antd 判 `rows.length < total` 为假走本地切片 | TasksPage.test.tsx「B5-P1-2 末页 pagination=null 不塌空表」（21 任务两页夹具，末页无 pagination 键） | — | M15 |
 | P-26 | 模式→工具映射第二事实源漂移 | 新建项目选模式D（AI_ENHANCED_SAST）自动任务 sast_tools=[] → sast-adapter 400 "tool_ids is required" → 任务必 FAILED（web-audit-2026-09-12 P1 实证；同批五模式唯漏 D） | ProjectsPage 自维护 NEEDS_TOOLS 集合与 TaskNewPage MODE_SPECS 漂移；修复=删集合改查 MODE_SPECS.needsSastTools 单一事实源（ProjectDetailPage 先例） | ProjectsPage.test.tsx「B5-P1-3 模式D 自动建任务带 SAST 工具」 | — | M16 |
-| P-23 | 报告窗 HTML 直写同源窗口 | 报告正文 document.write 裸写同源 about:blank 窗口（453b6bd 修复为 sandboxed iframe+BLOB CSP 前置双保险；修复当时未按 §5 建档/加守卫/加变异） | 复制粘贴复活旧通道：新页面绕开 openReportWindow 直写窗口/DOM 注入面 | B3AuditFixes.test.tsx（sandbox 空 token+CSP meta 前置+JSON 转义三重行为锁） | **G-06**（禁区）+ **G-06b**（sandbox 空 token 锚） | — |
+| P-23 | 报告窗 HTML 直写同源窗口 | 报告正文 document.write 裸写同源 about:blank 窗口（453b6bd 修复为 sandboxed iframe+BLOB CSP 前置双保险；修复当时未按 §5 建档/加守卫/加变异） | 复制粘贴复活旧通道：新页面绕开 openReportWindow 直写窗口/DOM 注入面 | RegressionFixes.test.tsx（sandbox 空 token+CSP meta 前置+JSON 转义三重行为锁） | **G-06**（禁区）+ **G-06b**（sandbox 空 token 锚） | — |
 | P-27 | 刷新失败误杀会话 | refresh 请求恰逢 5xx/429/网络抖动即清 7 天 refresh_token 并踢登录页——access 30min 周期刷新必经此路，共享出口 IP 团队遇 auth 限流全员中招（web-audit-2026-09-12 P2 实证；P-22 同族第二误杀通道） | requestRefresh 把"任何非 2xx"与"凭据失效"混为一谈 | client.test.ts「B5-P2-4: refresh 503（后端抖动）→ 保会话不跳登录」 | — | M17 |
 | P-28 | 503 自动重试放大非幂等写 | POST 503 盲重放 3 次：网关每次现生成新幂等键，重复建任务风险；100MB 上传最坏盲重放 300MB（web-audit-2026-09-12 P2 实证） | 重试分支不看 method | clientInterceptors.test.ts「B5-P2-5: POST 503 → 不重试」 | G-03c 锚（计数） | M18 |
 | P-29 | 登出不清 query 缓存 | 软登出（SPA 跳 /login）后 TanStack 缓存留存至 gcTime，共享机器另一账号先见上一账号列表数据；401 硬跳路径整页刷新反而干净——两登出径行为不一致（web-audit-2026-09-12 P2 实证） | QueryClient 在 main.tsx 模块内创建不导出，logout 只清 token | session.test.tsx「B5-P2-6: logout 清空 QueryClient 缓存」 | — | M19 |
@@ -96,7 +96,6 @@ mutation-check **要求工作区干净**（git status 无未提交改动）—�
         需要 grep 禁区 → guard.sh 加 G-xx；可注入变异 → mutation-check.sh 加 M-xx。
 ④ 证明：npm run mutation-check（涉及防御要地时）确认新锁会红、旧锁未锈。
 ⑤ 记账：commit 信息写明「修复回归:…+变异 Mxx 锁定」（对齐 0ac71b7 风格）；
-        跨会话协同见伞仓 .agent/status.md 回写。
 ```
 
 **判据**：任何 bug 修复 PR，若其模式在 §3 中没有对应行、或对应行的变异跑不红，交付无效——

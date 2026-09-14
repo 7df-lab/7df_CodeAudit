@@ -87,14 +87,12 @@ data/ai-interaction/
 *.tsbuildinfo
 tests/samples/**/.codeaudit/
 
-# 模式D大型验证语料不入库（ADR-178，人类决策 2026-09-01）：
+# 模式D大型验证语料不入库（ADR-178）：
 # package/（132MB 解压树）+ package.zip（40MB）= OpenWrt/MTK 固件 SDK 真实语料，
 # 无任何已提交测试/脚本/CI 依赖；本机保留可复现，恢复方式见 tests/samples/README.md
 tests/samples/package/
 tests/samples/package.zip
 
-# 中文编码文件（系统生成的临时文件）
-**方向变更（人类决策**
 .toolchain/
 
 # sast-adapter 镜像内烘焙的 SAST 工具二进制（ADR-198）：版本/sha256 见同目录 PROVENANCE.md

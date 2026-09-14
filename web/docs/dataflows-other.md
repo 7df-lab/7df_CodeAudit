@@ -61,7 +61,7 @@ Shell 与 LoginPage 双处消费防闪烁。锚点：session.test.tsx。
 |----|------|------|------|
 | 报告下载 | `GET /v1/reports/:id/download`(blob) → `URL.createObjectURL` → 隐形 `<a download="${id}.${ext}">`.click() → revoke | 文件名扩展名由 `reportFileExt(format)`（I-63）；两处复用（ReportsPage/TaskDetail） | dict.test.ts |
 | AI 日志下载 | `Blob([text], 'text/plain;charset=utf-8')` → `ai-interaction.ai.log` | 纯前端文本落盘 | AIInteractionLogPanel.test.tsx |
-| 在线查看（HTML/JSON） | 统一 `openReportWindow(content,mime)`：about:blank 宿主窗 + `<iframe sandbox="">`（空 token：脚本全灭+来源隔离）+ blob 前置 CSP meta 双保险（453b6bd）；JSON 分支先 `JSON.stringify(...,2)`+尖括号转义再走同一通道 | B3AuditFixes.test.tsx | B5 已核 |
+| 在线查看（HTML/JSON） | 统一 `openReportWindow(content,mime)`：about:blank 宿主窗 + `<iframe sandbox="">`（空 token：脚本全灭+来源隔离）+ blob 前置 CSP meta 双保险（453b6bd）；JSON 分支先 `JSON.stringify(...,2)`+尖括号转义再走同一通道 | RegressionFixes.test.tsx | B5 已核 |
 | 报告内联摘要 | getReportContent（text 模式嗅探）→ `JSON.parse(content).summary` 四指标卡 | parse 失败静默不渲染（报告格式漂移不崩页） | clientContract.test.ts |
 
 ## D-5 表单/上传的 antd 拦截流

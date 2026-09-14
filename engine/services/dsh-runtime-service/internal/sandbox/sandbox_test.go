@@ -1461,7 +1461,7 @@ func TestSSEParser_AssistantAttempt(t *testing.T) {
 	}
 }
 
-// TestSSEParser_AssistantAttemptBlockBoundaries — R92 补强（审计 P3-3/P3-4）：
+// TestSSEParser_AssistantAttemptBlockBoundaries — R92 补强：
 // ①块身份=(记录类型,index)：同类型不同 index 的两个 text 块不得粘连——index 变化
 //   须补块尾换行+新头（对齐 0.1.2 的 block-end/block-start 语义）；
 // ②tool-call-chunks 关闭当前正文块（0.1.2 中 tool 块的 block-start 会终结前块）；

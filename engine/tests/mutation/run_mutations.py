@@ -495,7 +495,7 @@ MUTANTS = [
         "run": "TestRepoCacheGC_CapacityStopsAtWatermark",
     },
     {
-        # 2026-09-11 审计批次二（R60）：FailedCount 检查移除 = 缺继承行任务假成功
+        # R60：FailedCount 检查移除 = 缺继承行任务假成功
         "id": "M43", "bug": "R60: 继承部分失败检查移除 → 缺继承行的任务照常 COMPLETED（完整视图造假）",
         "file": "services/task-service/internal/orchestrator/incremental.go",
         "edits": [(
@@ -507,7 +507,7 @@ MUTANTS = [
         "run": "TestRunIncrementalInherit_PartialFailureFails",
     },
     {
-        # 2026-09-11 审计批次二（R61）：两段校验退化为裸后缀 = 嵌套同后缀误杀（漏报）
+        # R61：两段校验退化为裸后缀 = 嵌套同后缀误杀（漏报）
         "id": "M44", "bug": "R61: 后缀命中的前缀段判定移除 → vendor/pkg/util/keys.py 被 pkg/util/keys.py 误杀（漏洞消失）",
         "file": "services/result-service/internal/service/inherit_service.go",
         "edits": [(

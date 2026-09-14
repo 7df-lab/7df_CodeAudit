@@ -28,7 +28,7 @@ test-go:
 		( cd services/$$svc && GOPROXY=https://goproxy.cn,direct go test ./... ) || exit 1; \
 	done
 
-# 契约测试：与 .agent/verify.sh G4 同一口径（fixture_server 假 gRPC 服务）
+# 契约测试：G4 契约组口径（fixture_server 假 gRPC 服务）
 test-contract:
 	@echo "Running contract tests..."
 	@CODEAUDIT_FIXTURE_PORT=50071 python3 -m pytest tests/contract -q --tb=short -p no:cacheprovider
@@ -59,7 +59,7 @@ proto:
 
 # 验证（红线检查）
 verify:
-	@bash .agent/verify.sh
+	@echo "verify: internal red-line gate not shipped in public snapshot; use test-go / test-contract / lint"
 
 # 清理
 clean:
@@ -83,6 +83,6 @@ help:
 	@echo "  test-contract - Run contract tests (fixture_server, port 50071)"
 	@echo "  lint          - Run linters (Go)"
 	@echo "  proto         - Generate proto code (buf; SSOT=codeaudit_common.proto)"
-	@echo "  verify        - Run SSOT red-line checks (.agent/verify.sh)"
+	@echo "  verify        - Run SSOT red-line checks (internal gate)"
 	@echo "  clean         - Clean build artifacts"
 	@echo "  help          - Show this help"

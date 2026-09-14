@@ -51,9 +51,9 @@
 | 18 | Delete/Move 修复永远无法回滚 | `writeRestored` 对已删除文件走 `openTextDocument`（缺失文件必抛错）→ 回滚整体失败 | Delete File / Move to 补丁应用后，按发现回滚报"文件读取异常"，登记停在 applied | `extension.test.ts › Delete+Add 多段补丁…回滚`、`› Move to…回滚`（内存桩行为测试） | 2026-09-07 测试体系补齐时发现并修复：缺失文件改 fs 直写重建 |
 | 19 | checkpoint latest() 取错快照 | `cp-<ts>-<seq>` 按字典序排序，seq 跨位数（9→10）时 `cp-…-10` 排在 `cp-…-9` 之前 | 同毫秒连存 ≥10 个 checkpoint 时（低风险批量连修场景）`回滚最近一次`还原到错误版本 | `checkpoint.test.ts › 多个 checkpoint 时 latest 取最新`（测试负载加大后自然暴露） | 2026-09-07 修复：按 (ts, seq) 数值序排序 |
 | 20 | 终态历史任务状态栏滞留 | bindTask 绑定已完成历史任务后 `progress` 残留非 null，状态栏走百分比分支显示 `0%` 而非「N 发现」 | 切换/恢复历史任务后状态栏永远显示 0%，点击无响应感 | `extension.test.ts › 恢复链路：重启后绑定上次任务…`（statusBars 断言） | 并行会话 56a75af 先修复（状态栏百分比只对非终态任务展示）；本仓行为测试独立收敛到同一断言 |
-| 21 | 扫描互斥竞态双上传 | `doScan` 的 `scanning=true` 在 `listTools()` 网络往返之后才置位，并发第二次调用从 await 窗口穿过守卫 | 连击/深链+手点并发触发扫描 → 双 zip 上传、平台双沙箱消耗；互斥标志形同虚设 | `extension.test.ts › 扫描互斥竞态：第一次卡在连通性探测…仅一次上传` + `› 扫描早退复位互斥…`（立即置位+全部早退路径 finally 复位） | B2 审计批次 |
-| 22 | 旧任务终态收尾覆盖新任务 UI | terminal 收尾仅在 await 前查一次 lastTaskId；`listFindings` 挂起窗口内切绑任务后，旧收尾恢复执行照样 renderFindings/clearTaskUi | 扫描完成瞬间切换任务 → 新任务发现/UI 被旧任务收尾清掉、互斥被误释 | `extension.test.ts › 旧任务终态收尾 TOCTOU…`（每次 await 后复查 `taskId===lastTaskId && progress?.taskId===taskId`） | B2 审计批次 |
-| 23 | refresh 瞬态失败清凭据 | `doRefresh` 对任何非 2xx 一律 `tokens.clear()`，502/429 也把会话判死 | 网关抖动/限流一次 → 插件被登出，状态栏"未登录"，离线态缓存 token 全部失效 | `apiClient.test.ts › refresh 失败仅 401 清凭据` 3 例（502/429 凭据保留、401 才清） | B2 审计批次 |
+| 21 | 扫描互斥竞态双上传 | `doScan` 的 `scanning=true` 在 `listTools()` 网络往返之后才置位，并发第二次调用从 await 窗口穿过守卫 | 连击/深链+手点并发触发扫描 → 双 zip 上传、平台双沙箱消耗；互斥标志形同虚设 | `extension.test.ts › 扫描互斥竞态：第一次卡在连通性探测…仅一次上传` + `› 扫描早退复位互斥…`（立即置位+全部早退路径 finally 复位） |  |
+| 22 | 旧任务终态收尾覆盖新任务 UI | terminal 收尾仅在 await 前查一次 lastTaskId；`listFindings` 挂起窗口内切绑任务后，旧收尾恢复执行照样 renderFindings/clearTaskUi | 扫描完成瞬间切换任务 → 新任务发现/UI 被旧任务收尾清掉、互斥被误释 | `extension.test.ts › 旧任务终态收尾 TOCTOU…`（每次 await 后复查 `taskId===lastTaskId && progress?.taskId===taskId`） |  |
+| 23 | refresh 瞬态失败清凭据 | `doRefresh` 对任何非 2xx 一律 `tokens.clear()`，502/429 也把会话判死 | 网关抖动/限流一次 → 插件被登出，状态栏"未登录"，离线态缓存 token 全部失效 | `apiClient.test.ts › refresh 失败仅 401 清凭据` 3 例（502/429 凭据保留、401 才清） |  |
 
 ## 四、如何新增一条档案
 

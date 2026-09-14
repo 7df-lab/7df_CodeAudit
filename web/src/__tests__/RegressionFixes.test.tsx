@@ -1,4 +1,4 @@
-// 审计批次 B3 修复回归锁：
+// 修复回归锁：
 //   报告窗口 CSP 纵深防御——升级为 sandboxed iframe 通道：
 //     报告内容经 <iframe sandbox src=blob:> 渲染（sandbox 空 token 脚本全灭），
 //     CSP meta 仍前置于 blob 内容（双保险）；JSON 分支保持转义 <pre>

@@ -31,7 +31,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     Write-Host "[expose-lan] ERROR: 请以管理员身份运行。" -ForegroundColor Red; exit 1
 }
 
-# 退出码逐口核验（审计 P3：原实现 netsh/防火墙失败也报"已暴露"）
+# 退出码逐口核验（原实现 netsh/防火墙失败也报"已暴露"）
 $failed = @()
 foreach ($p in $Ports) {
     if ($Remove) {

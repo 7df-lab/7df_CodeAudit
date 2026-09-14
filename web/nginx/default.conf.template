@@ -22,11 +22,11 @@ server {
     gzip_types text/css application/javascript application/json image/svg+xml;
     gzip_min_length 1024;
 
-    # B4-3（审计修复）最小安全响应头集——refresh_token 存 localStorage（Q3 裁决）的
+    # （审计修复）最小安全响应头集——refresh_token 存 localStorage（Q3 裁决）的
     # 纵深缓解：此前 session.tsx 注释所称"严格 CSP"并无任何响应头落地。
     # 保守子集（nosniff / frame-ancestors / object-src），刻意不含 default-src/script-src/
     # style-src——SPA 依赖 Vite 注入的内联脚本与内联样式，加了会白屏；本机无栈无法
-    # build 后真机冒烟，先上无行为影响的子集，收紧待有栈环境验证（见 fix-plan-0911 B4-3）。
+    # build 后真机冒烟，先上无行为影响的子集，收紧待有栈环境验证。
     # 注意 nginx add_header 继承语义：location 内一旦有自己的 add_header，server 级即被
     # 整组覆盖——故下方两个带 Cache-Control 的 location 须重复声明本组。
     add_header X-Content-Type-Options "nosniff" always;

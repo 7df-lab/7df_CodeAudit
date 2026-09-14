@@ -133,6 +133,6 @@ def test_f1_evaluation_report(services_up=None):
         "bandit": {"tp": tp, "fp": fp, "fn": fn, "precision": p, "recall": r, "f1": f1},
         "ground_truth_size": len(GROUND_TRUTH),
     }
-    os.makedirs(".agent/evidence", exist_ok=True)
-    with open(".agent/evidence/F1_e2e_report.json", "w") as f:
+    os.makedirs("build/evidence", exist_ok=True)
+    with open("build/evidence/F1_e2e_report.json", "w") as f:
         json.dump(ev, f, indent=2)

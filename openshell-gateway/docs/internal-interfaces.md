@@ -83,6 +83,6 @@
 
 | 变量 | deploy.sh | gateway_lifecycle.sh | 契约 |
 |---|---|---|---|
-| `REMOTE` | `${REMOTE-pct exec 107 --}` | `${REMOTE-pct exec 107 --}` | **必须同为减号 `-`**：空串 = 本机执行（R1；README"同变量"口径） |
+| `REMOTE` | `${REMOTE-pct exec <CTID> --}` | `${REMOTE-pct exec <CTID> --}` | **必须同为减号 `-`**：空串 = 本机执行（R1；README"同变量"口径） |
 | `DEPLOY_DIR` | `/root/os-deploy/deploy/docker` | 同左 | 逐字相同 |
 | 其余（SERVICE/ROUTING_DOMAIN/LIVENESS_*/JWT_DIR） | 不设，全托 lifecycle | 各自缺省 | deploy.sh 不得私设第二缺省 |

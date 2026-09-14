@@ -198,7 +198,9 @@ if not changed:
 # 经验(2026-09-13)：docs/designs/ 设计工作稿被代码头注释与 e2e 用例按路径引用，
 # 文件必须保留（不可入 artifacts 删除清单），但其 .agent 引用同样要修补——纳入本阶段。
 REF_TARGETS = sorted(glob.glob("docs/*.md") + glob.glob("docs/designs/*.md") +
-                     glob.glob("*/REGRESSIONS.md") + glob.glob("*/README.md") +
+                     glob.glob("*/REGRESSIONS.md") + glob.glob("*/*/REGRESSIONS.md") +
+                     glob.glob("*/README.md") +
+                     glob.glob("*/docs/*.md") +
                      glob.glob("deploy/*.md") + glob.glob("deploy/*/*.md"))
 REF_RULES = [
     (r'`bash \.agent/verify\.sh`', '`make verify`'),
@@ -208,6 +210,10 @@ REF_RULES = [
     (r'、`\.agent/[^`*]+`', ''),
     (r'（\.agent/[^）]*）', ''),          # 括注死引用，如「ADR 账本（.agent/decisions.md）」
     (r'pct exec 107', 'pct exec <CTID>'),
+    # 经验(2026-09-14, 手动 grep 沉淀): 回归台账/守卫文档的工作流尾巴引用伞仓账本
+    # （.agent/status.md）——发布版无账本，整句剥离（含行尾换行，避免留空壳行）
+    (r'[ \t]*伞仓账本（`\.agent/status\.md`）同步记一行。\n?', ''),
+    (r'[ \t]*跨会话协同见伞仓 \.agent/status\.md 回写。\n?', ''),
 ]
 ref_changed = []
 for path in REF_TARGETS:
@@ -225,6 +231,65 @@ for path in REF_TARGETS:
 if ref_changed:
     print('[remarks] 死链修补 %s %d 个:' % ('将改动' if dry else '了', len(ref_changed)))
     for p in ref_changed:
+        print('       ' + p)
+
+# ---- 第二阶段 b: 子仓 Makefile 的 verify 门禁死引用 + 评估脚本 .agent/evidence 落点 ----
+# 经验(2026-09-14, 手动 grep 沉淀): 两类 .agent 引用藏在 md 之外，REF_RULES 覆盖不到：
+#   a) 子仓 Makefile 的 verify target 指向 .agent/verify.sh——发布版无该脚本，
+#      `make verify` 必失败。不能套用 md 规则('→make verify' 会自指递归)，改为
+#      明示出口；注释/ help 里的括注中性化。
+#   b) engine/scripts/evaluate_f1.sh 等评估脚本把产出写 .agent/evidence/——发布版
+#      会重建 .agent/ 目录（artifacts 门禁随即报违例），改写为 build/ 下已忽略目录。
+MAKE_TARGETS = sorted(glob.glob("*/Makefile"))
+MAKE_RULES = [
+    (r'(?m)^(\t+)@bash \.agent/verify\.sh$',
+     r'\1@echo "verify: internal red-line gate not shipped in public snapshot; use test-go / test-contract / lint"'),
+    (r'与 \.agent/verify\.sh G4 同一口径', 'G4 契约组口径'),
+    (r' \(\.agent/verify\.sh\)', ' (internal gate)'),
+]
+make_changed = []
+for path in MAKE_TARGETS:
+    try:
+        raw = open(path, 'rb').read().decode('utf-8').replace('\r\n', '\n')
+    except (UnicodeDecodeError, FileNotFoundError):
+        continue
+    text = raw
+    for pat, rep in MAKE_RULES:
+        text = re.sub(pat, rep, text)
+    if text != raw:
+        make_changed.append(path)
+        if not dry:
+            open(path, 'wb').write(text.encode('utf-8'))
+if make_changed:
+    print('[remarks] Makefile verify 死引用修补 %s %d 个:' % ('将改动' if dry else '了', len(make_changed)))
+    for p in make_changed:
+        print('       ' + p)
+
+SCRIPT_TARGETS = sorted(glob.glob("*/scripts/*.sh"))
+SCRIPT_RULES = [
+    (r'EVIDENCE_DIR="\.agent/evidence"', 'EVIDENCE_DIR="build/f1-evidence"'),
+    (r'"\.agent/evidence/', '"build/f1-evidence/'),
+    (r"'\.agent/evidence/", "'build/f1-evidence/"),
+    # 经验(2026-09-14): 无斜杠结尾/无引号前缀的散形态（os.makedirs(".agent/evidence")、
+    # tee .agent/evidence/xxx 等）——scripts 作用域内统一兜底到 build/（已 gitignored）
+    (r'\.agent/evidence', 'build/evidence'),
+]
+script_changed = []
+for path in SCRIPT_TARGETS:
+    try:
+        raw = open(path, 'rb').read().decode('utf-8').replace('\r\n', '\n')
+    except (UnicodeDecodeError, FileNotFoundError):
+        continue
+    text = raw
+    for pat, rep in SCRIPT_RULES:
+        text = re.sub(pat, rep, text)
+    if text != raw:
+        script_changed.append(path)
+        if not dry:
+            open(path, 'wb').write(text.encode('utf-8'))
+if script_changed:
+    print('[remarks] 评估脚本 evidence 落点改写 %s %d 个:' % ('将改动' if dry else '了', len(script_changed)))
+    for p in script_changed:
         print('       ' + p)
 
 # ---- 第三阶段: docs/designs 设计工作稿的开发过程叙事清除 ----
@@ -320,7 +385,8 @@ for root, dirs, files in os.walk('.'):
         ext = os.path.splitext(f)[1]
         if ext in ('.go', '.py', '.ts', '.tsx', '.js', '.mjs', '.yaml', '.yml', '.proto',
                    '.sh', '.toml', '.ps1', '.ini', '.json', '.md') \
-                or f == '.gitignore' or f.startswith('Dockerfile') or f == 'Makefile':
+                or f == '.gitignore' or f.startswith('Dockerfile') or f == 'Makefile' \
+                or f.endswith('.conf.template'):   # 经验(2026-09-14): nginx 模板注释同样夹带工单引用
             prov_files.append(os.path.join(root, f).replace('\\', '/'))
 prov_files.sort()
 
@@ -437,6 +503,35 @@ PROV_RULES = [
     (r'（\d{4}-\d{2}-\d{2} 编造审计）：?', ''),
     (r'，\d{4}-\d{2}-\d{2} 审计）', '）'),
     (r'（\d{4}-\d{2}-\d{2} 跨仓审计）：?', ''),
+    # c2) 审计工单补漏（2026-09-14 手动 grep 沉淀。经验：b) 规则族只认 B/C 前缀+年份
+    #     形态，实际漏清四类——P 前缀工单（审计 P1-2/P3-3）、"审计批次二"批次前缀、
+    #     台账单元格里的"B2 审计批次"来源注记、多形态日期前缀；另补批次叙事词）
+    (r'\d{4}-\d{2}-\d{2} 审计批次二（(R[0-9]+)）：', r'\1：'),   # 保留 R 档案号互链
+    (r'审计批次二（[^）]*）：', ''),
+    (r'审计批次二：', ''),
+    (r'审计批次 [A-Z][0-9]+ (修复回归锁)', r'\1'),
+    (r'（([BC][0-9]{1,2}) 审计批发现：', '（发现：'),
+    (r'（([RNO][0-9]{1,2}) 审计批[^）]*）', r'（\1）'),
+    (r'([BC][0-9]{1,2}) 审计批次', ''),
+    (r'\d{4}-\d{2}-\d{2} 审计 P[0-9][0-9a-zA-Z/-]*[：:]?', ''),
+    (r'（审计 P[0-9][0-9a-zA-Z/-]*）', ''),
+    (r'审计 P[0-9][0-9a-zA-Z/-]*[：:]', ''),
+    # c3) 批次叙事词（2026-09-14 沉淀。"本会话/本批"在沙箱/SAST 语境是产品词
+    #     （本会话事件/本批文件），只收确证的过程叙事搭配，禁止无搭配兜底）
+    (r'本会话对抗式复审修正批', '对抗式复审修正批'),
+    (r'本批起', ''),
+    # c4) fix-plan 引用形态补漏：整括注"（见 fix-plan-0911 B4-3）"含工单号尾巴
+    (r'（见 fix-plan[^）]*）', ''),
+    # c6) 已删开发稿文件名的反引死引用（2026-09-14 沉淀：artifacts 删除了
+    #     IMPLEMENTATION_SUMMARY/BUILD_INSTRUCTIONS/MANUAL_TEST_GUIDE，md 里的
+    #     反引引用成了死链）
+    (r'(?: /)?`(?:IMPLEMENTATION_SUMMARY|BUILD_INSTRUCTIONS|MANUAL_TEST_GUIDE)\.md`', ''),
+    # c5) B 编号审计工单补漏（2026-09-14 bootstrap.ps1 复扫沉淀：审计 B2/B10、
+    #     审计 B7 补齐、日期+审计根治 等裸 B 号形态）
+    (r'（\d{4}-\d{2}-\d{2} 审计根治）', ''),
+    (r'（审计 B[0-9]+(/B[0-9]+)*）', ''),
+    (r'（审计 B[0-9]+ [^）]*）', '（'),
+
     # d) 剥离产生的空壳清理
     (r'（[ \t]*）', ''),
     (r'——）', '）'),
@@ -455,6 +550,15 @@ for path in prov_files:
     if is_gitignore:
         for pat, rep in GITIGNORE_RULES:
             text = re.sub(pat, rep, text, flags=re.M)
+        # 经验(2026-09-14, 手动 grep 沉淀): .gitignore 注释同样夹带过程叙事
+        # （"（ADR-178，人类决策 2026-09-01）"等）——此前只跑 GITIGNORE_RULES
+        # 造成漏清，通用 PROV_RULES 需补跑
+        for _ in range(3):
+            prev = text
+            for pat, rep in PROV_RULES:
+                text = re.sub(pat, rep, text, flags=re.M)
+            if text == prev:
+                break
     else:
         # 规则链有顺序依赖（后段规则可能产出前段规则可清的形态）——循环到稳定
         for _ in range(3):
@@ -495,9 +599,9 @@ mode_check() {
   fi
   echo "== 过程性备注残留（人工确认；命中不阻断）=="
   local resid
-  resid=$(grep -rnIE "迁移整改|V1\.x 教训|（[RNXBC][0-9]{1,2}）|矛盾[①-⑯]|修复⑪|评估报告 R[0-9]|旧文档|（V1\.[0-9] 定版）|落地 V1\.x|兑现 V1\.x|人类指令|人类决策|人类批准|fix-plan-[0-9-]+|gw-[0-9a-f]{8} 实证|审计 [A-Z]?P?[0-9]" \
+  resid=$(grep -rnIE "迁移整改|V1\.x 教训|（[RNXBC][0-9]{1,2}）|矛盾[①-⑯]|修复⑪|评估报告 R[0-9]|旧文档|（V1\.[0-9] 定版）|落地 V1\.x|兑现 V1\.x|人类指令|人类决策|人类批准|fix-plan|gw-[0-9a-f]{8} 实证|审计 [A-Z]?P?[0-9]|审计批次|审计批|审计 P[0-9]|\b[BCP][0-9]{1,2}-[0-9]+|IMPLEMENTATION_SUMMARY|BUILD_INSTRUCTIONS|MANUAL_TEST_GUIDE|\.agent/(status\.md|evidence|verify\.sh|session\.sh|test-gates)" \
       --include="*.md" --include="*.go" --include="*.py" --include="*.ts" --include="*.tsx" \
-      --include="*.sh" --include="*.yaml" --include="*.yml" \
+      --include="*.sh" --include="*.yaml" --include="*.yml" --include=".gitignore" \
       --exclude-dir=.git --exclude-dir=archive --exclude-dir=dsh-runtime \
       --exclude-dir=.agent --exclude-dir=.agents --exclude-dir=.zcode \
       --exclude="release_clean.sh" --exclude="sanitize.sh" . 2>/dev/null \

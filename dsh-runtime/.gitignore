@@ -45,10 +45,10 @@ worktrees/
 .typert-*/
 native/system/test/bin/
 
-# 人类指令 2026-09-08: .agent(单数)过程文档目录预防性禁入 git; 上游自带 .agents/ 不受影响
+# .agent(单数) 过程文档目录禁入 git；上游自带 .agents/ 不受影响
 .agent/
 
-# 本机调试残留（2026-09-14 审计 P2：防误提交）
+# 本机调试残留（防误提交）
 sse*.log
 error.log
 .zcode/

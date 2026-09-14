@@ -149,8 +149,7 @@ manager 是**纯传输薄层**：只执行、只观测、绝不裁决；不持�
 ### 3.10 `POST /api/v1/sandboxes/{name}/update-config` — 热更新策略
 
 - 输入 body：`{"workspace": str(必填), "policy": SandboxPolicy-JSON(必填)}`。
-  policy 未知字段 → 400 `invalid policy: …`。沙箱不存在 → 404（R22 审计批
-  09-13 审查补全：该端点曾漏包 NOT_FOUND 映射落 500）。
+  policy 未知字段 → 400 `invalid policy: …`。沙箱不存在 → 404（R22）。
 - 输出 `200`：`{"version": int, "policy_hash": str}`。
 
 ### 3.11 `POST /api/v1/sandboxes/{name}/files?workspace=` — 流式上传

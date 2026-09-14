@@ -51,7 +51,7 @@ describe('E-12 getProjects 分页参数（E-00a JSON 序列化 + 空游标保留
 // 只拿最新 20 条（服务端缺省 20 上限 100），项目 >20 后旧项目在下拉/筛选/深链预选中
 // 永远不可达。listAllProjects 循环翻页（服务端 project handler 恒发精确 has_next，循环
 // 可靠终止；10 页熔断防异常 has_next 恒真打爆）。fakeGateway 每文件单 adapter——
-// 覆写文件级 routes 条目（B3AuditFixes 同法），用后还原。
+// 覆写文件级 routes 条目（RegressionFixes 同法），用后还原。
 describe('B5-P2-7 listAllProjects 循环翻页', () => {
   const projectOf = (i: number) => ({
     project_id: `p${i}`, name: `P${i}`, repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null,

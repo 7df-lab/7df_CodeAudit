@@ -73,7 +73,7 @@ check_block G-05 "api/fetch 直连绝对 URL 禁止" \
 echo "== G-06 报告窗注入面禁区（P-23：453b6bd 前曾 document.write 裸写同源 about:blank 窗口；B5 补录防线）=="
 g02 G-06 "document.write/dangerouslySetInnerHTML/insertAdjacentHTML/srcdoc（含 JSX 驼峰 srcDoc）禁止（许可=含'不再'的警示注释）" \
   "document\.write|dangerouslySetInnerHTML|insertAdjacentHTML|[sS]rc[dD]oc\s*=" src
-check_anchor G-06b "报告窗 iframe sandbox 空 token（无 allow-scripts/allow-same-origin，B3AuditFixes 行为锁之外的第二道锚）" \
+check_anchor G-06b "报告窗 iframe sandbox 空 token（无 allow-scripts/allow-same-origin，RegressionFixes 行为锁之外的第二道锚）" \
   "setAttribute\('sandbox', ''\)" src/api/client.ts
 
 echo "== G-07 链路 chip 两阶段解析锚点（P-32：new_size.x 表达式误判文件名/裸行引用误挂不存在文件，2026-09-13 根治）=="

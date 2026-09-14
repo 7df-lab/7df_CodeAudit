@@ -17,7 +17,7 @@
 
 | 变量 | 缺省 | 语义 | 契约要点 |
 |---|---|---|---|
-| `REMOTE` | `pct exec 107 --` | 远程命令前缀 | **空串 = 本机执行**（`${REMOTE-…}` 减号缺省，2026-09-07 与 lifecycle 对齐；空串绝不允许回落 pct 缺省——同族回归 5dbc735） |
+| `REMOTE` | `pct exec <CTID> --` | 远程命令前缀 | **空串 = 本机执行**（`${REMOTE-…}` 减号缺省，2026-09-07 与 lifecycle 对齐；空串绝不允许回落 pct 缺省——同族回归 5dbc735） |
 | `VMID` | `107` | `pct push` 的目标 LXC id | 仅文件推送用 |
 | `DEPLOY_DIR` | `/root/os-deploy/deploy/docker` | LXC 内运行目录 | 与 gateway_lifecycle.sh 共享默认 |
 
@@ -51,7 +51,7 @@
 
 | 变量 | 缺省 | 语义 |
 |---|---|---|
-| `REMOTE` | `pct exec 107 --` | 命令前缀；**空串 = 本机执行**（`${REMOTE-…}`，dind 实测固化的契约，回归档案 R1） |
+| `REMOTE` | `pct exec <CTID> --` | 命令前缀；**空串 = 本机执行**（`${REMOTE-…}`，dind 实测固化的契约，回归档案 R1） |
 | `DEPLOY_DIR` | `/root/os-deploy/deploy/docker` | compose 项目目录（TOML/compose 运行副本所在） |
 | `SERVICE` | `gateway` | compose 服务名，必须等于 compose 文件的服务键 |
 | `ROUTING_DOMAIN` | `sandbox.codeaudit.internal` | ensure 钉住的路由域 |
@@ -143,7 +143,7 @@
 
 | 项 | 契约 |
 |---|---|
-| REMOTE 前缀 | 形如 `pct exec 107 --` 或空串（本机）；`run_remote` 刻意分词（前缀含空格是特性） |
+| REMOTE 前缀 | 形如 `pct exec <CTID> --` 或空串（本机）；`run_remote` 刻意分词（前缀含空格是特性） |
 | 运行目录 | `/root/os-deploy/deploy/docker`（`DEPLOY_DIR` 可改，改了须同步 compose 相对挂载仍成立） |
 | 文件推送 | 仅 `pct push $VMID`（见 E1）；注意 `pct push` 不经 REMOTE 前缀、直接调本机 pct 二进制——REMOTE=""（本机=LXC 自身）时无 pct 可用，该形态只支持 check/status 类只读动作与 lifecycle 的本机 compose 操作 |
 | 备份 | 运行副本被覆盖前自动 `*.bak.<时间戳>`（deploy.sh 推送前 + patch_server_sans 改 TOML 前各留一次） |

@@ -55,7 +55,7 @@ const DEMO_LOGS = [
   { log_id: 'dL5', task_id: 'gw-t00000a1f', ts_ms: 1757155460000, level: 'TASK_LOG_LEVEL_ERROR', source: 'report', message: '报告模板变量缺失（已在本地兜底渲染）' },
 ];
 
-// 2026-09-14 审计 P3 对齐后端真实格式：标记行（💭/✍/📋）独立成行、正文另起行——
+//  对齐后端真实格式：标记行（💭/✍/📋）独立成行、正文另起行——
 // 此前"标记+正文同行"会被 parseTimeline 的 startKind 整行消费（同行正文静默丢失，
 // 实时态还渲染出带空正文的思考标题块）。会话头也对齐 bridge 真实帧文本。
 const DEMO_AI_TEXT = [

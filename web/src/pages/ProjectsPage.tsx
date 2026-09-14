@@ -28,7 +28,7 @@ import { usePageTitle } from '../hooks/usePageTitle';
 
 // 仓库列的上传件名单元格（2026-09-09 用户指令"项目页应显示上传压缩包的名称"）：
 // 原始文件名不进 storage 对象键（uploads/<id><ext>，网关只拿它判扩展名），落项目
-// config.upload_file_name（本批起创建时写入）；存量项目无此键 → 如实回落"上传压缩包"。
+// config.upload_file_name（创建时写入）；存量项目无此键 → 如实回落"上传压缩包"。
 function UploadNameCell({ projectId }: { projectId: string }) {
   const { data } = useQuery({
     queryKey: ['project-config', projectId],

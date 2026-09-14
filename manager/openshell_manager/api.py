@@ -42,8 +42,7 @@ MAX_BODY_BYTES = 20 * 1024 * 1024
 # 1e9 让南向连接无限占用；超过上限 = 客户端错误 400。
 WAIT_READY_TIMEOUT_DEFAULT = 300.0
 WAIT_READY_TIMEOUT_MAX = 600.0
-# exec 服务端超时上限（R23，同族漏修）：engine 现役实参 60/20（fix-plan
-# 2026-09-12 §0 兼容性已核），600 对齐 wait_ready 硬上限。
+# exec 服务端超时上限（R23，同族漏修）：engine 现役实参 60/20，600 对齐 wait_ready 硬上限。
 EXEC_TIMEOUT_MAX = 600
 
 facade = GatewayFacade()

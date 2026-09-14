@@ -34,7 +34,7 @@ log_error() {
 # ============================================================
 # 配置
 # ============================================================
-EVIDENCE_DIR=".agent/evidence"
+EVIDENCE_DIR="build/f1-evidence"
 REPORT_FILE="${EVIDENCE_DIR}/F1_evaluation_report.json"
 CSV_FILE="${EVIDENCE_DIR}/F1_evaluation_results.csv"
 
@@ -233,7 +233,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple
 
 # 加载扫描结果
-scan_results_file = ".agent/evidence/scan_results.json"
+scan_results_file = "build/f1-evidence/scan_results.json"
 if not os.path.exists(scan_results_file):
     print("ERROR: 扫描结果文件不存在")
     sys.exit(1)
@@ -373,8 +373,8 @@ report = {
 }
 
 # 保存报告
-os.makedirs(".agent/evidence", exist_ok=True)
-with open(".agent/evidence/F1_evaluation_report.json", "w") as f:
+os.makedirs("build/evidence", exist_ok=True)
+with open("build/f1-evidence/F1_evaluation_report.json", "w") as f:
     json.dump(report, f, indent=2)
 
 # 输出结果
@@ -386,7 +386,7 @@ print(f"召回率 (Recall):    {recall:.4f} (目标: ≥0.90) {'✓' if recall >
 print(f"F1 分数:            {f1:.4f} (目标: ≥0.85) {'✓' if f1 >= 0.85 else '✗'}")
 print("=" * 60)
 print(f"总体状态: {'PASS' if f1 >= 0.85 else 'FAIL'}")
-print(f"报告已保存: .agent/evidence/F1_evaluation_report.json")
+print(f"报告已保存: build/evidence/F1_evaluation_report.json")
 print("=" * 60)
 
 # 退出码
@@ -407,11 +407,11 @@ import json
 import csv
 
 # 加载报告
-with open(".agent/evidence/F1_evaluation_report.json", "r") as f:
+with open("build/f1-evidence/F1_evaluation_report.json", "r") as f:
     report = json.load(f)
 
 # 生成 CSV
-csv_file = ".agent/evidence/F1_evaluation_results.csv"
+csv_file = "build/f1-evidence/F1_evaluation_results.csv"
 with open(csv_file, "w", newline="") as f:
     writer = csv.writer(f)
     
@@ -487,7 +487,7 @@ main() {
     echo "============================================================"
     
     # 读取最终状态
-    local f1_status=$(python3 -c "import json; print(json.load(open('.agent/evidence/F1_evaluation_report.json'))['status']['f1'])")
+    local f1_status=$(python3 -c "import json; print(json.load(open('build/f1-evidence/F1_evaluation_report.json'))['status']['f1'])")
     
     if [ "$f1_status" = "PASS" ]; then
         log_info "F1 评估通过（样例数据集）"
