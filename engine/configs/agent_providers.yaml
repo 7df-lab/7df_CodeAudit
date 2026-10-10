@@ -1,0 +1,137 @@
+# agent provider descriptor 注册表（R6 完整版 v0，切片 1）。
+# 依据: 主仓库 docs/designs/platform-slice1-r6-descriptor.md §2（数据模型）/§6（mock 生产禁载）；
+# ADR-244（承载形态：独立 providers 文件——go-config 无对象数组 API，设计 §2 备选形态）。
+#
+# 纪律：
+#   - 严格解析：未知字段拒载、引用完整性校验（方言/解析器/渲染器/健康面注册表），
+#     校验失败 fail-fast（U6 同型）；
+#   - 首条=缺省条目；runtime.sandbox.agent（env CODEAUDIT_AGENT）可选中其他条目；
+#   - 文件整体缺失=服务侧合成缺省 DSH 条目（现网零改动兼容）；
+#   - 新增方言=registry 加一行+适配器实现（内部 4 处消费点零改动）——本文件只加数据条目。
+#
+# 现值即现行 DSH 行为（字节等价 golden 锁：TestBuildTurnPrompt_Phase1DetectionContract 等）。
+# launch.env_map 留空=LLM env 运行时按当前推理路由分派（llm_route_env，ADR-227）；
+# capabilities 如实声明：交互 policy=never（S1 实证）、session_resume=none。
+- id: dsh
+  dialect: dsh-sse
+  launch:
+    bridge_cmd: ""                      # 空=DSH bridge 常量（node /opt/bridge/bridge.mjs）
+    env_map: ""                         # 空=运行时路由分派（anthropic-relay|openai-compat）
+    permission_mode: danger-full-access # 内层全放行=设计模式（架构 §3，ADR-187 补遗）
+  session:
+    transport: sse-bridge               # POST /prompt + GET /events
+    idle_convergence: turn-based        # ADR-190/192 收敛纪律
+    resume: none                        # 能力声明非承诺（设计不变量 4：换手不依赖 session）
+  results:
+    parser: codeaudit-submit            # submit_findings/submit_patches 通道（ADR-184）
+  seeds:
+    brief_renderer: baton-brief         # 复用 baton brief（恒定种子契约）
+    render_target: task-card-prefix     # DSH=任务卡前置段
+  capabilities:
+    tool_events: true
+    structured_submit: true
+    interaction: false                  # DSH 审批面 policy=never（S1 实证口径）
+    session_resume: false
+    conclude_semantics: true            # 收笔/conclude 双阶段可注入（闸门，注入面随 S2）
+  healthcheck:
+    mode: bridge-healthz                # GET /healthz
+# maka 条目（平台切片 7）：S2 完整回合实证 unblock（三根因配置烘焙镜像 maka-cli:s3
+# ——baseUrl=/v1+accept 头+networkProxy，证据 .agent/evidence/maka-s2-20260919/）。
+# 诚实声明：structured_submit=false（无 codeaudit-submit 工具——结果走 assignment
+# 模板兜底段的围栏 JSON 契约，text-final 通道）；tool_events=false（RuntimeEventLog
+# 投影=后续批）；interaction=false（--yolo 全放行）；resume=none（v0 每回合进程，
+# --continue 接续=适配器内兜底语义非会话恢复承诺）。
+- id: maka
+  dialect: maka-runtime-host
+  launch:
+    bridge_cmd: ""                      # 非 bridge 形态（maka run 进程驱动）
+    env_map: ""                         # LLM 出口=镜像内烘焙 connection（不经 env 分派）
+    permission_mode: bypass             # --yolo 等价（S2 实证 invocation_opened.permissionMode）
+    sandbox_image: maka-cli:s3          # 切片 7：agent 级镜像（provisioning 载体）
+  session:
+    transport: acp-stdio                # 进程驱动语义位（v0=execIn maka run；ACP=v1 同形收敛）
+    idle_convergence: turn-based
+    resume: none
+  results:
+    parser: text-final
+  seeds:
+    brief_renderer: baton-brief
+    render_target: initial-prompt       # assignment 直发（prompt 分岔既有消费点）
+  capabilities:
+    tool_events: false
+    structured_submit: false
+    interaction: false
+    session_resume: false
+    conclude_semantics: false
+  healthcheck:
+    mode: cli-help                      # execIn maka --version（适配器 open 内执行）
+# opencode 条目：acp-stdio 方言首个实体。
+# 协议面=ACP（initialize/session/new/prompt/update+权限代答全批）；诚实声明：
+# structured_submit=false（无 codeaudit-submit 工具——text-final 围栏 JSON 契约，
+# 同 maka 档）；tool_events=false（update 帧仅人性化渲染，无结构化工具消费）；
+# 会话恢复=none（v0 每回合新会话；acp-session-load=v1 bridge 收敛批）；
+# 逐字流=无（管道式回合粒度，v1 bridge 批对齐 dsh 体验）。
+# 镜像 opencode-cli:s1 由 provisioning 批构建（opencode 二进制+推理端点烘焙配置，
+# 配方同 maka-sandbox.sh 形态）；缺位时健康面（opencode --version）fail-fast。
+- id: opencode
+  dialect: dsh-sse                      # v1 桥形态（2026-09-24）：bridge --acp 把 ACP agent 伪装成 dsh runtime——engine 复用 dsh-sse 适配器零改动；acp-stdio 管道式 v0（acp_session.go）保留为无桥 fallback
+  launch:
+    bridge_cmd: "node /opt/bridge/bridge.mjs --acp -- opencode acp"  # 桥内常驻 spawn ACP agent（官方 v1 线协议）
+    # ⚠ 超时不变量（审计 P2-4）：桥 BRIDGE_ACP_PROMPT_TIMEOUT_MS（缺省 2100s）必须
+    # ≤ 本服务 HTTPClientTimeout——倒置=engine 先超时回合吃到桥迟到合成 idle→假收敛。
+    env_map: ""                         # LLM 出口=镜像内烘焙 opencode 配置（provisioning 批）
+    permission_mode: bypass             # 权限代答=桥内自动批准（架构 §7"v0 全批"同语义）
+    sandbox_image: opencode-cli:s1      # provisioning 批构建（目标镜像名钉死防漂移）
+  session:
+    transport: sse-bridge               # 桥形态（HTTP /prompt+/events/healthz），与 dsh 同面
+    idle_convergence: turn-based        # session/prompt 响应即回合收束（协议内建，无 idle 推断）
+    resume: none                        # acp-session-load=v1 后续
+  results:
+    parser: text-final
+  seeds:
+    brief_renderer: baton-brief
+    render_target: task-card-prefix     # 走既有消费路径（initial-prompt 分岔未消费，方言.go 注）
+  capabilities:
+    tool_events: false
+    structured_submit: false
+    interaction: false
+    session_resume: false
+    conclude_semantics: false
+  healthcheck:
+    mode: bridge-healthz                # 桥兼容层提供同款 /healthz（桥形态强制，校验器不变量）
+# maka-acp 条目：maka ACP 方言走 v1 桥形态——bridge --acp 把
+# maka --acp 伪装成 dsh runtime（engine 复用 dsh-sse 适配器零改动），与 opencode
+# 条目同构。差异只在镜像与 bridge_cmd：maka-cli:s4 entry 脚本承载 HOME 锚定+
+# 桥 exec（分叉点裁决=脚本文件而非 bash -c 引号嵌套——引号嵌套经 nohup env
+# 模板无法安全转义。2026-09-24 实证注记：runtime-host 不预启动——预启动 serve
+# 会抓走 interactive root 锁致 session.create 失败；setup 已 s4 构建期烘焙、
+# 运行期由 maka --acp 内建 connect-or-spawn 懒拉起）；/sandbox 由 s4 预建
+# （桥 AGENT_CWD 硬常量对齐 engine dsh-sse 工作区挂载惯例）。多会话实测在案
+# → B1 图任务可开测。
+# 诚实声明：同 opencode 档（structured_submit=false text-final 围栏 JSON 契约；
+# tool_events=false；interaction=false 权限代答；resume=none）。
+- id: maka-acp
+  dialect: dsh-sse
+  launch:
+    bridge_cmd: "bash /opt/bridge/entry-acp.sh"  # s4 entry：HOME 锚定+exec 桥 --acp -- maka --acp（runtime-host 懒拉起，零引号嵌套）
+    # ⚠ 超时不变量同 opencode 条目（桥 2100s ≤ HTTPClientTimeout）
+    env_map: ""                         # LLM 出口=镜像内烘焙 connection（s3 provisioning，不经 env 分派）
+    permission_mode: bypass             # 权限代答=桥内自动批准（与 opencode 同语义）
+    sandbox_image: maka-cli:s4          # b3-2 provisioning 批构建（s2→s3→s4 链，maka-sandbox.sh）
+  session:
+    transport: sse-bridge
+    idle_convergence: turn-based
+    resume: none
+  results:
+    parser: text-final
+  seeds:
+    brief_renderer: baton-brief
+    render_target: task-card-prefix
+  capabilities:
+    tool_events: false
+    structured_submit: false
+    interaction: false
+    session_resume: false
+    conclude_semantics: false
+  healthcheck:
+    mode: bridge-healthz

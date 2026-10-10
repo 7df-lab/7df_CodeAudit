@@ -10,9 +10,9 @@ get/set, provider list/upsert, service expose/list/delete, and error mapping (40
 400 missing fields/invalid JSON/non-object body, 413 oversized body, 502
 upstream failure), plus config.validate() bind discipline.
 
-Requires the vendored protobuf modules (openshell._proto) for the
-dict->SandboxSpec parse; SKIPs (exit 0) where the vendor tree is absent —
-mirrors the engine's "libs optional" discipline.
+Requires the openshell protobuf modules (openshell._proto, a top-level
+package of this repo since 2026-09-15, R31) for the dict->SandboxSpec
+parse; absence = broken checkout, imports fail loud.
 """
 from __future__ import annotations
 
@@ -151,7 +151,7 @@ class FakeSandboxClient:
     def exec_stream(self, sandbox_id, command, *, workdir=None, env=None,
                     stdin=None, timeout_seconds=None):
         """真实 SDK exec_stream 同形替身：yield ExecChunk(stream/data) 形态
-        事件，收尾 yield ExecResult(exit_code/stdout/stderr)。起
+        事件，收尾 yield ExecResult(exit_code/stdout/stderr)。C1-10 起
         facade 改走流式消费（输出上限在 facade 层钳制）。"""
         self.calls.append(("exec", sandbox_id, command, workdir, env, stdin,
                            timeout_seconds))
@@ -175,34 +175,49 @@ class FakeSandboxClient:
 
 class FakeInferenceStub:
     """inference.v1.Inference 直连替身（gateway._inference_stub 缝）。
-    SetInferenceRoute 回执带验证字段——回执透传是对外契约（3.16）。"""
+    SetInferenceRoute 回执带验证字段——回执透传是对外契约（3.16）。假件回执
+    对齐 manager 投影的对外契约键集（含 route_name/timeout_secs；proto 字段
+    全集与弃置口径以对齐锁 test_inference_stub_projection_covers_proto_fields
+    为准——历史坑：SDK InferenceRouteClient 丢回执字段，假件不得重蹈）。
+    捕获的是 manager 构造的真 proto 请求对象（last_set/last_get/last_delete
+    直读其字段）。GetInferenceBundle 有意无替身：manager 不透传该 RPC
+    （沙箱主体专享，R32/3.22）。"""
 
     SET_RESPONSE = SimpleNamespace(
         provider_name="prov-x", model_id="model-y", version=5,
+        route_name="", timeout_secs=0,
         validation_performed=True,
         validated_endpoints=[SimpleNamespace(url="https://gw/v1",
                                              protocol="https")])
     ROUTE = SimpleNamespace(provider_name="prov-x", model_id="model-y",
-                            version=4)
+                            version=4, route_name="", timeout_secs=0)
 
     def __init__(self):
-        self.last = None
+        self.last_set = None
+        self.last_get = None
+        self.last_delete = None
         # R30：南向异常注入缝（None=正常回执；FakeRpcError 模拟网关错误码）
         self.get_error = None
         self.set_error = None
+        self.delete_error = None
 
     def GetInferenceRoute(self, request, timeout=None):
         if self.get_error is not None:
             raise self.get_error
-        self.last_get = request.workspace
+        self.last_get = request
         return self.ROUTE
 
     def SetInferenceRoute(self, request, timeout=None):
         if self.set_error is not None:
             raise self.set_error
-        self.last = (request.workspace, request.provider_name,
-                     request.model_id, request.no_verify)
+        self.last_set = request
         return self.SET_RESPONSE
+
+    def DeleteInferenceRoute(self, request, timeout=None):
+        if self.delete_error is not None:
+            raise self.delete_error
+        self.last_delete = request
+        return SimpleNamespace(deleted=True)
 
 
 class FakeAdminStub:
@@ -210,8 +225,17 @@ class FakeAdminStub:
     SERVICES: Dict[Tuple[str, str, str], SimpleNamespace] = {}
     # provider 名集合：让 upsert 的 Create/Update 双路径都可测
     PROVIDERS: set = {"prov-x"}
+    # 南向 Create/UpdateProvider 异常注入缝（None=正常回执；2026-09-17
+    # INVALID_ARGUMENT→400 契约用）
+    UPSERT_ERROR = None
+    # R34/P2-2/P2-3：List/Delete 南向异常注入缝（NOT_FOUND/FAILED_PRECONDITION
+    # 映射负向用例——上游 resolve_workspace/在用守卫的真实回码）
+    LIST_ERROR = None
+    DELETE_ERROR = None
 
     def ListProviders(self, request, timeout=None):
+        if FakeAdminStub.LIST_ERROR is not None:
+            raise FakeAdminStub.LIST_ERROR
         provs = [SimpleNamespace(metadata=SimpleNamespace(name=n),
                                  type="openai",
                                  config={"OPENAI_BASE_URL": "http://x/v1"})
@@ -219,15 +243,21 @@ class FakeAdminStub:
         return SimpleNamespace(providers=provs)
 
     def UpdateProvider(self, request, timeout=None):
+        if FakeAdminStub.UPSERT_ERROR is not None:
+            raise FakeAdminStub.UPSERT_ERROR
         assert request.provider.metadata.name in self.PROVIDERS, \
             "provider missing; must Create, not Update"
         return SimpleNamespace()
 
     def CreateProvider(self, request, timeout=None):
+        if FakeAdminStub.UPSERT_ERROR is not None:
+            raise FakeAdminStub.UPSERT_ERROR
         self.PROVIDERS.add(request.provider.metadata.name)
         return SimpleNamespace()
 
     def DeleteProvider(self, request, timeout=None):
+        if FakeAdminStub.DELETE_ERROR is not None:
+            raise FakeAdminStub.DELETE_ERROR
         existed = request.name in self.PROVIDERS
         self.PROVIDERS.discard(request.name)
         return SimpleNamespace(deleted=existed)
@@ -275,7 +305,9 @@ def make_app(token_env, client=None):
     client.delete_result = True
     INFERENCE_FAKE.get_error = None
     INFERENCE_FAKE.set_error = None
+    INFERENCE_FAKE.delete_error = None
     FakeAdminStub.PROVIDERS = {"prov-x"}
+    FakeAdminStub.UPSERT_ERROR = None
     if token_env is None:
         os.environ.pop("OPENSHELL_MANAGER_TOKEN", None)
     else:
@@ -358,12 +390,16 @@ def test_route_and_providers_auth_disabled():
         assert payload["validation_performed"] is True, payload
         assert payload["validated_endpoints"] == [
             {"url": "https://gw/v1", "protocol": "https"}], payload
-        assert INFERENCE_FAKE.last == ("default", "prov-x", "model-y", True)
+        rs = INFERENCE_FAKE.last_set
+        assert (rs.workspace, rs.provider_name, rs.model_id, rs.no_verify,
+                rs.route_name, rs.timeout_secs) == \
+            ("default", "prov-x", "model-y", True, "", 0)
 
         status, payload = req("GET",
                               "/api/v1/inference/route?workspace=default")
         assert status == 200 and payload == {
-            "provider": "prov-x", "model": "model-y", "version": 4}, payload
+            "provider": "prov-x", "model": "model-y", "version": 4,
+            "route_name": "", "timeout_secs": 0}, payload
 
         status, payload = req("GET",
                               "/api/v1/inference/providers?workspace=default")
@@ -470,6 +506,20 @@ def test_provider_detail_and_404():
 def test_ref_projection_carries_phase_name_and_conditions():
     server, req = make_app(token_env=None)
     try:
+        # R34/P2-4：conditions 是诊断契约键——原断言对恒 [] 恒真（空洞）。
+        # 真 proto 条件对象经 SDK（tuple 原样）→manager MessageToDict 投影，
+        # 断言内容端到端到达（SDK dataclass 曾在边界丢弃该字段）。
+        from openshell._proto import openshell_pb2 as _pb
+        st = _pb.SandboxStatus(phase=2, current_policy_version=7)
+        st.conditions.add(type="Ready", status="False",
+                          reason="ImagePullBackOff", message="pull failed")
+        _fake_ref = FakeRef()
+        _fake_ref.status = st
+        proj = api.facade._ref(_fake_ref)
+        assert proj["conditions"], proj
+        assert proj["conditions"][0]["reason"] == "ImagePullBackOff", proj
+        assert proj["phase_name"].startswith("SANDBOX_PHASE_"), proj
+
         status, payload = req("GET",
                               "/api/v1/sandboxes/dsh-fake?workspace=default")
         assert status == 200, payload
@@ -527,7 +577,7 @@ def test_upstream_error_mapping():
         # 修复前落兜底 500，文档承诺的 404 从未生效
         status, payload = req("GET", "/api/v1/sandboxes/nope?workspace=default")
         assert status == 404 and "not found" in payload["error"], payload
-        # 同步收紧：南向未捕获异常走兜底处理器 → 500 + 通用文案
+        # B3-3 同步收紧：南向未捕获异常走兜底处理器 → 500 + 通用文案
         # （原 502 让上游按"网关不可达"误重试/降级）
         status, payload = req("GET", "/api/v1/gateway/health")
         assert status == 500 and payload == {"error": "internal error"}, payload
@@ -810,7 +860,7 @@ def test_upload_large_streaming_file():
                   if c[0] == "exec" and "base64 -d" in c[2][2]]
         assert base64.b64decode(b"".join(w[5] for w in writes)) == content, "content corrupted"
         # every write chunk respects the 1MiB gateway receive ceiling
-        # (720KiB raw → 960KiB base64 text; 实测网关上限 1MiB, 2026-09-06)
+        # 
         assert all(len(w[5]) <= 720 * 1024 // 3 * 4 for w in writes), \
             [len(w[5]) for w in writes]  # stdin 为 base64 文本，上限按编码后口径
     finally:
@@ -1043,7 +1093,7 @@ def test_upload_to_missing_sandbox_maps_404():
 
 def test_upload_failure_cleans_part_and_maps_5xx():
     """R1 族防线：chunk 写失败（远端非零退出）必须 rm -f .part 后上抛
-    5xx——防失败上传留下 .part 残片/半写文件回归。（同步收紧：兜底
+    5xx——防失败上传留下 .part 残片/半写文件回归。（B3-3 同步收紧：兜底
     处理器 502 → 500 "internal error"。）"""
     server, req = make_app(token_env=None)
     try:
@@ -1273,14 +1323,12 @@ def test_boolean_string_fields_strict():
                               {"workspace": "default", "provider": "prov-x",
                                "model": "model-y", "no_verify": "false"})
         assert status == 200, payload
-        assert INFERENCE_FAKE.last == ("default", "prov-x", "model-y", False), \
-            INFERENCE_FAKE.last
+        assert INFERENCE_FAKE.last_set.no_verify is False
         status, payload = req("PUT", "/api/v1/inference/route",
                               {"workspace": "default", "provider": "prov-x",
                                "model": "model-y", "no_verify": "true"})
         assert status == 200, payload
-        assert INFERENCE_FAKE.last == ("default", "prov-x", "model-y", True), \
-            INFERENCE_FAKE.last
+        assert INFERENCE_FAKE.last_set.no_verify is True
         status, payload = req("PUT", "/api/v1/inference/route",
                               {"workspace": "default", "provider": "prov-x",
                                "model": "model-y", "no_verify": 0})
@@ -1363,7 +1411,7 @@ def test_route_unconfigured_404_and_verification_failed_400():
         INFERENCE_FAKE.set_error = FakeRpcError(
             "FAILED_PRECONDITION",
             "failed to verify inference endpoint for provider 'prov-x' "
-            "and model 'model-y' at 'http://10.10.210.1:19419'")
+            "and model 'model-y' at 'http://192.0.2.210:19419'")
         status, payload = req("PUT", "/api/v1/inference/route",
                               {"workspace": "default", "provider": "prov-x",
                                "model": "model-y", "no_verify": False})
@@ -1376,6 +1424,247 @@ def test_route_unconfigured_404_and_verification_failed_400():
         assert status == 500 and payload["error"] == "internal error", payload
     finally:
         server.shutdown()
+
+
+def test_inference_admin_invalid_argument_maps_400():
+    """管理面南向 INVALID_ARGUMENT——类型不支持（details 含 supported 类型表）
+    与类型不可改——曾裸 500 internal error（2026-09-17 107 实证），客户端可
+    修正条件须确定性 400 并透传网关指引（同 R30 理由：5xx 被上游按服务端
+    故障误重试/降级）。"""
+    server, req = make_app(token_env=None)
+    try:
+        INFERENCE_FAKE.set_error = FakeRpcError(
+            "INVALID_ARGUMENT",
+            "provider 'z' has unsupported type 'zhipu' for cluster inference "
+            "(supported: openai, anthropic, nvidia, deepinfra, "
+            "google-vertex-ai, aws-bedrock)")
+        status, payload = req("PUT", "/api/v1/inference/route",
+                              {"workspace": "default", "provider": "z",
+                               "model": "glm-4.5", "no_verify": False})
+        assert status == 400 and \
+            "supported: openai, anthropic" in payload["error"], payload
+
+        FakeAdminStub.UPSERT_ERROR = FakeRpcError(
+            "INVALID_ARGUMENT",
+            "provider type cannot be changed; delete and recreate the provider")
+        status, payload = req("PUT", "/api/v1/inference/providers",
+                              {"workspace": "default", "name": "prov-x",
+                               "type": "anthropic", "credentials": {},
+                               "config": {}})
+        assert status == 400 and \
+            "cannot be changed" in payload["error"], payload
+    finally:
+        INFERENCE_FAKE.set_error = None
+        FakeAdminStub.UPSERT_ERROR = None
+        server.shutdown()
+
+
+def test_route_get_invalid_argument_maps_400():
+    """GET 面的 INVALID_ARGUMENT 400 通道（2026-09-18 评审批补挂）：GET 带
+    route_name 后网关 effective_route_name 的拒绝路径在 GET 上可达（源码
+    d51a653f get_inference_route 先调 effective_route_name）——文档承诺
+    get/set/delete 同口径，缺映射=未知路由名落 500 吞指引（c4649ab 同族）。"""
+    server, req = make_app(token_env=None)
+    try:
+        INFERENCE_FAKE.get_error = FakeRpcError(
+            "INVALID_ARGUMENT",
+            "unknown route_name 'zzz'; expected 'inference.local' or 'sandbox-system'")
+        status, payload = req("GET",
+                              "/api/v1/inference/route?workspace=default"
+                              "&route_name=zzz")
+        assert status == 400 and \
+            "expected 'inference.local' or 'sandbox-system'" in payload["error"], \
+            payload
+    finally:
+        server.shutdown()
+
+
+def test_route_multiname_and_timeout_passthrough():
+    """切片3前半：route_name 多命名路由（Set/Get/Delete 贯通）+ 路由级
+    timeout_secs——proto 已有、manager 曾未透传的闲置能力暴露。纯管道：南向
+    请求逐字段核对，回执精确等值（键集即契约）。
+    route_name 合法值=源码 effective_route_name（NVIDIA/OpenShell@d51a653f
+    crates/openshell-server/src/inference.rs）：""（默认）/"inference.local"
+    （显式实名，与空串等价）与 "sandbox-system"；其余名网关
+    INVALID_ARGUMENT（2026-09-17 管理面先例 c4649ab：400 透传）——
+    命名路由用例用真名 sandbox-system，不造网关不认的臆造名。"""
+    server, req = make_app(token_env=None)
+    try:
+        # 命名路由 Set：route_name + timeout_secs 南向贯通，回执带新键
+        status, payload = req("PUT", "/api/v1/inference/route",
+                              {"workspace": "default", "provider": "prov-x",
+                               "model": "model-y", "route_name": "sandbox-system",
+                               "timeout_secs": 120})
+        assert status == 200 and payload == {
+            "provider": "prov-x", "model": "model-y", "version": 5,
+            "route_name": "", "timeout_secs": 0,
+            "validation_performed": True,
+            "validated_endpoints": [
+                {"url": "https://gw/v1", "protocol": "https"}]}, payload
+        rs = INFERENCE_FAKE.last_set
+        assert (rs.route_name, rs.timeout_secs) == ("sandbox-system", 120)
+
+        # 命名路由 Get：route_name 查询参贯通
+        status, payload = req("GET",
+                              "/api/v1/inference/route?workspace=default"
+                              "&route_name=sandbox-system")
+        assert status == 200, payload
+        assert (INFERENCE_FAKE.last_get.route_name,
+                INFERENCE_FAKE.last_get.workspace) == \
+            ("sandbox-system", "default")
+
+        # 默认路由不带 route_name：南向收空串（proto 契约=默认 inference.local）
+        status, _ = req("GET", "/api/v1/inference/route?workspace=default")
+        assert INFERENCE_FAKE.last_get.route_name == ""
+
+        # 命名路由 Delete：route_name 查询参贯通
+        status, payload = req("DELETE",
+                              "/api/v1/inference/route?workspace=default"
+                              "&route_name=sandbox-system")
+        assert status == 200 and payload == {"deleted": True}, payload
+        assert (INFERENCE_FAKE.last_delete.route_name,
+                INFERENCE_FAKE.last_delete.workspace) == \
+            ("sandbox-system", "default")
+
+        # 默认路由 Delete：不传 route_name
+        status, payload = req("DELETE",
+                              "/api/v1/inference/route?workspace=default")
+        assert status == 200 and payload == {"deleted": True}, payload
+        assert INFERENCE_FAKE.last_delete.route_name == ""
+    finally:
+        server.shutdown()
+
+
+def test_inference_bundle_not_proxied():
+    """R32 锁定：manager 不透传 GetInferenceBundle——该 RPC 是沙箱主体专享
+    （proto auth_mode:"sandbox"；服务端 authorize_inference_bundle 对 User
+    主体 PERMISSION_DENIED "requires a sandbox principal"，见
+    NVIDIA/OpenShell@d51a653f crates/openshell-server/src/inference.rs）。
+    manager 持 bearer 管理身份，调用必被拒——透传端点=永远 500 的死面。
+    引擎/Web 若需 bundle 走沙箱侧通道（api_key 的交付对象就是沙箱运行时），
+    或等网关出 admin 面 RPC——另立决策，勿再透传。"""
+    server, req = make_app(token_env=None)
+    try:
+        status, _ = req("GET", "/api/v1/inference/bundle")
+        assert status == 404, "bundle must stay unproxied (R32), got 200/4xx-route"
+        from fastapi.routing import APIRoute
+        paths = {r.path for r in api.create_app().routes
+                 if isinstance(r, APIRoute)}
+        assert "/api/v1/inference/bundle" not in paths
+    finally:
+        server.shutdown()
+
+
+def test_route_new_fields_validation_400():
+    """新字段的客户端格式错误一律 400（不触达网关）：route_name 非字符串、
+    timeout_secs 垃圾类型/越界（proto uint64 技术边界为上限）、DELETE 缺
+    workspace。"""
+    server, req = make_app(token_env=None)
+    try:
+        good = {"workspace": "default", "provider": "prov-x",
+                "model": "model-y"}
+        status, payload = req("PUT", "/api/v1/inference/route",
+                              {**good, "route_name": 42})
+        assert status == 400 and "route_name" in payload["error"], payload
+
+        for bad in ("120", 120.5, True, -1, 2**64):
+            status, payload = req("PUT", "/api/v1/inference/route",
+                                  {**good, "timeout_secs": bad})
+            assert status == 400 and "timeout_secs" in payload["error"], \
+                (bad, payload)
+
+        # uint64 技术边界内的值放行（语义校验归网关 INVALID_ARGUMENT 通道）
+        status, _ = req("PUT", "/api/v1/inference/route",
+                        {**good, "timeout_secs": 2**64 - 1})
+        assert status == 200
+
+        status, payload = req("DELETE", "/api/v1/inference/route")
+        assert status == 400 and "workspace" in payload["error"], payload
+    finally:
+        server.shutdown()
+
+
+def test_route_delete_error_mapping():
+    """删除路由的南向错误映射（按 d51a653f 源码实证，不再臆测）：缺失路由
+    回 deleted:false 不抛 NOT_FOUND（delete_by_name→bool，上游自带测试
+    delete_route_returns_false_when_not_found）——NOT_FOUND 属不可能路径，
+    维持 500 兜底不扩大映射面；未知 route_name → 网关 INVALID_ARGUMENT
+    （effective_route_name 源码原文文案）→ 400 透传（2026-09-17 管理面先例
+    c4649ab）。"""
+    server, req = make_app(token_env=None)
+    try:
+        # 源码不可能路径：NOT_FOUND 维持 500 兜底（不挂 404 映射——挂了反而
+        # 误导读者以为网关会抛）
+        INFERENCE_FAKE.delete_error = FakeRpcError(
+            "NOT_FOUND",
+            "inference route 'sandbox-system' is not configured in workspace 'default'")
+        status, payload = req("DELETE",
+                              "/api/v1/inference/route?workspace=default")
+        assert status == 500 and payload["error"] == "internal error", payload
+
+        # 未知 route_name：源码原文文案透传
+        INFERENCE_FAKE.delete_error = FakeRpcError(
+            "INVALID_ARGUMENT",
+            "unknown route_name 'zzz'; expected 'inference.local' or 'sandbox-system'")
+        status, payload = req("DELETE",
+                              "/api/v1/inference/route?workspace=default"
+                              "&route_name=zzz")
+        assert status == 400 and \
+            "expected 'inference.local' or 'sandbox-system'" in payload["error"], \
+            payload
+
+        INFERENCE_FAKE.delete_error = FakeRpcError("UNAVAILABLE",
+                                                   "connection refused")
+        status, payload = req("DELETE",
+                              "/api/v1/inference/route?workspace=default")
+        assert status == 500 and payload["error"] == "internal error", payload
+    finally:
+        server.shutdown()
+
+
+def test_inference_stub_projection_covers_proto_fields():
+    """直连 stub 投影与 proto 字段对齐锁（历史坑：SDK InferenceRouteClient
+    丢回执字段 validation_performed/validated_endpoints——直连 stub 正是为
+    绕开它；本锁防投影/假件再丢 proto 字段）。proto 新增字段 → 此处红，
+    强制有意识决策（透传/明确弃置）。弃置集必须逐一给出理由。"""
+    from openshell._proto import inference_pb2
+
+    def fields(msg_cls):
+        return set(msg_cls.DESCRIPTOR.fields_by_name)
+
+    # 回执投影：manager 键集 ∪ 有理由弃置集 == proto 字段集
+    # （provider_name/model_id 对外键名为 provider/model——3.15/3.16 既有契约）
+    assert fields(inference_pb2.SetInferenceRouteResponse) == {
+        "provider_name", "model_id", "version", "route_name",
+        "validation_performed", "validated_endpoints", "timeout_secs",
+        # 弃置：workspace——回环字段（请求已带），对外契约从未投影
+        "workspace"}
+    assert fields(inference_pb2.GetInferenceRouteResponse) == {
+        "provider_name", "model_id", "version", "route_name", "timeout_secs",
+        "workspace"}  # workspace 弃置同上
+    assert fields(inference_pb2.DeleteInferenceRouteResponse) == {"deleted"}
+    # bundle 整族（R32）：不透传——GetInferenceBundle 是沙箱主体专享 RPC
+    # （proto auth_mode:"sandbox"；User 主体 PERMISSION_DENIED），manager 的
+    # bearer 管理身份调用必被拒。api_key 的交付对象=沙箱运行时，脱敏议题在
+    # manager 面不成立——是整个端点不成立。锁此消息族防未来无意识"补"回。
+    assert fields(inference_pb2.GetInferenceBundleRequest) == set()
+    assert fields(inference_pb2.GetInferenceBundleResponse) == {
+        "routes", "revision", "generated_at_ms"}
+    assert fields(inference_pb2.ResolvedRoute) == {
+        "name", "base_url", "protocols", "model_id", "provider_type",
+        "timeout_secs", "model_in_path", "request_path_override",
+        "api_key"}  # (secret)=true，proto options 原文
+
+    # 请求侧：manager 实际下发的字段集（SetInferenceRouteRequest.verify
+    # 不暴露——SDK InferenceRouteClient 也不发它，verify/no_verify 组合
+    # 语义无 proto 之外的实证，网关闭源行为不猜）
+    assert fields(inference_pb2.SetInferenceRouteRequest) == {
+        "provider_name", "model_id", "route_name", "no_verify",
+        "timeout_secs", "workspace", "verify"}
+    assert fields(inference_pb2.GetInferenceRouteRequest) == \
+        {"route_name", "workspace"}
+    assert fields(inference_pb2.DeleteInferenceRouteRequest) == \
+        {"route_name", "workspace"}
 
 
 def test_404_route_message_contract():
@@ -1410,11 +1699,11 @@ def test_auth_rejects_lowercase_bearer_scheme():
 
 
 # ---------------------------------------------------------------------------
-# 修复批
+# B3 审计修复批
 # ---------------------------------------------------------------------------
 
 class SlowExecClient(FakeSandboxClient):
-    """模拟慢南向调用（gRPC 在途）：exec_stream 阻塞 2 秒（起
+    """模拟慢南向调用（gRPC 在途）：exec_stream 阻塞 2 秒（C1-10 起
     facade 经 exec_stream 流式消费，慢点移到此处）。"""
 
     def exec_stream(self, sandbox_id, command, *, workdir=None, env=None,
@@ -1631,7 +1920,7 @@ def test_max_upload_bytes_defaults_to_2gib():
 
 
 # ---------------------------------------------------------------------------
-# 修复批
+# C1 审计修复批
 # ---------------------------------------------------------------------------
 
 class RaceAdminStub(FakeAdminStub):
@@ -1647,14 +1936,14 @@ class RaceAdminStub(FakeAdminStub):
 
 
 class UnknownErrClient(FakeSandboxClient):
-    """反向锁定：非 NOT_FOUND 的南向异常不得被映射成 4xx。"""
+    """C1-1 反向锁定：非 NOT_FOUND 的南向异常不得被映射成 4xx。"""
 
     def get(self, name, workspace=None):
         raise FakeRpcError("UNKNOWN", "backend hiccup")
 
 
 def test_missing_sandbox_maps_404_not_500():
-    """（R22）：沙箱不存在 = 客户端寻址错误 → 404（docs/api-external
+    """C1-1（R22）：沙箱不存在 = 客户端寻址错误 → 404（docs/api-external
     3.4/3.6/3.10 契约）。真实 SDK 对网关 NOT_FOUND 裸抛 grpc.RpcError（非
     LookupError 子类），修复前全落兜底 500——本用例假件已改抛 FakeRpcError
     对齐真实异常面，修复前必红（500）。"""
@@ -1709,7 +1998,7 @@ def test_unhandled_log_line_sanitized():
 
 
 def test_exec_unknown_uuid_maps_404():
-    """（R22）：/exec 对不存在的 sandbox_id 同为寻址错误 → 404（曾
+    """C1-1（R22）：/exec 对不存在的 sandbox_id 同为寻址错误 → 404（曾
     500——上游会把服务端故障口径误用于重试/降级）。"""
     server, req = make_app(token_env=None)
     try:
@@ -1724,7 +2013,7 @@ def test_exec_unknown_uuid_maps_404():
 
 
 def test_upstream_non_not_found_stays_500():
-    """（R22）反向锁定：NOT_FOUND 之外的南向 RpcError 不映射——维持
+    """C1-1（R22）反向锁定：NOT_FOUND 之外的南向 RpcError 不映射——维持
     兜底 500 "internal error"（health→500 是 api-external 已接受口径），
     防映射过宽把上游故障伪装成客户端寻址错误。"""
     server, req = make_app(token_env=None)
@@ -1739,10 +2028,10 @@ def test_upstream_non_not_found_stays_500():
 
 
 def test_exec_timeout_server_side_cap():
-    """（R23）：exec timeout_seconds 服务端上限 600（wait_ready
+    """C1-2（R23）：exec timeout_seconds 服务端上限 600（B3-1 wait_ready
     同族漏修——客户端曾可传 1e9 抬 gRPC deadline 无限占线程池令牌+南向
     连接）+ 严格 int（bool/float/字符串数字一律 400，R21 口径）。engine
-    现役实参 60/20/600 内，兼容性已核。"""
+    现役实参 60/20/600 内，兼容性已核（fix-plan 2026-09-12 §0）。"""
     server, req = make_app(token_env=None)
     try:
         for bad in (601, 10**9, -1, "30", True, 30.5):
@@ -1764,7 +2053,7 @@ def test_exec_timeout_server_side_cap():
 
 
 def test_empty_token_file_fail_closed():
-    """（R24）：tokenFile 存在但内容为空 = 配置错误 → fail-closed 503
+    """C1-3（R24）：tokenFile 存在但内容为空 = 配置错误 → fail-closed 503
     （修复前空 = 无 token → 整面放行；非 loopback 轮换窗口即裸奔）。
     validate() 分治：loopback 放行启动但 /api/* 持续 503（stderr 告警）、
     非 loopback 拒启。异常不落缓存：写入真值后自愈（本用例空文件期间从未
@@ -1819,7 +2108,7 @@ def test_empty_token_file_fail_closed():
 
 
 def test_multipart_preamble_capped():
-    """（R25）：首个 boundary 前的前导超上限 → 400（修复前无界累积，
+    """C1-4（R25）：首个 boundary 前的前导超上限 → 400（修复前无界累积，
     2GiB 缺省上限内发永不含 boundary 的 body 可把全量字节缓冲进内存——
     OOM 管理面，模块 docstring"内存恒定"在前置阶段不成立）。"""
     server, req = make_app(token_env=None)
@@ -1835,7 +2124,7 @@ def test_multipart_preamble_capped():
 
 
 def test_multipart_part_headers_capped():
-    """（R25）：单 part 头块超上限 → 400（修复前头块扫描无界，超长
+    """C1-4（R25）：单 part 头块超上限 → 400（修复前头块扫描无界，超长
     无终止符的头会把后续字节一并缓冲进内存）。"""
     server, req = make_app(token_env=None)
     try:
@@ -1856,7 +2145,7 @@ def test_multipart_part_headers_capped():
 
 
 def test_query_int_range_maps_400():
-    """（R26a）：query 整数范围钳制——负数/超 int32 值曾直通 proto
+    """C1-5（R26a）：query 整数范围钳制——负数/超 int32 值曾直通 proto
     构造炸 ValueError → 兜底 500（违反 README 错误码段"客户端格式错误
     一律 400"红线；limit=-7 触发 proto ValueError 已实测在案）。"""
     server, req = make_app(token_env=None)
@@ -1884,7 +2173,7 @@ def test_query_int_range_maps_400():
 
 
 def test_target_port_range():
-    """（R26a）：target_port 语义范围 1..65535（端口域），越界 400
+    """C1-5（R26a）：target_port 语义范围 1..65535（端口域），越界 400
     （0/65536/2**40 曾直通 stub 或炸 500）。"""
     server, req = make_app(token_env=None)
     try:
@@ -1905,9 +2194,9 @@ def test_target_port_range():
 
 
 def test_wait_ready_strict_number():
-    """（R26b）：wait_ready timeout_seconds 严格数值（R21 口径）——
+    """C1-6（R26b）：wait_ready timeout_seconds 严格数值（R21 口径）——
     "300"/True 曾被 float() 静默放行；json.loads 默认收 NaN 字面量，
-    `nan > cap` 恒 False 曾绕过 上限直达 SDK 炸 500；负值同样 500。"""
+    `nan > cap` 恒 False 曾绕过 B3-1 上限直达 SDK 炸 500；负值同样 500。"""
     server, req = make_app(token_env=None)
     try:
         for bad in ("300", True, float("nan"), -1, "abc"):
@@ -1926,7 +2215,7 @@ def test_wait_ready_strict_number():
 
 
 def test_provider_credentials_strict():
-    """（R26c）：providers_upsert 的 credentials/config 是 str→str 映射
+    """C1-7（R26c）：providers_upsert 的 credentials/config 是 str→str 映射
     ——非对象或值含非字符串曾直透 proto map 构造炸 TypeError/ValueError →
     500（R11 字符串字段族的 map 形态同族补口；空 falsy 值曾静默当 {}）。"""
     server, req = make_app(token_env=None)
@@ -1947,7 +2236,7 @@ def test_provider_credentials_strict():
 
 
 def test_upsert_race_converges_to_update():
-    """（R26c）：upsert 的 check-then-act 竞态——并发双 Create 的败者
+    """C1-7（R26c）：upsert 的 check-then-act 竞态——并发双 Create 的败者
     收 ALREADY_EXISTS 必须落一次 Update 收敛（200 created:false），而非
     500。"""
     server, req = make_app(token_env=None)
@@ -1964,7 +2253,7 @@ def test_upsert_race_converges_to_update():
 
 
 def test_upload_finalize_failure_cleans_part():
-    """（R26d）：finalize mv/chmod 失败也必须 rm -f .part（修复前仅
+    """C1-8（R26d）：finalize mv/chmod 失败也必须 rm -f .part（修复前仅
     chunk 写失败走清理，mv 因磁盘满/权限失败时 .part 残留——违背
     write_file_stream docstring 的 any-failure 承诺；锁定测试只注入过
     chunk 写失败路径）。"""
@@ -1986,7 +2275,7 @@ def test_upload_finalize_failure_cleans_part():
 
 
 def test_log_safe_strips_control_chars():
-    """（R26e）：兜底日志的 path 不可打印字符中和——%0A 解码换行曾可
+    """C1-9（R26e）：兜底日志的 path 不可打印字符中和——%0A 解码换行曾可
     向 stderr 注入伪日志行（下游日志聚合可被污染）。"""
     from urllib.parse import unquote
     dirty = unquote("/api/v1/%0A[manager] fake log line")
@@ -1997,7 +2286,7 @@ def test_log_safe_strips_control_chars():
 
 
 def test_exec_output_cap_maps_413():
-    """（R27）：exec 输出累计上限（facade 层流式消费）——SDK exec 曾
+    """C1-10（R27）：exec 输出累计上限（facade 层流式消费）——SDK exec 曾
     无界攒 stdout/stderr，`cat /dev/zero` 类命令以线速耗尽管理面内存
     （殃及全部租户的沙箱管理）。超限 413：确定性拒绝，避免 5xx 被上游按
     服务端故障重试/降级。"""
@@ -2014,15 +2303,9 @@ def test_exec_output_cap_maps_413():
 
 
 if __name__ == "__main__":
-    # Same resolution the service itself uses at runtime (env > config.json
-    # > own libs tree > engine legacy path). Probing the engine checkout
-    # directly went stale when the SDK moved into this repo's libs/.
-    try:
-        libs = config.openshell_lib_path()
-    except RuntimeError as exc:
-        print(f"SKIP: {exc} (libs optional discipline)")
-        sys.exit(0)
-    sys.path.insert(0, str(libs))
+    # openshell SDK 是服务根顶层包——文件头已随
+    # SERVICE_ROOT 挂 sys.path 直 import；缺席 = 仓坏，ImportError 即 fail loud，
+    # 不再有"libs optional"的 SKIP 语义。
     print("== openshell-manager HTTP contract tests ==")
     for fn in list(globals().values()):
         if callable(fn) and getattr(fn, "__name__", "").startswith("test_"):
@@ -2030,3 +2313,195 @@ if __name__ == "__main__":
     failed = [r for r in RESULTS if not r[1]]
     print(f"Manager contract: {len(RESULTS) - len(failed)}/{len(RESULTS)} passed")
     sys.exit(1 if failed else 0)
+
+
+# ===========================================================================
+# 切片3b：workspace 生命周期透传（team 上车）——create/list/delete 三端点 +
+# 错误语义（400 名字非法 / 409 重名与删区含资源 / 404 未知区）+
+# 沙箱 create 未知工作区 404（缺陷②回归锁）
+# ===========================================================================
+
+class FakeWorkspaceClient:
+    """WorkspaceClient 替身（facade._workspace_client 缝）。错误注入走
+    FakeRpcError（真实 SDK 对网关错误裸抛 RpcError，R22 同型）。"""
+
+    def __init__(self):
+        self.created = []
+        self.deleted = []
+        self.create_error = None   # FakeRpcError or None
+        self.delete_error = None
+
+    def list(self, *, limit=100, offset=0):
+        return [SimpleNamespace(name="default", phase="Active", labels={}),
+                SimpleNamespace(name="team-a", phase="Active",
+                                labels={"team": "a"})][offset:offset + limit]
+
+    def create(self, name, *, labels=None):
+        if self.create_error:
+            raise self.create_error
+        ref = SimpleNamespace(name=name, phase="Active", labels=labels or {})
+        self.created.append(ref)
+        return ref
+
+    def delete(self, name):
+        if self.delete_error:
+            raise self.delete_error
+        self.deleted.append(name)
+        return True
+
+
+WS_FAKE = FakeWorkspaceClient()
+
+
+def make_ws_app(create_error=None, delete_error=None):
+    server, req = make_app(token_env=None)
+    WS_FAKE.created.clear(); WS_FAKE.deleted.clear()
+    WS_FAKE.create_error = create_error
+    WS_FAKE.delete_error = delete_error
+    api.facade._workspace_client = lambda: WS_FAKE  # test seam
+    return server, req
+
+
+def test_workspaces_list_passthrough():
+    server, req = make_ws_app()
+    try:
+        status, payload = req("GET", "/api/v1/workspaces")
+        assert status == 200
+        names = [w["name"] for w in payload["workspaces"]]
+        assert names == ["default", "team-a"]
+        assert payload["workspaces"][1]["labels"] == {"team": "a"}
+    finally:
+        server.shutdown()
+
+
+def test_workspaces_list_bad_limit_400():
+    server, req = make_ws_app()
+    try:
+        # R34/P2-1：非整数与越界（负数/超 int32）一律 400——原宽松版只挡非整数，
+        # 越界直通 proto uint32 构造炸 ValueError→500（违反"客户端格式错误一律 400"）。
+        for q in ("limit=abc", "limit=-1", "limit=4294967296", "offset=-5",
+                  "offset=2**40".replace("2**40", "1099511627776")):
+            status, payload = req("GET", f"/api/v1/workspaces?{q}")
+            assert status == 400, (q, status, payload)
+            assert "expect integer" in payload["error"] or "out of range" in payload["error"], \
+                (q, payload)
+    finally:
+        server.shutdown()
+
+
+def test_providers_unknown_workspace_maps_404():
+    """R34/P2-2：南向 NOT_FOUND（上游 resolve_workspace）→404——曾裸 500，
+    与建沙箱/读路由/删区三面的同输入行为分裂。"""
+    server, req = make_app(token_env=None)
+    try:
+        FakeAdminStub.LIST_ERROR = FakeRpcError(
+            "NOT_FOUND", "workspace 'ghost' not found")
+        status, payload = req("GET", "/api/v1/inference/providers?workspace=ghost")
+        assert status == 404, (status, payload)
+        assert "workspace 'ghost'" in payload["error"], payload
+    finally:
+        FakeAdminStub.LIST_ERROR = None
+        server.shutdown()
+
+
+def test_provider_delete_conflict_maps_409_and_missing_404():
+    """R34/P2-3：删"使用中"provider 南向 FAILED_PRECONDITION→409（details
+    透传可行动指引——曾兜底 500 吞掉）；NOT_FOUND→404。"""
+    server, req = make_app(token_env=None)
+    try:
+        FakeAdminStub.DELETE_ERROR = FakeRpcError(
+            "FAILED_PRECONDITION",
+            "provider 'prov-x' is attached to sandbox(es): dsh-a")
+        status, payload = req("DELETE",
+                              "/api/v1/inference/providers/prov-x?workspace=default")
+        assert status == 409, (status, payload)
+        assert "attached to sandbox" in payload["error"], payload
+
+        FakeAdminStub.DELETE_ERROR = FakeRpcError(
+            "NOT_FOUND", "provider 'nope' not found")
+        status, payload = req("DELETE",
+                              "/api/v1/inference/providers/nope?workspace=default")
+        assert status == 404, (status, payload)
+    finally:
+        FakeAdminStub.DELETE_ERROR = None
+        server.shutdown()
+
+
+def test_workspace_create_ok():
+    server, req = make_ws_app()
+    try:
+        status, payload = req("POST", "/api/v1/workspaces",
+                              {"name": "team-b", "labels": {"team": "b"}})
+        assert status == 200 and payload["name"] == "team-b"
+        assert WS_FAKE.created[0].name == "team-b"
+    finally:
+        server.shutdown()
+
+
+def test_workspace_create_invalid_name_400():
+    server, req = make_ws_app(create_error=FakeRpcError(
+        "INVALID_ARGUMENT", "workspace name must be a DNS-1123 label"))
+    try:
+        status, payload = req("POST", "/api/v1/workspaces", {"name": "Bad_Name!"})
+        assert status == 400 and "DNS-1123" in payload["error"]
+    finally:
+        server.shutdown()
+
+
+def test_workspace_create_already_exists_409():
+    server, req = make_ws_app(create_error=FakeRpcError(
+        "ALREADY_EXISTS", "workspace already exists"))
+    try:
+        status, payload = req("POST", "/api/v1/workspaces", {"name": "default"})
+        assert status == 409 and "already exists" in payload["error"]
+    finally:
+        server.shutdown()
+
+
+def test_workspace_create_missing_name_400():
+    server, req = make_ws_app()
+    try:
+        status, payload = req("POST", "/api/v1/workspaces", {"labels": {}})
+        assert status == 400 and "name" in payload["error"]
+    finally:
+        server.shutdown()
+
+
+def test_workspace_delete_not_found_404():
+    server, req = make_ws_app(delete_error=FakeRpcError(
+        "NOT_FOUND", "workspace 'nope' not found"))
+    try:
+        status, payload = req("DELETE", "/api/v1/workspaces/nope")
+        assert status == 404 and "nope" in payload["error"]
+    finally:
+        server.shutdown()
+
+
+def test_workspace_delete_resource_guard_409():
+    detail = ("workspace 'p0e2e' still contains resources: "
+              "sandbox, service, sandbox policy")
+    server, req = make_ws_app(delete_error=FakeRpcError("FAILED_PRECONDITION", detail))
+    try:
+        status, payload = req("DELETE", "/api/v1/workspaces/p0e2e")
+        assert status == 409 and "still contains resources" in payload["error"]
+    finally:
+        server.shutdown()
+
+
+def test_sandbox_create_unknown_workspace_404():
+    """缺陷②回归锁：未知工作区建沙箱——修复前裸 500 internal error（2026-09-19
+    审计 A2b 实测），修复后 NOT_FOUND→404 且 error 点名 workspace。"""
+    server, req = make_app(token_env=None)
+    orig = api.facade._sdk
+    class _C:
+        def create(self, **kw):
+            raise FakeRpcError("NOT_FOUND", "workspace 'ghost-ws' not found")
+    api.facade._sdk = lambda: _C()
+    try:
+        status, payload = req("POST", "/api/v1/sandboxes",
+                              {"workspace": "ghost-ws", "name": "p0-x",
+                               "spec": {"log_level": "info"}})
+        assert status == 404, f"expected 404, got {status}: {payload}"
+        assert "ghost-ws" in payload["error"] and "workspace" in payload["error"]
+    finally:
+        api.facade._sdk = orig

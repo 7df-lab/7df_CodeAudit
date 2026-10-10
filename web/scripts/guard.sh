@@ -59,7 +59,7 @@ check_anchor G-03c "503 重试上限计数（E-44）" "_retry503" src/api/client
 check_anchor G-03d "403/501/503 全局错误事件派发（E-45）" "API_ERROR_EVENT, \{ detail: status \}" src/api/client.ts
 check_anchor G-03e "refresh_token 键名（E-00c 本地存储契约）" "codeaudit\.refresh_token" src/api/client.ts
 check_anchor G-03f "上传 multipart + 300s 超时（E-11）" "multipart/form-data" src/api/client.ts
-check_anchor G-03g "上传 300s 超时（E-11，由 120s 放宽——慢速上行大包）" "300_000" src/api/client.ts
+check_anchor G-03g "上传 300s 超时（E-11，B4-3 由 120s 放宽——慢速上行大包）" "300_000" src/api/client.ts
 
 echo "== G-04 泄漏与 ref 抢占修复锚点（P-05/P-11：2026-09-06 六缺陷修复）=="
 check_anchor G-04a "WS 卸载必须 close" "ws\?\.close\(\)" src/pages/tasks/TaskDetailPage.tsx
@@ -73,7 +73,7 @@ check_block G-05 "api/fetch 直连绝对 URL 禁止" \
 echo "== G-06 报告窗注入面禁区（P-23：453b6bd 前曾 document.write 裸写同源 about:blank 窗口；B5 补录防线）=="
 g02 G-06 "document.write/dangerouslySetInnerHTML/insertAdjacentHTML/srcdoc（含 JSX 驼峰 srcDoc）禁止（许可=含'不再'的警示注释）" \
   "document\.write|dangerouslySetInnerHTML|insertAdjacentHTML|[sS]rc[dD]oc\s*=" src
-check_anchor G-06b "报告窗 iframe sandbox 空 token（无 allow-scripts/allow-same-origin，RegressionFixes 行为锁之外的第二道锚）" \
+check_anchor G-06b "报告窗 iframe sandbox 空 token（无 allow-scripts/allow-same-origin，B3AuditFixes 行为锁之外的第二道锚）" \
   "setAttribute\('sandbox', ''\)" src/api/client.ts
 
 echo "== G-07 链路 chip 两阶段解析锚点（P-32：new_size.x 表达式误判文件名/裸行引用误挂不存在文件，2026-09-13 根治）=="
@@ -87,6 +87,10 @@ check_anchor G-07d "探测三态判别锚：missing 仅认 404+file not found in
   "file not found in project" src/api/client.ts
 check_anchor G-07e "sbx-14 真实语料回归锁在位" \
   "SBX14_CASE" src/__tests__/chainParser.test.ts
+
+echo "== G-08 任务 payload 组装单一事实源（B5-P1-3/流程统一批 2026-10-07：sast_tools 散装三元式曾三处拷贝——漏模式D→自动任务必 FAILED；现收敛 buildScanTaskPayload）=="
+check_block G-08 "页面层直拼 sast_tools 禁止（一律经 tasks/scanModes.ts buildScanTaskPayload）" \
+  "sast_tools:\s*(MODE_SPECS|spec\b)" src/pages src/components
 
 echo
 if [[ $fail -ne 0 ]]; then

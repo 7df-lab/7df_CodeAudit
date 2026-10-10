@@ -1,0 +1,204 @@
+# CodeAudit 发布管线（GitHub Actions，2026-10-11 立）——
+# 触发：推 tag v*（正式发布：九镜像→GHCR→GitHub Release）或手动 workflow_dispatch
+#      （仅构建推镜像，不建 Release——验证管线用）。
+# 产物：① 九应用镜像（engine×7 + web + manager，linux/amd64）→
+#        ghcr.io/<org>/<name>:{commit-sha, 版本, latest}；
+#      ② RELEASE-MANIFEST.txt：逐镜像 digest（版本↔内容对应关系，消费端零 sha 自证）；
+#      ③ 源码 tarball = tag 树 git archive（内容与 tag commit 一一对应）；
+#      ④ 四素材包 agent-tools/pdtools/nuclei-templates/dsh-src（沙箱镜像本地构建输入）。
+# 消费：RELEASE_REGISTRY=ghcr.io/<org> RELEASE_IMAGE_TAG=<版本> \
+#        bash deploy/internal/production-deploy.sh deploy
+#      （prepull_app_images 预拉九镜像→三段部署零编译；README「预建镜像部署」节）。
+# 注意：首次发布后需在 org Packages 设置把 9 个镜像可见性切 public（GITHUB_TOKEN
+#      无权改可见性；不切则消费端需 docker login ghcr.io）。
+# 落位：伞仓权威源=本文件（deploy/ci/）；公开树=.github/workflows/release.yml
+#      （release-sanitize.sh「README 同款」拷贝段供给，见 docs/release-sanitize-map.md）。
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # 建 Release + 传附件
+  packages: write   # 推 GHCR
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  build-push:
+    name: 九镜像构建→GHCR
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: 登录 GHCR（GITHUB_TOKEN，免 PAT）
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 版本推导
+        id: meta
+        run: |
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            echo "version=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "is_tag=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+            echo "is_tag=0" >> "$GITHUB_OUTPUT"
+          fi
+      - name: vendor opengrep（sast-adapter 构建输入，sha256 门）
+        run: |
+          set -eu
+          d=engine/services/sast-adapter-service/tools
+          mkdir -p "$d"
+          curl -fL --retry 3 --retry-delay 3 -o "$d/opengrep" \
+            https://github.com/opengrep/opengrep/releases/download/v1.29.0/opengrep_manylinux_x86
+          chmod +x "$d/opengrep"
+          (cd engine && sha256sum -c services/sast-adapter-service/tools/opengrep.sha256)
+      - name: 构建并推送（linux/amd64，GHA 层缓存跨发布复用）
+        env:
+          SHA: ${{ steps.meta.outputs.sha }}
+          VER: ${{ steps.meta.outputs.version }}
+          IS_TAG: ${{ steps.meta.outputs.is_tag }}
+        run: |
+          set -eu
+          tag_args() {  # tag_args <name>：sha+版本双 tag；latest 仅正式发布
+            local n="$1"
+            printf '%s\n' "-t" "$REGISTRY/$n:$SHA" "-t" "$REGISTRY/$n:$VER"
+            [ "$IS_TAG" = 1 ] && printf '%s\n' "-t" "$REGISTRY/$n:latest"
+            return 0
+          }
+          for svc in gateway project task storage result sast-adapter runtime; do
+            echo "== codeaudit-$svc =="
+            docker buildx build --push \
+              --cache-from type=gha --cache-to type=gha,mode=max \
+              $(tag_args "codeaudit-$svc") \
+              --build-arg GOPROXY=https://proxy.golang.org,direct \
+              -f "engine/services/$svc-service/Dockerfile" engine/
+          done
+          echo "== codeaudit-web =="
+          docker buildx build --push \
+            --cache-from type=gha --cache-to type=gha,mode=max \
+            $(tag_args codeaudit-web) \
+            --build-arg GIT_REV="$SHA" web/
+          echo "== openshell-manager =="
+          docker buildx build --push \
+            --cache-from type=gha --cache-to type=gha,mode=max \
+            $(tag_args openshell-manager) \
+            --build-arg PIP_INDEX_URL=https://pypi.org/simple \
+            -f manager/deploy/Dockerfile.manager manager/
+      - name: digest 清单（RELEASE-MANIFEST.txt）
+        env:
+          VER: ${{ steps.meta.outputs.version }}
+          SHA: ${{ steps.meta.outputs.sha }}
+        run: |
+          set -eu
+          {
+            echo "# CodeAudit $VER 镜像 digest 清单（commit $SHA，linux/amd64）"
+            echo "# 消费：RELEASE_REGISTRY=$REGISTRY RELEASE_IMAGE_TAG=$VER bash deploy/internal/production-deploy.sh deploy"
+            echo "# 钉版：RELEASE_IMAGE_TAG=@<digest>（下行右列）逐字节复现"
+            for n in codeaudit-gateway codeaudit-project codeaudit-task codeaudit-storage \
+                     codeaudit-result codeaudit-sast-adapter codeaudit-runtime \
+                     codeaudit-web openshell-manager; do
+              d=$(docker buildx imagetools inspect "$REGISTRY/$n:$VER" | awk '/^Digest:/{print $2}')
+              [ -n "$d" ] || { echo "FATAL digest 缺失: $n"; exit 1; }
+              echo "$REGISTRY/$n:$VER  $d"
+            done
+          } | tee RELEASE-MANIFEST.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: RELEASE-MANIFEST.txt
+
+  materials:
+    name: 四素材包（沙箱镜像构建输入）
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: 拉取 + sha 复核 + 打包
+        run: |
+          set -eu
+          cd dsh-pentest-sse/sandbox-artifacts
+          bash fetch.sh
+          bash fetch-agent-tools.sh
+          bash fetch-dsh-src.sh
+          bash fetch.sh --verify          # 仓内 sbom 逐项复核（同生产部署口径）
+          bash fetch-agent-tools.sh --verify
+          bash fetch-dsh-src.sh --verify
+          out="$GITHUB_WORKSPACE/dist-materials"
+          mkdir -p "$out"
+          for d in pdtools nuclei-templates agent-tools dsh-src; do
+            tar -czf "$out/$d.tar.gz" "$d"
+          done
+          echo "OUT=$out" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: materials
+          path: ${{ env.OUT }}/*.tar.gz
+
+  release:
+    name: GitHub Release（仅 tag 触发）
+    needs: [build-push, materials]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: 源码 tarball（tag 树 git archive）+ 校验和 + 发布说明
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          git archive --format=tar.gz --prefix="codeaudit-$TAG/" \
+            -o "dist/codeaudit-public-$TAG.tar.gz" "$TAG"
+          cd dist && sha256sum *.tar.gz RELEASE-MANIFEST.txt > SHA256SUMS && cd ..
+          {
+            echo "## 镜像（GHCR，linux/amd64）"
+            echo
+            echo '```'
+            cat dist/RELEASE-MANIFEST.txt
+            echo '```'
+            echo
+            echo "零编译部署（详见仓库 README「预建镜像部署」）："
+            echo
+            echo '```bash'
+            echo "RELEASE_REGISTRY=$REGISTRY RELEASE_IMAGE_TAG=$TAG \\"
+            echo "  bash deploy/internal/production-deploy.sh deploy"
+            echo '```'
+            echo
+            echo "- 素材包解包到 \`dsh-pentest-sse/sandbox-artifacts/\`，\`fetch.sh --verify\` 离线复核通过即零下载。"
+            echo "- 源码 tarball = tag 树 git archive（内容与 tag commit 一一对应，git 可验证）。"
+            echo "- 首次登录控制台 admin/admin，请立即改密。"
+          } > dist/notes.md
+      - name: 建 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          gh release create "$TAG" \
+            dist/codeaudit-public-*.tar.gz \
+            dist/agent-tools.tar.gz dist/pdtools.tar.gz \
+            dist/nuclei-templates.tar.gz dist/dsh-src.tar.gz \
+            dist/RELEASE-MANIFEST.txt dist/SHA256SUMS \
+            --title "CodeAudit $TAG" \
+            --notes-file dist/notes.md \
+          || { echo "Release 已存在——改 upload 追加/覆盖附件"; gh release upload "$TAG" \
+            dist/codeaudit-public-*.tar.gz \
+            dist/agent-tools.tar.gz dist/pdtools.tar.gz \
+            dist/nuclei-templates.tar.gz dist/dsh-src.tar.gz \
+            dist/RELEASE-MANIFEST.txt dist/SHA256SUMS --clobber; }

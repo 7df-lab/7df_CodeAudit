@@ -1,4 +1,4 @@
-// Source→Sink 证据链（ 签名元素，2026-09-13）：污点传播的一眼主视图。
+// Source→Sink 证据链：污点传播的一眼主视图。
 // 数据优先级由调用方决定（FindingDetailBody：OpenGrep dataflow_trace 变量级链 >
 // AI 结论解析链）；source=青（入口）、中间 hop=灰、sink=红（危险点）——与全站
 // "红=危险"对齐。chip 等宽（file:line 是机器产物=证据嗓音），可点选定位代码行。

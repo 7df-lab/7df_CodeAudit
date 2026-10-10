@@ -1,0 +1,8 @@
+{"type": "graph.node_declared", "seq": 1, "time": "2026-09-19T10:00:00Z", "data": {"nodeId": "n001", "type": "executor", "intent": "端口指纹识别", "declaredBy": "pack", "from": []}}
+{"type": "graph.node_started", "seq": 2, "time": "2026-09-19T10:00:02Z", "data": {"nodeId": "n001", "sessionId": "g-n001", "turnRef": "g-n001"}}
+{"type": "graph.node_result", "seq": 3, "time": "2026-09-19T10:00:05Z", "data": {"nodeId": "n001", "outcome": "completed", "resultRef": "submit_findings×1", "usageEstimate": {"turns": 2}}}
+{"type": "graph.plan_triggered", "seq": 4, "time": "2026-09-19T10:00:06Z", "data": {"trigger": "new_evidence", "detail": "新增 completed 1 项"}}
+{"type": "graph.node_declared", "seq": 5, "time": "2026-09-19T10:00:06Z", "data": {"nodeId": "n002", "type": "planner", "intent": "重规划", "declaredBy": "pack", "from": ["n001"]}}
+{"type": "graph.node_started", "seq": 6, "time": "2026-09-19T10:00:07Z", "data": {"nodeId": "n002", "sessionId": "g-n002", "turnRef": "g-n002"}}
+{"type": "graph.node_result", "seq": 7, "time": "2026-09-19T10:00:08Z", "data": {"nodeId": "n002", "outcome": "completed", "resultRef": "声明 0 节点"}}
+{"type": "graph.converged", "seq": 8, "time": "2026-09-19T10:00:09Z", "data": {"summary": "open 排空且无新态势", "openRemaining": 0}}

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// R65（2026-09-12 待办收尾·账号面）：ID 生成必须密码学随机——原 UnixNano&0xFFFFFFFF
+// R65：ID 生成必须密码学随机——原 UnixNano&0xFFFFFFFF
 // 截断 32 位，相差恰 4.295s 的两次生成必然同 ID 且可预测。
 func TestGenerateID_CryptoRandom(t *testing.T) {
 	seen := make(map[string]bool, 10000)

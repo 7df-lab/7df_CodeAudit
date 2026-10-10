@@ -12,7 +12,7 @@
 //   6. 标识符（153-167）           —— 全角/半角括号内纯数字区间（"publish（153-167）"类），
 //                                      挂接最近文件；真实调用形如 filter(x) 含非数字不匹配
 //
-// 第二阶段·存在性校验（2026-09-13 误挂接根治，gw-7c26f71c1771c76444baddd0 sbx-14 实证）：
+// 第二阶段·存在性校验：
 // AI 原文里的代码表达式（如 `new_size.x`）形似文件名，裸行引用 "(line 86)" 会被挂接到它，
 // 产出指向不存在文件的 chip。opts.fileExists 注入探测结果后：
 //   - 不存在的文件 token 不进 files、不抢挂接语境、不产 hop；
@@ -20,14 +20,14 @@
 //   - 挂其上的裸行引用重挂到最近有效 token，全文无有效 token 则回落 fallbackFile
 //     （漏洞所在文件）；
 //   - 裸行引用的文件归属一律标 inferred（解析器推断，非 AI 原文显式写出）。
-//   - fileExists 缺省/返回 undefined = 现行为逐字节等价（探测未返回或故障时 fail-open）。
+//   - fileExists 默认/返回 undefined = 现行为逐字节等价（探测未返回或故障时 fail-open）。
 
 export interface ChainHop {
   path: string;            // 原文写法（可能是裸文件名或截断路径——服务端 source-file 端点回退解析）
   line?: number;
   endLine?: number;
   snippet: string;         // 引用所在原文片段（人工核对解析是否成立的第一手材料）
-  role?: 'source' | 'sink'; // 仅关键词命中才标注，否则缺省
+  role?: 'source' | 'sink'; // 仅关键词命中才标注，否则默认
   inferred?: boolean;      // 裸行引用：文件归属由解析器挂接（AI 原文未写明该文件）
   unresolved?: boolean;    // 显式 file:line 但文件不在项目树（疑似 AI 幻觉引用）
 }
@@ -45,7 +45,7 @@ export interface ChainParseOpts {
   fallbackFile?: string;
 }
 
-// 文件 token：(目录/)?名字.扩展名——扩展名以字母开头（排除 IP/版本号 1.2.1、gateway.internal）
+// 文件 token：(目录/)?名字.扩展名——扩展名以字母开头（排除 IP/版本号 1.2.1、192.0.2.122）
 const FILE_REF = /((?:[\w.\-]+\/)*[\w.\-]+\.[A-Za-z][\w]{0,9})(?::(\d{1,5})(?:\s*[-–—~至]\s*(\d{1,5}))?)?/g;
 // 行引用族（挂接最近文件）：
 const LINE_CN = /第?\s*(\d{1,5})(?:\s*[-–—~至]\s*(\d{1,5}))?\s*行/g;                 // 第 93-95 行 / 93-95 行
@@ -55,7 +55,7 @@ const LINE_PAREN = /[\w.\-）（\u4e00-\u9fff]+[（(]\s*(\d{1,5})(?:\s*[-–—~
 
 // 噪声过滤：散文缩写（"e.g." 等）形似文件名
 const STOP_FILES = new Set(['e.g', 'i.e', 'etc', 'vs', 'approx', 'nov', 'dec']);
-// 代码片段噪声（实例归纳）：`Foo.Builder`（大写扩展=类引用）、
+// 代码片段噪声（gw-0fb9857 实例归纳）：`Foo.Builder`（大写扩展=类引用）、
 // `httpRouter.filter(`（紧跟左括号=方法调用形）不是文件路径
 function isFileToken(tok: string, followedBy: string): boolean {
   if (STOP_FILES.has(tok.toLowerCase())) return false;

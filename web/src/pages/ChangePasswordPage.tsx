@@ -30,7 +30,7 @@ export default function ChangePasswordPage() {
               setLoading(false);
               return;
             }
-            // (P3-j)：改密请求成功后 refreshUser（GET /v1/users/me）失败不再落同一个
+            // B5(P3-j)：改密请求成功后 refreshUser（GET /v1/users/me）失败不再落同一个
             // catch——密码已改成功，误报"旧密码不正确"会引导用户拿旧密码重试必败。
             // 复审 R：放行 /projects 也不行——旧 user 缓存仍 must_change_password，守卫弹回
             // 改密页且表单已清空；改走登出（清 user/缓存）落登录页，以新密码重登自愈。

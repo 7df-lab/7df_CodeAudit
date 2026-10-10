@@ -2,7 +2,7 @@
 // ADR-203: 迁移到 fakeGateway（axios adapter 层）——api/client 真实代码全量执行
 // （类型化端点/拦截器链），handler 返回响应，未建模路由响亮失败。
 // 此前 vi.mock 整模块曾长期掩盖 mock 缺 api 具名导出（queryFn 抛错被 react-query 吞，
-// 数据从未加载仍全绿）。请求体矩阵收窄为"config 无任务级源码键"
+// 数据从未加载仍全绿）。2026-09-09 起请求体矩阵收窄为"config 无任务级源码键"
 // （upload_file_id/project_path 档随任务级源码覆盖一并退役），在本文件锁定。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -14,8 +14,8 @@ import { TaskNewModal, DEFAULT_SCAN_MODE, MODE_SPECS } from '../pages/tasks/Task
 import { httpError, useFakeGateway } from '../testsupport/fakeGateway';
 
 // 向导共用的最小网关模型（文件级注册，beforeEach 对全部用例生效；请求日志按用例隔离）
-// 任务向导不再承载任务级源码覆盖——p1 无来源(警告)/p2 仓库/p3 上传包
-// 建任务引导（2026-09-11 报障修复）：projects 载荷/故障可按用例注入（defaultProjects 轮换）
+// 2026-09-09  任务向导不再承载任务级源码覆盖——p1 无来源(警告)/p2 仓库/p3 上传包
+// 建任务引导：projects 载荷/故障可按用例注入（defaultProjects 轮换）
 const defaultProjects = {
   projects: [
     { project_id: 'p1', name: 'Demo', repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null },
@@ -26,6 +26,10 @@ const defaultProjects = {
 };
 let projectsPayload: unknown = defaultProjects;
 let projectsFail = false;
+let toolsFail = false;
+let agentsFail = false;
+let projConfigFail = false; // 评审 P2：config 5xx 注入（加载期/故障不闪假警告）
+
 const gateway = useFakeGateway({
   'GET /v1/projects': () => {
     if (projectsFail) throw httpError(500, { error: 'project service down' });
@@ -33,23 +37,48 @@ const gateway = useFakeGateway({
   },
   // proto L845: GetProject 返回裸 Project；repo_url 为空 → 非仓库模式（源码走项目 config 上传件）
   'GET /v1/projects/p1': { project_id: 'p1', name: 'Demo', repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null },
-  'GET /v1/projects/p1/config': { project_id: 'p1', config: {} },
+  'GET /v1/projects/p1/config': () => {
+    if (projConfigFail) throw httpError(500, { error: 'config service down' });
+    return { project_id: 'p1', config: {} };
+  },
   'GET /v1/projects/p2': { project_id: 'p2', name: 'RepoDemo', repo_url: 'https://git.example.com/team/repo.git', default_branch: 'main', default_scan_mode: '', created_at: null },
   'GET /v1/projects/p2/config': { project_id: 'p2', config: {} },
   'GET /v1/projects/p3': { project_id: 'p3', name: 'ZipDemo', repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null },
   'GET /v1/projects/p3/config': { project_id: 'p3', config: { upload_file_id: 'fid-9', upload_file_name: 'src.zip' } },
-  'GET /v1/tools': {
-    tools: [
-      { tool_id: 'bandit', name: 'bandit', supported_languages: ['python'], output_format: 'bandit', valid: true, errors: [] },
-      { tool_id: 'codeql', name: 'codeql (parser only; no executor mapping)', supported_languages: [], output_format: 'json', valid: false, errors: ['no executor mapping'] },
-    ],
+  // 交互审计 Top4-②：工具服务失败可注入（失败时下拉空、必填报无从归因的回归锁）
+  'GET /v1/tools': () => {
+    // 500 而非 503：503 会踩 axios 拦截器退避重试链（projectsFail 同款口径）
+    if (toolsFail) throw httpError(500, { error: 'tools service down' });
+    return {
+      tools: [
+        { tool_id: 'bandit', name: 'bandit', supported_languages: ['python'], output_format: 'bandit', valid: true, errors: [] },
+        { tool_id: 'codeql', name: 'codeql (parser only; no executor mapping)', supported_languages: [], output_format: 'json', valid: false, errors: ['no executor mapping'] },
+      ],
+    };
   },
   'POST /v1/tasks': { task_id: 't-new-1' },
-  // 就地创建项目（第 1 步闭环出路）：proto 裸 Project 回执
-  'POST /v1/projects': (ctx: { body: { project: { name: string } } }) => ({
-    project_id: 'p-new', name: ctx.body.project.name, repo_url: '',
-    default_branch: 'main', default_scan_mode: '', created_at: null,
+  // TP20-T2 清单端点化：/v1/agents（失败可注入——失败锁定默认用例）
+  'GET /v1/agents': () => {
+    if (agentsFail) throw httpError(500, { error: 'runtime down' });
+    return { agents: [
+      { id: 'dsh', dialect: 'dsh-sse', is_default: true, tool_events: true, structured_submit: true, interaction: false, session_resume: false, conclude_semantics: true },
+      { id: 'maka', dialect: 'maka-runtime-host', is_default: false, tool_events: false, structured_submit: false, interaction: false, session_resume: false, conclude_semantics: false },
+    ] };
+  },
+  // 就地创建项目（第 1 步闭环出路）：proto 裸 Project 回执——回显所提交字段
+  // （P1-5 后就地创建自带源码，回显 repo_url 供参数步"仓库自动拉取"展示）
+  'POST /v1/projects': (ctx: { body: { project: { name: string; repo_url?: string; default_branch?: string; default_scan_mode?: string } } }) => ({
+    project_id: 'p-new', name: ctx.body.project.name, repo_url: ctx.body.project.repo_url ?? '',
+    default_branch: ctx.body.project.default_branch ?? 'main',
+    default_scan_mode: ctx.body.project.default_scan_mode ?? '', created_at: null,
   }),
+  // 2026-10-03 报障收口：就地创建后自动弹源码配置弹窗——补 p-new 读回路由
+  // （弹窗 GET 项目现状 + config；无路由=未建模响亮失败会打断该闭环用例）
+  'GET /v1/projects/p-new': { project_id: 'p-new', name: '现场新建', repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null },
+  'GET /v1/projects/p-new/config': { project_id: 'p-new', config: {} },
+  // P0-2 模式跟随用例注入的项目（未建模=响亮失败会污染查询日志，读回路由补齐）
+  'GET /v1/projects/p-mode': { project_id: 'p-mode', name: 'ModeDemo', repo_url: 'https://git.example.com/x.git', default_branch: 'main', default_scan_mode: 'SCAN_MODE_SAST_ONLY', created_at: null },
+  'GET /v1/projects/p-mode/config': { project_id: 'p-mode', config: {} },
 });
 
 function renderWizard(initialEntry = '/tasks/new') {
@@ -83,7 +112,7 @@ describe('TaskNewPage 向导', () => {
     renderWizard();
     await screen.findByText('选择项目');
     // 步骤条四步
-    for (const t of ['项目', '模式', '参数', '确认']) {
+    for (const t of ['项目', '执行方案', '参数', '确认']) {
       expect(screen.getAllByText(t).length).toBeGreaterThan(0);
     }
     // 下一步按钮初始禁用（未选项目）
@@ -95,7 +124,7 @@ describe('TaskNewPage 向导', () => {
   });
 
   // ADR-154 回归（行为级锁）：确认页只随第4步出现；创建按钮不在向导前段渲染。
-  // （gui-audit 为一次性 GUI 取证脚本，非常设回归套件；
+  // （.agent/evidence/gui-audit/ 为一次性 GUI 取证脚本，非常设回归套件；
   //   行为锁由本文件 vitest 用例承担——ADR-203 mock 纪律）
   it('ADR-154: 确认页按钮不前漏（步骤边界正确）', async () => {
     renderWizard();
@@ -103,20 +132,88 @@ describe('TaskNewPage 向导', () => {
     expect(screen.queryByRole('button', { name: '创建任务' })).toBeNull();
   });
 
-  // 无项目时的第 1 步闭环：就地创建项目 → POST /v1/projects 并自动选用（下一步解禁）
-  it('未选项目：就地创建项目 → POST /v1/projects 并自动选用', async () => {
+  // 无项目时的第 1 步闭环：就地创建项目（P1-5 表单化——名称+源码二选一+默认分支）
+  // → POST /v1/projects 并自动选用（下一步解禁）
+  it('未选项目：就地创建项目（带仓库地址）→ POST /v1/projects 并自动选用', async () => {
     renderWizard();
     await screen.findByText('选择项目');
     const next = screen.getByRole('button', { name: '下一步' });
     expect(next).toHaveProperty('disabled', true); // 未选项目仍禁用（project_id 必填）
-    fireEvent.change(screen.getByPlaceholderText('或输入新项目名称，就地创建'), { target: { value: '现场新建' } });
+    fireEvent.change(screen.getByPlaceholderText('新项目名称'), { target: { value: '现场新建' } });
+    fireEvent.change(screen.getByPlaceholderText('如 https://git.example.com/team/repo.git'), { target: { value: 'https://git.example.com/new/repo.git' } });
     fireEvent.click(screen.getByRole('button', { name: '创建并选用' }));
     await waitFor(() => expect(next).toHaveProperty('disabled', false)); // 创建成功即选用
     const post = gateway.requests.find((r) => r.method === 'POST' && r.url === '/v1/projects');
     expect(post).toBeTruthy();
+    // P1-5：源码随建随配（此前单输入框建"裸项目"再叠弹窗补配）
     expect(post!.body).toEqual({
-      project: { name: '现场新建', default_branch: 'main', default_scan_mode: 'SCAN_MODE_PARALLEL' },
+      project: {
+        name: '现场新建',
+        repo_url: 'https://git.example.com/new/repo.git',
+        default_branch: 'main',
+        default_scan_mode: 'SCAN_MODE_PARALLEL',
+      },
     });
+  });
+
+  // P1-5 后行为反转：就地创建自带源码——建完即
+  // 配齐，不再叠 ProjectSourceModal 二级弹窗补配
+  it('就地创建自带仓库地址 → 不再叠源码补配弹窗（建完即配齐）', async () => {
+    renderWizard();
+    await screen.findByText('选择项目');
+    fireEvent.change(screen.getByPlaceholderText('新项目名称'), { target: { value: '现场新建' } });
+    fireEvent.change(screen.getByPlaceholderText('如 https://git.example.com/team/repo.git'), { target: { value: 'https://git.example.com/new/repo.git' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建并选用' }));
+    await waitFor(() =>
+      expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/projects')).toBe(true));
+    // 宿主向导持有选中项（下一步解禁）；源码弹窗标题不出现
+    await waitFor(() => expect(screen.getByRole('button', { name: '下一步' }).getAttribute('disabled')).toBeNull());
+    expect(screen.queryByText('配置源码来源')).toBeNull();
+  });
+
+  // P1-5：与项目页创建弹窗同款二选一拦截——只填名称不发创建请求
+  it('就地创建源码二选一拦截：只填名称 → 报错且不发 POST /v1/projects', async () => {
+    renderWizard();
+    await screen.findByText('选择项目');
+    fireEvent.change(screen.getByPlaceholderText('新项目名称'), { target: { value: '裸项目' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建并选用' }));
+    expect(await screen.findByText('项目创建失败：请上传代码压缩包或填写仓库地址（二选一）')).toBeTruthy();
+    expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/projects')).toBe(false);
+  });
+
+  // 评审 P2：config 加载期/5xx 不闪"未配置"假警告——两查询
+  // 已决（项目 GET 成功+config 成功或 404）才亮警告，加载期静默
+  it('参数步 config 5xx：不闪"未配置源码来源"假警告、不渲染假的立即配置按钮', async () => {
+    projConfigFail = true;
+    try {
+      renderWizard();
+      await screen.findByText('选择项目');
+      fireEvent.mouseDown(screen.getByRole('combobox'));
+      fireEvent.click(await screen.findByText('Demo (p1)'));
+      fireEvent.click(screen.getByRole('button', { name: '下一步' }));
+      fireEvent.click(screen.getByRole('button', { name: '下一步' })); // → 参数步
+      // 等一拍让查询 settle（retry:false 已配，失败立即终态）
+      await waitFor(() => expect(screen.getByRole('button', { name: '下一步：确认' })).toBeTruthy());
+      expect(screen.queryByText(/未配置源码来源/)).toBeNull();
+      expect(screen.queryByRole('button', { name: '立即配置' })).toBeNull();
+    } finally {
+      projConfigFail = false;
+    }
+  });
+
+  // 评审对齐：参数步无来源警告带"立即配置"直达——与详情页建任务弹窗
+  // 同款闭环，用户不必离开向导去项目详情页找入口
+  it('参数步无来源警告带"立即配置"直达补配弹窗', async () => {
+    renderWizard();
+    await screen.findByText('选择项目');
+    // 选无来源项目 p1（repo 空 + config 空）
+    fireEvent.mouseDown(screen.getByRole('combobox'));
+    fireEvent.click(await screen.findByText('Demo (p1)'));
+    fireEvent.click(screen.getByRole('button', { name: '下一步' })); // → 执行方案
+    fireEvent.click(screen.getByRole('button', { name: '下一步' })); // → 参数
+    expect(await screen.findByText(/该项目未配置源码来源/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '立即配置' }));
+    expect(await screen.findByText('配置源码来源')).toBeTruthy();
   });
 });
 
@@ -136,7 +233,7 @@ describe('R: 模式入口过滤（dict 补 UNSPECIFIED 键不泄漏进向导）'
   });
 });
 
-describe('TaskNewPage 项目级源码来源（项目层级决定源码仓库）', () => {
+describe('TaskNewPage 项目级源码来源（2026-09-09 人类指令：项目层级决定源码仓库）', () => {
   // 走到参数步：选项目 → 模式B 纯AI（needsSastTools=false，绕开工具多选）
   async function gotoParamsStep(projectLabel: string) {
     fireEvent.mouseDown(screen.getByRole('combobox'));
@@ -198,16 +295,16 @@ describe('TaskNewPage 项目级源码来源（项目层级决定源码仓库）'
   });
 });
 
-// 建任务引导（2026-09-11 用户报障修复）：加载失败显性化+重试 / 空列表引导 / 深链预选
+// 建任务引导：加载失败显性化+重试 / 空列表引导 / 深链预选
 describe('TaskNewPage 建任务引导（2026-09-11 报障修复）', () => {
-  it('空列表：下拉空态引导"前往项目页创建"（Link → /projects）', async () => {
+  it('空列表：下拉空态引导"前往新建项目页"（Link → /projects/new）', async () => {
     projectsPayload = { projects: [], pagination: { next_cursor: '', has_next: false, total: 0 } };
     try {
       renderWizard();
       await screen.findByText('选择项目');
       fireEvent.mouseDown(screen.getByRole('combobox'));
-      const link = await screen.findByRole('link', { name: '前往项目页创建' });
-      expect(link.getAttribute('href')).toBe('/projects');
+      const link = await screen.findByRole('link', { name: '前往新建项目页' });
+      expect(link.getAttribute('href')).toBe('/projects/new');
     } finally {
       projectsPayload = defaultProjects;
     }
@@ -227,6 +324,27 @@ describe('TaskNewPage 建任务引导（2026-09-11 报障修复）', () => {
     }
   });
 
+
+  it('交互审计 Top4-②: 工具列表加载失败——Alert 显性化 + 重试（不再静默空下拉）', async () => {
+    toolsFail = true;
+    try {
+      renderWizard();
+      await screen.findByText(/新建扫描任务/);
+      fireEvent.mouseDown(screen.getByRole('combobox'));
+      fireEvent.click(await screen.findByText('Demo (p1)', {}, { timeout: 5000 }));
+      fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step0 → 1
+      fireEvent.click(await screen.findByText(/模式C/)); // 融合（needsSastTools=true）
+      fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step1 → 2
+      expect(await screen.findByText('工具列表加载失败', {}, { timeout: 5000 })).toBeTruthy();
+      const gets = () => gateway.requests.filter((r) => r.method === 'GET' && r.url === '/v1/tools').length;
+      const before = gets();
+      fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
+      await waitFor(() => expect(gets()).toBeGreaterThan(before));
+    } finally {
+      toolsFail = false;
+    }
+  });
+
   it('?project_id= 深链预选：命中列表项 → 预选 RepoDemo(p2)，下一步可点', async () => {
     renderWizard('/tasks/new?project_id=p2');
     await screen.findByText('选择项目');
@@ -235,6 +353,31 @@ describe('TaskNewPage 建任务引导（2026-09-11 报障修复）', () => {
       expect(document.body.querySelector('.ant-select-selection-item')?.textContent).toBe('RepoDemo (p2)'),
     );
     expect(screen.getByRole('button', { name: '下一步' })).toHaveProperty('disabled', false);
+  });
+
+  // P0-2：模式默认值跟随项目 default_scan_mode——此前该字段
+  // 只在项目创建瞬间的自动链被消费一次，向导/快捷弹窗一律无视（"默认"承诺未兑现）
+  it('P0-2 模式跟随：项目 default_scan_mode=SAST_ONLY → 执行方案步默认选中该模式', async () => {
+    projectsPayload = {
+      projects: [
+        { project_id: 'p-mode', name: 'ModeDemo', repo_url: 'https://git.example.com/x.git', default_branch: 'main', default_scan_mode: 'SCAN_MODE_SAST_ONLY', created_at: null },
+      ],
+      pagination: { next_cursor: '', has_next: false, total: 1 },
+    };
+    try {
+      renderWizard('/tasks/new?project_id=p-mode');
+      await waitFor(() =>
+        expect(document.body.querySelector('.ant-select-selection-item')?.textContent).toBe('ModeDemo (p-mode)'));
+      fireEvent.click(screen.getByRole('button', { name: '下一步' })); // → 执行方案步
+      // 编排组标准编排（value=''）+ 模式组各一 checked；非空 checked 值=项目默认模式
+      await waitFor(() => {
+        const checkedModes = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="radio"]:checked'))
+          .map((i) => i.value).filter(Boolean);
+        expect(checkedModes).toEqual(['SCAN_MODE_SAST_ONLY']);
+      });
+    } finally {
+      projectsPayload = defaultProjects;
+    }
   });
 
   it('?project_id= 未命中列表项 → 保持未选（下一步禁用，不猜 ID）', async () => {
@@ -258,5 +401,107 @@ describe('TaskNewPage 创建向导弹窗形态（2026-09-14 二期）', () => {
     expect(screen.queryByRole('button', { name: '创建任务' })).toBeNull();
     // antd 两字按钮自动插空格（"取 消"），正则容忍
     expect(screen.getByRole('button', { name: /取\s*消/ })).toBeTruthy(); // footer 常驻取消
+  });
+});
+
+// ===== 编排形态=====
+describe('TaskNewModal（编排形态）', () => {
+  async function toStep1(initialEntry = '/tasks/new') {
+    renderWizard(initialEntry);
+    await screen.findByText('选择项目');
+    fireEvent.mouseDown(screen.getByRole('combobox'));
+    fireEvent.click(await screen.findByText('Demo (p1)', {}, { timeout: 5000 }));
+    fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step0 → 1
+    await screen.findByText(/标准编排/);
+  }
+
+  it('默认=标准编排，策略卡可用', async () => {
+    await toStep1();
+    const aiRadio = screen.getByRole('radio', { name: /模式B 纯AI/ }) as HTMLInputElement;
+    expect(aiRadio.disabled).toBe(false);
+  });
+
+  it('选图编排 → 模式组收起为接管条；切回标准编排模式卡恢复', async () => {
+    await toStep1();
+    fireEvent.click(screen.getByText('图编排 · 代码审计'));
+    // 结构化重设计 2026-10-03：模式卡不渲染（收起），由接管条说明——结构替代禁用
+    await screen.findByText(/扫描模式由图编排接管/);
+    expect(screen.queryByRole('radio', { name: /模式B 纯AI/ })).toBeNull();
+    fireEvent.click(screen.getByText('标准编排'));
+    expect(screen.getByRole('radio', { name: /模式B 纯AI/ })).toBeTruthy(); // 切回即恢复
+  });
+
+  it('图编排 payload：config.pack=audit-graph + scan_mode 载体（AI_ONLY）', async () => {
+    renderWizard('/tasks/new?orchestration=audit-graph'); // 编排页 CTA 深链
+    await screen.findByText('选择项目');
+    fireEvent.mouseDown(screen.getByRole('combobox'));
+    fireEvent.click(await screen.findByText('Demo (p1)', {}, { timeout: 5000 }));
+    fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step0
+    await screen.findByText(/扫描模式由图编排接管/); // 深链已预选
+    fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step1 → 2
+    fireEvent.click(screen.getByRole('button', { name: '下一步：确认' })); // step2 → 3
+    await screen.findByRole('button', { name: '创建任务' });
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }));
+    // 成功即 resetAndClose+navigate（弹窗卸载）——断言打在 fake gateway 请求日志上
+    await waitFor(() => {
+      const post = gateway.requests.find((r) => r.method === 'POST' && r.url === '/v1/tasks');
+      expect(post).toBeTruthy();
+    });
+    const post = gateway.requests.find((r) => r.method === 'POST' && r.url === '/v1/tasks');
+    expect(post).toBeTruthy();
+    const body = post!.body as { scan_mode: string; config: Record<string, string> };
+    expect(body.scan_mode).toBe('SCAN_MODE_AI_ONLY');
+    expect(body.config.pack).toBe('audit-graph');
+  });
+
+  it('标准编排 payload：不发 pack 键（默认行为零回归）', async () => {
+    await toStep1();
+    fireEvent.click(screen.getByRole('radio', { name: /模式B 纯AI/ })); // AI_ONLY 无工具面
+    fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step1 → 2
+    fireEvent.click(screen.getByRole('button', { name: '下一步：确认' })); // step2 → 3
+    await screen.findByRole('button', { name: '创建任务' });
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }));
+    // 成功即 resetAndClose+navigate（弹窗卸载）——断言打在 fake gateway 请求日志上
+    await waitFor(() => {
+      const post = gateway.requests.find((r) => r.method === 'POST' && r.url === '/v1/tasks');
+      expect(post).toBeTruthy();
+    });
+    const post = gateway.requests.find((r) => r.method === 'POST' && r.url === '/v1/tasks');
+    const body = post!.body as { config: Record<string, string> };
+    expect(body.config.pack).toBeUndefined();
+  });
+});
+
+// TP20-T2 清单端点化（计划 §3.3）：Radio 组数据源=/v1/agents；「实验」标签退役改能力摘要；
+// 失败=锁定默认项（仍可提交）+错误条——不回落硬编码。
+describe('TaskNewPage Agent 清单端点化（TP20-T2）', () => {
+  it('选项来自 /v1/agents：id+方言+能力摘要；默认项=空值', async () => {
+    renderWizard();
+    await screen.findByText(/新建扫描任务/);
+    fireEvent.mouseDown(screen.getByRole('combobox'));
+    fireEvent.click(await screen.findByText('Demo (p1)', {}, { timeout: 5000 }));
+    fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step0 → 1
+    fireEvent.click(await screen.findByText(/模式B 纯AI/));
+    fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step1 → 2
+    await waitFor(() => expect(screen.getByText('dsh')).toBeTruthy());
+    expect(screen.getByText('maka')).toBeTruthy();
+    expect(screen.getByText('maka-runtime-host')).toBeTruthy();
+    expect(screen.getByText(/结构化提交：无（围栏 JSON 兜底）/)).toBeTruthy();
+    // 「实验」标签退役
+    expect(screen.queryByText('实验')).toBeNull();
+  });
+
+  it('端点失败=锁定部署默认项（仍可提交）+如实错误条', async () => {
+    agentsFail = true;
+    renderWizard();
+    await screen.findByText(/新建扫描任务/);
+    fireEvent.mouseDown(screen.getByRole('combobox'));
+    fireEvent.click(await screen.findByText('Demo (p1)', {}, { timeout: 5000 }));
+    fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step0 → 1
+    fireEvent.click(await screen.findByText(/模式B 纯AI/));
+    fireEvent.click(screen.getByRole('button', { name: '下一步' })); // step1 → 2
+    await waitFor(() => expect(screen.getByText('Agent 清单加载失败——已锁定部署默认（仍可提交）')).toBeTruthy());
+    expect(screen.getByText('部署默认')).toBeTruthy();
+    expect(screen.queryByText('maka')).toBeNull();
   });
 });

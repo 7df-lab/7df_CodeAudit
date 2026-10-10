@@ -96,7 +96,7 @@ describe('gitAnchor（ADR-225 D5）', () => {
     const f = (inherited?: string): UnifiedFinding => ({
       finding_id: 'x', task_id: 't', project_id: 'p', source_tool: 'bandit', source_rule_id: 'r',
       cwe_id: '', title: '', description: '', severity: 'SEVERITY_HIGH', confidence: 1,
-      ai_verdict: '', ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', diff_patch: '',
+      verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED', ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', diff_patch: '',
       location: null, dedup_group: '', is_unique: true, inherited_from_task_id: inherited,
     });
     assert.ok(findingDescription(f('base-1')).endsWith('· 继承'));

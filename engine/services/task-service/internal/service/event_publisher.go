@@ -45,13 +45,13 @@ func NewTaskEventProducer(brokers []string) *TaskEventProducer {
 // buildFindingCreatedEvent — finding.created 消息构造纯函数（可测，R64/D5）。
 // 载荷对齐 storage-service eventPayload 消费映射（notification.go）：task_id/
 // finding_id/severity/created_by（收件人链首个非空）。此前该 topic 只有消费端零
-// 生产者——高危发现站内通知永远不触发（2026-09-11 跨仓审计死契约）。
+// 生产者——高危发现站内通知永远不触发。
 func buildFindingCreatedEvent(taskID, createdBy string, severity pb.Severity, findingID string) kafka.Message {
 	payload, _ := json.Marshal(map[string]any{
-		"task_id":     taskID,
-		"finding_id":  findingID,
-		"severity":    severity.String(),
-		"created_by":  createdBy,
+		"task_id":    taskID,
+		"finding_id": findingID,
+		"severity":   severity.String(),
+		"created_by": createdBy,
 	})
 	return kafka.Message{
 		Topic:   "finding.created",
@@ -104,9 +104,9 @@ func buildTaskEvent(topic string, task *pb.ScanTask) kafka.Message {
 		"completed_at": completedAt,
 	})
 	return kafka.Message{
-		Topic: topic,
-		Key:   []byte(task.GetTaskId()),
-		Value: payload,
+		Topic:   topic,
+		Key:     []byte(task.GetTaskId()),
+		Value:   payload,
 		Headers: []kafka.Header{{Key: "event_type", Value: []byte(topic)}},
 	}
 }

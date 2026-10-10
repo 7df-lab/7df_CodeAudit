@@ -29,7 +29,7 @@ func (s *FalsePositiveFilterStage) Execute(ctx context.Context, input *FusionCon
 	for _, f := range input.SASTFindings {
 		// 过滤AI判定为误报且置信度高的结果
 		// 依据: 07 §10 降级策略（融合失败→输出未融合原始结果）
-		if f.GetAiVerdict() == pb.AIVerdict_AI_VERDICT_FALSE_POSITIVE && f.GetAiConfidence() > 0.8 {
+		if f.GetVerdictDirection() == pb.VerdictDirection_VERDICT_DIRECTION_FALSE && f.GetVerdictTier() == pb.VerdictTier_VERDICT_TIER_DEFINITE && f.GetAiConfidence() > 0.8 {
 			filtered = append(filtered, &pb.FilteredItem{
 				FindingId:    f.GetFindingId(),
 				FilterReason: "AI verdict: FALSE_POSITIVE with high confidence",

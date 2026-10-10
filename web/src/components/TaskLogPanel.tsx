@@ -1,13 +1,14 @@
 // 任务执行日志面板（ADR-167；ADR-170 改为受控展示组件）：流水线事件可视化。
 // 数据由详情页的聚合快照轮询（单一轮询器）下发，本组件不再自拉——4 轮询器并 1 后
 // 请求速率 20/min 级，远低于 07 §7 单用户 50/min 限流（此前 429 冻结页面的根因）。
+import { DownOutlined, UpOutlined } from '@ant-design/icons';
 import { Button, Card, Segmented, Tag, Tooltip, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import type { TaskLogEntry } from '../api/types';
 import { EVIDENCE } from '../theme/evidence';
 import { MONO_FONT } from '../dict/tokens';
 
-// （审计修复）：执行日志客户端保尾上限——任务详情页吸收快照时只保留最新 1000 条
+// B4-3（审计修复）：执行日志客户端保尾上限——任务详情页吸收快照时只保留最新 1000 条
 // （超长任务无界累积会拖垮标签页）。此常量由 TaskDetailPage 消费，提示文案在此渲染。
 // 完整内容下载入口延后（服务端无日志全量导出端点），顶部如实提示截断。
 export const MAX_LOG_ROWS = 1000;
@@ -38,10 +39,14 @@ function hhmmss(tsMs: number | string) {
 }
 
 export default function TaskLogPanel(
-  { logs, terminal, onRefresh, refreshing, live, maxHeight = 360 }:
-  { logs: TaskLogEntry[]; terminal: boolean; onRefresh: () => void; refreshing: boolean; live?: boolean; maxHeight?: number },
+  { logs, terminal, onRefresh, refreshing, live, maxHeight = 360, collapsible = false, defaultCollapsed = false }:
+  { logs: TaskLogEntry[]; terminal: boolean; onRefresh: () => void; refreshing: boolean; live?: boolean; maxHeight?: number; collapsible?: boolean; defaultCollapsed?: boolean },
 ) {
   const [filter, setFilter] = useState<Filter>('all');
+  // 可折叠：终态任务默认收起（头部计数/警告/错误徽标常驻
+  // ——错误可见性不丢），运行态保持展开。折叠用 display:none 而非卸载：日志行留驻
+  // DOM（保尾/截断提示等既有断言面不破），重新展开滚动位置不丢。
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const boxRef = useRef<HTMLDivElement>(null);
   const stickBottom = useRef(true);
 
@@ -79,9 +84,21 @@ export default function TaskLogPanel(
           )}
         </span>
       }
-      style={{ marginTop: 16 }}
+      style={{ marginTop: 0 }} /* 信息栏列 gap 统一管距（2026-10-09 起；原自带 16px 与列 gap 叠加） */
       extra={
         <div onClick={(e) => e.stopPropagation()}>
+          {collapsible && (
+            <Tooltip title={collapsed ? '展开执行日志' : '收起执行日志（计数/警告/错误徽标常驻此行）'}>
+              <Button
+                size="small"
+                type="text"
+                aria-label={collapsed ? '展开执行日志' : '收起执行日志'}
+                icon={collapsed ? <DownOutlined /> : <UpOutlined />}
+                onClick={() => setCollapsed((c) => !c)}
+                style={{ marginRight: 4 }}
+              />
+            </Tooltip>
+          )}
           <span style={{ marginRight: 12 }}>
             {live && <Tag color="processing" style={{ marginRight: 4 }}>WS 实时推送</Tag>}
             <Tag>{logs.length} 条</Tag>
@@ -122,6 +139,7 @@ export default function TaskLogPanel(
           overflowY: 'auto',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-all',
+          ...(collapsed ? { display: 'none' } : {}),
         }}
         data-testid="task-log-box"
       >

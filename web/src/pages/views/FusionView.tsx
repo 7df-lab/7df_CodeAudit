@@ -18,11 +18,11 @@ export default function FusionView({ taskId }: { taskId: string }) {
       },
   });
 
-  //  补错误分支——此前查询失败永远停在加载文案（与 ReviewView 同病）
+  // 设计整改 P1: 补错误分支——此前查询失败永远停在加载文案（与 ReviewView 同病）
   if (isLoading) return <PageLoading />;
   if (isError) return <QueryError error={error} onRetry={() => refetch()} />;
   const findings = data?.findings ?? [];
-  // （审计修复）：视图单页拉 100 条截断——has_next=true 时如实提示，不再静默丢剩余
+  // B3-4（审计修复）：视图单页拉 100 条截断——has_next=true 时如实提示，不再静默丢剩余
   const truncated = data?.pagination?.has_next === true;
 
   // dedup_group 非空 → 组视图；空 → 未合并分区

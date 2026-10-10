@@ -96,7 +96,7 @@ def test_list_scan_tasks_task_service(channel):
     pytest.skip("读 RPC 无幂等契约要求")
 
 # ADR-171 审批流废除：SubmitTask/ApproveTask/RejectTask RPC 已从 proto 删除，
-# 对应幂等契约用例随之移除（2026-09-01 人类裁定：有创建权限即有启动权限）。
+# 对应幂等契约用例随之移除。
 
 def test_start_task_idempotent_same_body_task_service(channel):
     """依据: codeaudit_common.proto L872；依据: test-gates.md §3 幂等行"""

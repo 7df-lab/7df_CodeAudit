@@ -62,13 +62,13 @@ describe('E-44 503 自动重试（退避 1s/2s/4s，至多 3 次）', () => {
   });
 });
 
-describe('E-45 403/501 全局事件（auth 端点豁免）', () => {
-  it('403 → API_ERROR_EVENT(403)；501 → API_ERROR_EVENT(501)', async () => {
+describe('E-45 501 全局事件（ADR-257: 403 撤出全局层；auth 端点豁免）', () => {
+  it('403 不派发（页面级/操作级 403 各自承接）；501 → API_ERROR_EVENT(501)', async () => {
     routes['GET /v1/forbidden'] = () => httpError(403, { error: 'admin only' });
     routes['GET /v1/unsupported'] = () => httpError(501, { error: 'not implemented' });
     await expect(api.get('/v1/forbidden')).rejects.toThrow();
     await expect(api.get('/v1/unsupported')).rejects.toThrow();
-    expect(apiErrors).toEqual([403, 501]);
+    expect(apiErrors).toEqual([501]);
   });
 
   it('auth 端点 403 不派发事件（登录页自带错误 UX，不出全页覆盖/横幅）', async () => {
@@ -96,7 +96,7 @@ describe('E-43 429 退避记录与轮询拉长', () => {
     const stretched = pollIntervalMs(3000);
     expect(stretched).toBeGreaterThan(3000);
     expect(stretched).toBeLessThanOrEqual(7000);
-    // 纯 clamp 契约：[5,60]s；缺省 15s
+    // 纯 clamp 契约：[5,60]s；默认 15s
     noteRateLimit(100);
     expect(pollIntervalMs(0)).toBeLessThanOrEqual(60_000);
     noteRateLimit(1);

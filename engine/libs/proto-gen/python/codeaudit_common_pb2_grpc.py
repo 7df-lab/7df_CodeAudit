@@ -6,7 +6,7 @@ import warnings
 import codeaudit_common_pb2 as codeaudit__common__pb2
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 
-GRPC_GENERATED_VERSION = '1.83.0'
+GRPC_GENERATED_VERSION = '1.84.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -36,7 +36,7 @@ class TaskServiceStub:
     project-service      → ProjectService + UserService
     task-service         → TaskService
     result-service       → ResultService + ReportService
-    dsh-runtime-service    → DSHRuntimeService + CodeAnalysisService
+    runtime-service    → RuntimeService + CodeAnalysisService
     sast-adapter-service → SASTAdapterService + SASTFusionService
     storage-service      → StorageService + NotificationService
     ============================================================
@@ -91,6 +91,11 @@ class TaskServiceStub:
         self.ResumeTask = channel.unary_unary(
                 '/codeaudit.common.v1.TaskService/ResumeTask',
                 request_serializer=codeaudit__common__pb2.ResumeTaskRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.ScanTask.FromString,
+                _registered_method=True)
+        self.SetTaskAgent = channel.unary_unary(
+                '/codeaudit.common.v1.TaskService/SetTaskAgent',
+                request_serializer=codeaudit__common__pb2.SetTaskAgentRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.ScanTask.FromString,
                 _registered_method=True)
         self.CompleteTask = channel.unary_unary(
@@ -148,6 +153,36 @@ class TaskServiceStub:
                 request_serializer=codeaudit__common__pb2.StreamTaskSnapshotRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.TaskSnapshotDelta.FromString,
                 _registered_method=True)
+        self.GetTaskUsage = channel.unary_unary(
+                '/codeaudit.common.v1.TaskService/GetTaskUsage',
+                request_serializer=codeaudit__common__pb2.GetTaskUsageRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.TaskUsageSummary.FromString,
+                _registered_method=True)
+        self.GetTaskGraph = channel.unary_unary(
+                '/codeaudit.common.v1.TaskService/GetTaskGraph',
+                request_serializer=codeaudit__common__pb2.GetTaskGraphRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.TaskGraph.FromString,
+                _registered_method=True)
+        self.ListOrchestrations = channel.unary_unary(
+                '/codeaudit.common.v1.TaskService/ListOrchestrations',
+                request_serializer=codeaudit__common__pb2.ListOrchestrationsRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.ListOrchestrationsResponse.FromString,
+                _registered_method=True)
+        self.CreateOrchestration = channel.unary_unary(
+                '/codeaudit.common.v1.TaskService/CreateOrchestration',
+                request_serializer=codeaudit__common__pb2.CreateOrchestrationRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.OrchestrationInfo.FromString,
+                _registered_method=True)
+        self.UpdateOrchestration = channel.unary_unary(
+                '/codeaudit.common.v1.TaskService/UpdateOrchestration',
+                request_serializer=codeaudit__common__pb2.UpdateOrchestrationRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.OrchestrationInfo.FromString,
+                _registered_method=True)
+        self.DeprecateOrchestration = channel.unary_unary(
+                '/codeaudit.common.v1.TaskService/DeprecateOrchestration',
+                request_serializer=codeaudit__common__pb2.DeprecateOrchestrationRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.OrchestrationInfo.FromString,
+                _registered_method=True)
 
 
 class TaskServiceServicer:
@@ -160,7 +195,7 @@ class TaskServiceServicer:
     project-service      → ProjectService + UserService
     task-service         → TaskService
     result-service       → ResultService + ReportService
-    dsh-runtime-service    → DSHRuntimeService + CodeAnalysisService
+    runtime-service    → RuntimeService + CodeAnalysisService
     sast-adapter-service → SASTAdapterService + SASTFusionService
     storage-service      → StorageService + NotificationService
     ============================================================
@@ -222,6 +257,13 @@ class TaskServiceServicer:
 
     def ResumeTask(self, request, context):
         """ADR-200: PAUSED → RUNNING（会话继续）
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetTaskAgent(self, request, context):
+        """切换 Agent（PAUSED|QUEUED 态；RUNNING 走 PauseTask?agent=，TP20-T2）
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -303,6 +345,51 @@ class TaskServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetTaskUsage(self, request, context):
+        """计量查询（ADR-247 切片3后半）：task_usage 归集聚合；GUI/运营经网关
+        GET /v1/tasks/{id}/usage 拉取。公理 D2：usage 不可回补，终态即归集。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetTaskGraph(self, request, context):
+        """图执行视图（切片5+6 暴露批，platform-graph-web-exposure §1）：graph.log
+        回放折叠投影（声明序节点/计划触发史/挂起与收敛态）；域中立 C4。非图任务
+        或无事件=空 nodes（诚实空态，不 NotFound）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListOrchestrations(self, request, context):
+        """编排（负载 pack）生命周期（编排 CRUD 批 2026-09-21；人类裁决立项）：append-only
+        修订语义——Update=append 新修订（任务钉修订不破坏），Deprecate=停用标记（历史
+        引用永存）。内置编排（configs/packs 装载）只读。网关 REST 面 GET/POST
+        /v1/orchestrations + PUT/DELETE /v1/orchestrations/{name}（写 admin 门禁）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CreateOrchestration(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdateOrchestration(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeprecateOrchestration(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_TaskServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -344,6 +431,11 @@ def add_TaskServiceServicer_to_server(servicer, server):
             'ResumeTask': grpc.unary_unary_rpc_method_handler(
                     servicer.ResumeTask,
                     request_deserializer=codeaudit__common__pb2.ResumeTaskRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.ScanTask.SerializeToString,
+            ),
+            'SetTaskAgent': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetTaskAgent,
+                    request_deserializer=codeaudit__common__pb2.SetTaskAgentRequest.FromString,
                     response_serializer=codeaudit__common__pb2.ScanTask.SerializeToString,
             ),
             'CompleteTask': grpc.unary_unary_rpc_method_handler(
@@ -401,6 +493,36 @@ def add_TaskServiceServicer_to_server(servicer, server):
                     request_deserializer=codeaudit__common__pb2.StreamTaskSnapshotRequest.FromString,
                     response_serializer=codeaudit__common__pb2.TaskSnapshotDelta.SerializeToString,
             ),
+            'GetTaskUsage': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetTaskUsage,
+                    request_deserializer=codeaudit__common__pb2.GetTaskUsageRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.TaskUsageSummary.SerializeToString,
+            ),
+            'GetTaskGraph': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetTaskGraph,
+                    request_deserializer=codeaudit__common__pb2.GetTaskGraphRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.TaskGraph.SerializeToString,
+            ),
+            'ListOrchestrations': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListOrchestrations,
+                    request_deserializer=codeaudit__common__pb2.ListOrchestrationsRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.ListOrchestrationsResponse.SerializeToString,
+            ),
+            'CreateOrchestration': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateOrchestration,
+                    request_deserializer=codeaudit__common__pb2.CreateOrchestrationRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.OrchestrationInfo.SerializeToString,
+            ),
+            'UpdateOrchestration': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateOrchestration,
+                    request_deserializer=codeaudit__common__pb2.UpdateOrchestrationRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.OrchestrationInfo.SerializeToString,
+            ),
+            'DeprecateOrchestration': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeprecateOrchestration,
+                    request_deserializer=codeaudit__common__pb2.DeprecateOrchestrationRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.OrchestrationInfo.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'codeaudit.common.v1.TaskService', rpc_method_handlers)
@@ -419,7 +541,7 @@ class TaskService:
     project-service      → ProjectService + UserService
     task-service         → TaskService
     result-service       → ResultService + ReportService
-    dsh-runtime-service    → DSHRuntimeService + CodeAnalysisService
+    runtime-service    → RuntimeService + CodeAnalysisService
     sast-adapter-service → SASTAdapterService + SASTFusionService
     storage-service      → StorageService + NotificationService
     ============================================================
@@ -635,6 +757,33 @@ class TaskService:
             target,
             '/codeaudit.common.v1.TaskService/ResumeTask',
             codeaudit__common__pb2.ResumeTaskRequest.SerializeToString,
+            codeaudit__common__pb2.ScanTask.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetTaskAgent(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.TaskService/SetTaskAgent',
+            codeaudit__common__pb2.SetTaskAgentRequest.SerializeToString,
             codeaudit__common__pb2.ScanTask.FromString,
             options,
             channel_credentials,
@@ -933,6 +1082,168 @@ class TaskService:
             '/codeaudit.common.v1.TaskService/StreamTaskSnapshot',
             codeaudit__common__pb2.StreamTaskSnapshotRequest.SerializeToString,
             codeaudit__common__pb2.TaskSnapshotDelta.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetTaskUsage(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.TaskService/GetTaskUsage',
+            codeaudit__common__pb2.GetTaskUsageRequest.SerializeToString,
+            codeaudit__common__pb2.TaskUsageSummary.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetTaskGraph(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.TaskService/GetTaskGraph',
+            codeaudit__common__pb2.GetTaskGraphRequest.SerializeToString,
+            codeaudit__common__pb2.TaskGraph.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListOrchestrations(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.TaskService/ListOrchestrations',
+            codeaudit__common__pb2.ListOrchestrationsRequest.SerializeToString,
+            codeaudit__common__pb2.ListOrchestrationsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CreateOrchestration(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.TaskService/CreateOrchestration',
+            codeaudit__common__pb2.CreateOrchestrationRequest.SerializeToString,
+            codeaudit__common__pb2.OrchestrationInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateOrchestration(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.TaskService/UpdateOrchestration',
+            codeaudit__common__pb2.UpdateOrchestrationRequest.SerializeToString,
+            codeaudit__common__pb2.OrchestrationInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeprecateOrchestration(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.TaskService/DeprecateOrchestration',
+            codeaudit__common__pb2.DeprecateOrchestrationRequest.SerializeToString,
+            codeaudit__common__pb2.OrchestrationInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -1534,6 +1845,31 @@ class UserServiceStub:
                 request_serializer=codeaudit__common__pb2.ResetPasswordRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.ResetPasswordResponse.FromString,
                 _registered_method=True)
+        self.CreateInviteCode = channel.unary_unary(
+                '/codeaudit.common.v1.UserService/CreateInviteCode',
+                request_serializer=codeaudit__common__pb2.CreateInviteCodeRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.InviteCode.FromString,
+                _registered_method=True)
+        self.ListInviteCodes = channel.unary_unary(
+                '/codeaudit.common.v1.UserService/ListInviteCodes',
+                request_serializer=codeaudit__common__pb2.ListInviteCodesRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.ListInviteCodesResponse.FromString,
+                _registered_method=True)
+        self.RevokeInviteCode = channel.unary_unary(
+                '/codeaudit.common.v1.UserService/RevokeInviteCode',
+                request_serializer=codeaudit__common__pb2.RevokeInviteCodeRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.InviteCode.FromString,
+                _registered_method=True)
+        self.DeleteInviteCode = channel.unary_unary(
+                '/codeaudit.common.v1.UserService/DeleteInviteCode',
+                request_serializer=codeaudit__common__pb2.DeleteInviteCodeRequest.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
+        self.GetRegistrationPolicy = channel.unary_unary(
+                '/codeaudit.common.v1.UserService/GetRegistrationPolicy',
+                request_serializer=codeaudit__common__pb2.GetRegistrationPolicyRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.GetRegistrationPolicyResponse.FromString,
+                _registered_method=True)
 
 
 class UserServiceServicer:
@@ -1628,6 +1964,42 @@ class UserServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def CreateInviteCode(self, request, context):
+        """V2.2 邀请码管理（ADR-255；静态配置码=bootstrap 层合并校验，不入库不管理）
+        幂等；admin 生成（系统随机码，管理员只填备注）
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListInviteCodes(self, request, context):
+        """管理端（网关 admin 门禁；config 注入码只读随行）
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RevokeInviteCode(self, request, context):
+        """幂等；状态翻转非删除（活跃码唯一下线通道）
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteInviteCode(self, request, context):
+        """幂等；仅终态码（已吊销/已用尽/已过期），硬删无审计残迹
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetRegistrationPolicy(self, request, context):
+        """注册策略只读（网关 /v1/auth 公开面；仅 mode 不含码表）
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_UserServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -1695,6 +2067,31 @@ def add_UserServiceServicer_to_server(servicer, server):
                     servicer.ResetPassword,
                     request_deserializer=codeaudit__common__pb2.ResetPasswordRequest.FromString,
                     response_serializer=codeaudit__common__pb2.ResetPasswordResponse.SerializeToString,
+            ),
+            'CreateInviteCode': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateInviteCode,
+                    request_deserializer=codeaudit__common__pb2.CreateInviteCodeRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.InviteCode.SerializeToString,
+            ),
+            'ListInviteCodes': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListInviteCodes,
+                    request_deserializer=codeaudit__common__pb2.ListInviteCodesRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.ListInviteCodesResponse.SerializeToString,
+            ),
+            'RevokeInviteCode': grpc.unary_unary_rpc_method_handler(
+                    servicer.RevokeInviteCode,
+                    request_deserializer=codeaudit__common__pb2.RevokeInviteCodeRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.InviteCode.SerializeToString,
+            ),
+            'DeleteInviteCode': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteInviteCode,
+                    request_deserializer=codeaudit__common__pb2.DeleteInviteCodeRequest.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
+            'GetRegistrationPolicy': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetRegistrationPolicy,
+                    request_deserializer=codeaudit__common__pb2.GetRegistrationPolicyRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.GetRegistrationPolicyResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -2063,6 +2460,141 @@ class UserService:
             metadata,
             _registered_method=True)
 
+    @staticmethod
+    def CreateInviteCode(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.UserService/CreateInviteCode',
+            codeaudit__common__pb2.CreateInviteCodeRequest.SerializeToString,
+            codeaudit__common__pb2.InviteCode.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListInviteCodes(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.UserService/ListInviteCodes',
+            codeaudit__common__pb2.ListInviteCodesRequest.SerializeToString,
+            codeaudit__common__pb2.ListInviteCodesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RevokeInviteCode(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.UserService/RevokeInviteCode',
+            codeaudit__common__pb2.RevokeInviteCodeRequest.SerializeToString,
+            codeaudit__common__pb2.InviteCode.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteInviteCode(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.UserService/DeleteInviteCode',
+            codeaudit__common__pb2.DeleteInviteCodeRequest.SerializeToString,
+            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetRegistrationPolicy(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.UserService/GetRegistrationPolicy',
+            codeaudit__common__pb2.GetRegistrationPolicyRequest.SerializeToString,
+            codeaudit__common__pb2.GetRegistrationPolicyResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
 
 class ResultServiceStub:
     """------------------------------------------------------------
@@ -2229,7 +2761,7 @@ class ResultServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def SubmitFindingFeedback(self, request, context):
-        """误报反馈闭环
+        """误报反馈闭环（评审整合项）
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -3010,9 +3542,9 @@ class ReportService:
             _registered_method=True)
 
 
-class DSHRuntimeServiceStub:
+class RuntimeServiceStub:
     """------------------------------------------------------------
-    DSHRuntimeService（dsh-runtime-service 部署）——Agent编排
+    RuntimeService（runtime-service 部署）——Agent编排
     定版 12 RPC（V1.x 工作流文档的 3 RPC 版作废；ADR-168 += GetAIInteractionLog）
     RunAIAnalysis / ReviewSASTResults 必须携带幂等键（R6）
     ------------------------------------------------------------
@@ -3025,100 +3557,145 @@ class DSHRuntimeServiceStub:
             channel: A grpc.Channel.
         """
         self.RunAIAnalysis = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/RunAIAnalysis',
+                '/codeaudit.common.v1.RuntimeService/RunAIAnalysis',
                 request_serializer=codeaudit__common__pb2.RunAIAnalysisRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.RunAIAnalysisResponse.FromString,
                 _registered_method=True)
         self.VerifySASTResults = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/VerifySASTResults',
+                '/codeaudit.common.v1.RuntimeService/VerifySASTResults',
                 request_serializer=codeaudit__common__pb2.VerifySASTResultsRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.VerifySASTResultsResponse.FromString,
                 _registered_method=True)
         self.SearchMissedVulns = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/SearchMissedVulns',
+                '/codeaudit.common.v1.RuntimeService/SearchMissedVulns',
                 request_serializer=codeaudit__common__pb2.SearchMissedVulnsRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.SearchMissedVulnsResponse.FromString,
                 _registered_method=True)
         self.ReviewSASTResults = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/ReviewSASTResults',
+                '/codeaudit.common.v1.RuntimeService/ReviewSASTResults',
                 request_serializer=codeaudit__common__pb2.ReviewSASTResultsRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.ReviewSASTResultsResponse.FromString,
                 _registered_method=True)
         self.GetAnalysisProgress = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/GetAnalysisProgress',
+                '/codeaudit.common.v1.RuntimeService/GetAnalysisProgress',
                 request_serializer=codeaudit__common__pb2.GetAnalysisProgressRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.AnalysisProgress.FromString,
                 _registered_method=True)
         self.WatchAnalysisProgress = channel.unary_stream(
-                '/codeaudit.common.v1.DSHRuntimeService/WatchAnalysisProgress',
+                '/codeaudit.common.v1.RuntimeService/WatchAnalysisProgress',
                 request_serializer=codeaudit__common__pb2.WatchAnalysisProgressRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.AnalysisProgressEvent.FromString,
                 _registered_method=True)
         self.GetSessionStatus = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/GetSessionStatus',
+                '/codeaudit.common.v1.RuntimeService/GetSessionStatus',
                 request_serializer=codeaudit__common__pb2.GetSessionStatusRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.SessionStatus.FromString,
                 _registered_method=True)
         self.CancelAnalysis = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/CancelAnalysis',
+                '/codeaudit.common.v1.RuntimeService/CancelAnalysis',
                 request_serializer=codeaudit__common__pb2.CancelAnalysisRequest.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
         self.PauseAnalysis = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/PauseAnalysis',
+                '/codeaudit.common.v1.RuntimeService/PauseAnalysis',
                 request_serializer=codeaudit__common__pb2.PauseAnalysisRequest.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
         self.ResumeAnalysis = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/ResumeAnalysis',
+                '/codeaudit.common.v1.RuntimeService/ResumeAnalysis',
                 request_serializer=codeaudit__common__pb2.ResumeAnalysisRequest.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
         self.GetAIInteractionLog = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/GetAIInteractionLog',
+                '/codeaudit.common.v1.RuntimeService/GetAIInteractionLog',
                 request_serializer=codeaudit__common__pb2.GetAIInteractionLogRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.GetAIInteractionLogResponse.FromString,
                 _registered_method=True)
         self.StreamAIInteractionLog = channel.unary_stream(
-                '/codeaudit.common.v1.DSHRuntimeService/StreamAIInteractionLog',
+                '/codeaudit.common.v1.RuntimeService/StreamAIInteractionLog',
                 request_serializer=codeaudit__common__pb2.StreamAIInteractionLogRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.GetAIInteractionLogResponse.FromString,
                 _registered_method=True)
         self.ListInferenceProviders = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/ListInferenceProviders',
+                '/codeaudit.common.v1.RuntimeService/ListInferenceProviders',
                 request_serializer=codeaudit__common__pb2.ListInferenceProvidersRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.ListInferenceProvidersResponse.FromString,
                 _registered_method=True)
         self.GetInferenceProvider = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/GetInferenceProvider',
+                '/codeaudit.common.v1.RuntimeService/GetInferenceProvider',
                 request_serializer=codeaudit__common__pb2.GetInferenceProviderRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.InferenceProviderInfo.FromString,
                 _registered_method=True)
         self.UpsertInferenceProvider = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/UpsertInferenceProvider',
+                '/codeaudit.common.v1.RuntimeService/UpsertInferenceProvider',
                 request_serializer=codeaudit__common__pb2.UpsertInferenceProviderRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.UpsertInferenceProviderResponse.FromString,
                 _registered_method=True)
         self.DeleteInferenceProvider = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/DeleteInferenceProvider',
+                '/codeaudit.common.v1.RuntimeService/DeleteInferenceProvider',
                 request_serializer=codeaudit__common__pb2.DeleteInferenceProviderRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.DeleteInferenceProviderResponse.FromString,
                 _registered_method=True)
         self.GetInferenceRoute = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/GetInferenceRoute',
+                '/codeaudit.common.v1.RuntimeService/GetInferenceRoute',
                 request_serializer=codeaudit__common__pb2.GetInferenceRouteRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.InferenceRouteInfo.FromString,
                 _registered_method=True)
         self.SetInferenceRoute = channel.unary_unary(
-                '/codeaudit.common.v1.DSHRuntimeService/SetInferenceRoute',
+                '/codeaudit.common.v1.RuntimeService/SetInferenceRoute',
                 request_serializer=codeaudit__common__pb2.SetInferenceRouteRequest.SerializeToString,
                 response_deserializer=codeaudit__common__pb2.SetInferenceRouteResponse.FromString,
                 _registered_method=True)
+        self.ListWorkspaces = channel.unary_unary(
+                '/codeaudit.common.v1.RuntimeService/ListWorkspaces',
+                request_serializer=codeaudit__common__pb2.ListWorkspacesRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.ListWorkspacesResponse.FromString,
+                _registered_method=True)
+        self.ListAgents = channel.unary_unary(
+                '/codeaudit.common.v1.RuntimeService/ListAgents',
+                request_serializer=codeaudit__common__pb2.ListAgentsRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.ListAgentsResponse.FromString,
+                _registered_method=True)
+        self.CreateWorkspace = channel.unary_unary(
+                '/codeaudit.common.v1.RuntimeService/CreateWorkspace',
+                request_serializer=codeaudit__common__pb2.CreateWorkspaceRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.WorkspaceInfo.FromString,
+                _registered_method=True)
+        self.DeleteWorkspace = channel.unary_unary(
+                '/codeaudit.common.v1.RuntimeService/DeleteWorkspace',
+                request_serializer=codeaudit__common__pb2.DeleteWorkspaceRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.DeleteWorkspaceResponse.FromString,
+                _registered_method=True)
+        self.RunGraphTask = channel.unary_unary(
+                '/codeaudit.common.v1.RuntimeService/RunGraphTask',
+                request_serializer=codeaudit__common__pb2.RunGraphTaskRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.RunGraphTaskResponse.FromString,
+                _registered_method=True)
+        self.InjectGraphNodeMessage = channel.unary_unary(
+                '/codeaudit.common.v1.RuntimeService/InjectGraphNodeMessage',
+                request_serializer=codeaudit__common__pb2.InjectGraphNodeMessageRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.InjectGraphNodeMessageResponse.FromString,
+                _registered_method=True)
+        self.ReopenGraphNode = channel.unary_unary(
+                '/codeaudit.common.v1.RuntimeService/ReopenGraphNode',
+                request_serializer=codeaudit__common__pb2.ReopenGraphNodeRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.ReopenGraphNodeResponse.FromString,
+                _registered_method=True)
+        self.ClaimGraphNode = channel.unary_unary(
+                '/codeaudit.common.v1.RuntimeService/ClaimGraphNode',
+                request_serializer=codeaudit__common__pb2.ClaimGraphNodeRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.ClaimGraphNodeResponse.FromString,
+                _registered_method=True)
+        self.ReleaseGraphNode = channel.unary_unary(
+                '/codeaudit.common.v1.RuntimeService/ReleaseGraphNode',
+                request_serializer=codeaudit__common__pb2.ReleaseGraphNodeRequest.SerializeToString,
+                response_deserializer=codeaudit__common__pb2.ReleaseGraphNodeResponse.FromString,
+                _registered_method=True)
 
 
-class DSHRuntimeServiceServicer:
+class RuntimeServiceServicer:
     """------------------------------------------------------------
-    DSHRuntimeService（dsh-runtime-service 部署）——Agent编排
+    RuntimeService（runtime-service 部署）——Agent编排
     定版 12 RPC（V1.x 工作流文档的 3 RPC 版作废；ADR-168 += GetAIInteractionLog）
     RunAIAnalysis / ReviewSASTResults 必须携带幂等键（R6）
     ------------------------------------------------------------
@@ -3209,9 +3786,9 @@ class DSHRuntimeServiceServicer:
 
     def ListInferenceProviders(self, request, context):
         """推理 provider/路由管理（ADR-217：经 openshell-manager 透传 OpenShell 网关，权威
-        存储在网关 gateway.db；本服务只做管道。workspace 由 dsh-runtime 从全局配置
-        dsh_runtime.sandbox.workspace 注入，不对外暴露；credentials 只进不出——透传
-        manager→网关加密存储，任何响应不回流）
+        存储在网关 gateway.db；本服务只做管道。workspace 请求级可选（ADR-247 切片3后半：
+        per-team 命名空间配置入口），空=runtime.sandbox.workspace 全局缺省；
+        credentials 只进不出——透传 manager→网关加密存储，任何响应不回流）
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -3247,8 +3824,77 @@ class DSHRuntimeServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListWorkspaces(self, request, context):
+        """workspace 生命周期清单（切片3b team 上车：web Provider 页工作区选择器的数据源；
+        只读透传 manager→网关 gRPC ListWorkspaces；建/删区走 manager 运营面不进本面）
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
 
-def add_DSHRuntimeServiceServicer_to_server(servicer, server):
+    def ListAgents(self, request, context):
+        """Agent 清单端点（TP20-T2 切换 Agent 收口）：descriptor 注册表如实投影（首条=缺省）。
+        消费面=web 创建页+切换 Modal 同源（经 gateway GET /v1/agents 转发）；不做可用性
+        探测——清单=静态注册表，运行期装配校验（LoadDescriptor）兜底。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CreateWorkspace(self, request, context):
+        """工作区生命周期写面（web 管理页通道，2026-09-19 人类指令扩面）：
+        建区（重名 409/名字非法 400 语义经 manager 透传）；删区（空区才可删，
+        资源守卫 409 details 原文透出）
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteWorkspace(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RunGraphTask(self, request, context):
+        """图执行模式（平台切片 5+6，ADR-249）：pack 声明 execution:graph 的任务走
+        GraphRunner 串行图——节点=同沙箱独立 session，graph.* 域中立事件族落
+        <task>.graph.log。必须携带幂等键（R6）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def InjectGraphNodeMessage(self, request, context):
+        """v0.5（graph-engine-v0.5-blackboard-hoc.md §4/§2.1）：人机共编辑注入与节点重开。
+        注入=对沙箱内 Agent 追加特定消息（bridge 排队→回合边界生效，不打断当回合）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReopenGraphNode(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ClaimGraphNode(self, request, context):
+        """v0.5 认领层 REST 面（§2.1/§5.1 Claim 按钮）：human 认领占住节点（引擎调度
+        跳过）/释放回 open。holder=human；ttl 秒（0=缺省 30m）。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReleaseGraphNode(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_RuntimeServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'RunAIAnalysis': grpc.unary_unary_rpc_method_handler(
                     servicer.RunAIAnalysis,
@@ -3340,17 +3986,62 @@ def add_DSHRuntimeServiceServicer_to_server(servicer, server):
                     request_deserializer=codeaudit__common__pb2.SetInferenceRouteRequest.FromString,
                     response_serializer=codeaudit__common__pb2.SetInferenceRouteResponse.SerializeToString,
             ),
+            'ListWorkspaces': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListWorkspaces,
+                    request_deserializer=codeaudit__common__pb2.ListWorkspacesRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.ListWorkspacesResponse.SerializeToString,
+            ),
+            'ListAgents': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListAgents,
+                    request_deserializer=codeaudit__common__pb2.ListAgentsRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.ListAgentsResponse.SerializeToString,
+            ),
+            'CreateWorkspace': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateWorkspace,
+                    request_deserializer=codeaudit__common__pb2.CreateWorkspaceRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.WorkspaceInfo.SerializeToString,
+            ),
+            'DeleteWorkspace': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteWorkspace,
+                    request_deserializer=codeaudit__common__pb2.DeleteWorkspaceRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.DeleteWorkspaceResponse.SerializeToString,
+            ),
+            'RunGraphTask': grpc.unary_unary_rpc_method_handler(
+                    servicer.RunGraphTask,
+                    request_deserializer=codeaudit__common__pb2.RunGraphTaskRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.RunGraphTaskResponse.SerializeToString,
+            ),
+            'InjectGraphNodeMessage': grpc.unary_unary_rpc_method_handler(
+                    servicer.InjectGraphNodeMessage,
+                    request_deserializer=codeaudit__common__pb2.InjectGraphNodeMessageRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.InjectGraphNodeMessageResponse.SerializeToString,
+            ),
+            'ReopenGraphNode': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReopenGraphNode,
+                    request_deserializer=codeaudit__common__pb2.ReopenGraphNodeRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.ReopenGraphNodeResponse.SerializeToString,
+            ),
+            'ClaimGraphNode': grpc.unary_unary_rpc_method_handler(
+                    servicer.ClaimGraphNode,
+                    request_deserializer=codeaudit__common__pb2.ClaimGraphNodeRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.ClaimGraphNodeResponse.SerializeToString,
+            ),
+            'ReleaseGraphNode': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReleaseGraphNode,
+                    request_deserializer=codeaudit__common__pb2.ReleaseGraphNodeRequest.FromString,
+                    response_serializer=codeaudit__common__pb2.ReleaseGraphNodeResponse.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'codeaudit.common.v1.DSHRuntimeService', rpc_method_handlers)
+            'codeaudit.common.v1.RuntimeService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('codeaudit.common.v1.DSHRuntimeService', rpc_method_handlers)
+    server.add_registered_method_handlers('codeaudit.common.v1.RuntimeService', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
-class DSHRuntimeService:
+class RuntimeService:
     """------------------------------------------------------------
-    DSHRuntimeService（dsh-runtime-service 部署）——Agent编排
+    RuntimeService（runtime-service 部署）——Agent编排
     定版 12 RPC（V1.x 工作流文档的 3 RPC 版作废；ADR-168 += GetAIInteractionLog）
     RunAIAnalysis / ReviewSASTResults 必须携带幂等键（R6）
     ------------------------------------------------------------
@@ -3370,7 +4061,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/RunAIAnalysis',
+            '/codeaudit.common.v1.RuntimeService/RunAIAnalysis',
             codeaudit__common__pb2.RunAIAnalysisRequest.SerializeToString,
             codeaudit__common__pb2.RunAIAnalysisResponse.FromString,
             options,
@@ -3397,7 +4088,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/VerifySASTResults',
+            '/codeaudit.common.v1.RuntimeService/VerifySASTResults',
             codeaudit__common__pb2.VerifySASTResultsRequest.SerializeToString,
             codeaudit__common__pb2.VerifySASTResultsResponse.FromString,
             options,
@@ -3424,7 +4115,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/SearchMissedVulns',
+            '/codeaudit.common.v1.RuntimeService/SearchMissedVulns',
             codeaudit__common__pb2.SearchMissedVulnsRequest.SerializeToString,
             codeaudit__common__pb2.SearchMissedVulnsResponse.FromString,
             options,
@@ -3451,7 +4142,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/ReviewSASTResults',
+            '/codeaudit.common.v1.RuntimeService/ReviewSASTResults',
             codeaudit__common__pb2.ReviewSASTResultsRequest.SerializeToString,
             codeaudit__common__pb2.ReviewSASTResultsResponse.FromString,
             options,
@@ -3478,7 +4169,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/GetAnalysisProgress',
+            '/codeaudit.common.v1.RuntimeService/GetAnalysisProgress',
             codeaudit__common__pb2.GetAnalysisProgressRequest.SerializeToString,
             codeaudit__common__pb2.AnalysisProgress.FromString,
             options,
@@ -3505,7 +4196,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/WatchAnalysisProgress',
+            '/codeaudit.common.v1.RuntimeService/WatchAnalysisProgress',
             codeaudit__common__pb2.WatchAnalysisProgressRequest.SerializeToString,
             codeaudit__common__pb2.AnalysisProgressEvent.FromString,
             options,
@@ -3532,7 +4223,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/GetSessionStatus',
+            '/codeaudit.common.v1.RuntimeService/GetSessionStatus',
             codeaudit__common__pb2.GetSessionStatusRequest.SerializeToString,
             codeaudit__common__pb2.SessionStatus.FromString,
             options,
@@ -3559,7 +4250,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/CancelAnalysis',
+            '/codeaudit.common.v1.RuntimeService/CancelAnalysis',
             codeaudit__common__pb2.CancelAnalysisRequest.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
@@ -3586,7 +4277,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/PauseAnalysis',
+            '/codeaudit.common.v1.RuntimeService/PauseAnalysis',
             codeaudit__common__pb2.PauseAnalysisRequest.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
@@ -3613,7 +4304,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/ResumeAnalysis',
+            '/codeaudit.common.v1.RuntimeService/ResumeAnalysis',
             codeaudit__common__pb2.ResumeAnalysisRequest.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
@@ -3640,7 +4331,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/GetAIInteractionLog',
+            '/codeaudit.common.v1.RuntimeService/GetAIInteractionLog',
             codeaudit__common__pb2.GetAIInteractionLogRequest.SerializeToString,
             codeaudit__common__pb2.GetAIInteractionLogResponse.FromString,
             options,
@@ -3667,7 +4358,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/StreamAIInteractionLog',
+            '/codeaudit.common.v1.RuntimeService/StreamAIInteractionLog',
             codeaudit__common__pb2.StreamAIInteractionLogRequest.SerializeToString,
             codeaudit__common__pb2.GetAIInteractionLogResponse.FromString,
             options,
@@ -3694,7 +4385,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/ListInferenceProviders',
+            '/codeaudit.common.v1.RuntimeService/ListInferenceProviders',
             codeaudit__common__pb2.ListInferenceProvidersRequest.SerializeToString,
             codeaudit__common__pb2.ListInferenceProvidersResponse.FromString,
             options,
@@ -3721,7 +4412,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/GetInferenceProvider',
+            '/codeaudit.common.v1.RuntimeService/GetInferenceProvider',
             codeaudit__common__pb2.GetInferenceProviderRequest.SerializeToString,
             codeaudit__common__pb2.InferenceProviderInfo.FromString,
             options,
@@ -3748,7 +4439,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/UpsertInferenceProvider',
+            '/codeaudit.common.v1.RuntimeService/UpsertInferenceProvider',
             codeaudit__common__pb2.UpsertInferenceProviderRequest.SerializeToString,
             codeaudit__common__pb2.UpsertInferenceProviderResponse.FromString,
             options,
@@ -3775,7 +4466,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/DeleteInferenceProvider',
+            '/codeaudit.common.v1.RuntimeService/DeleteInferenceProvider',
             codeaudit__common__pb2.DeleteInferenceProviderRequest.SerializeToString,
             codeaudit__common__pb2.DeleteInferenceProviderResponse.FromString,
             options,
@@ -3802,7 +4493,7 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/GetInferenceRoute',
+            '/codeaudit.common.v1.RuntimeService/GetInferenceRoute',
             codeaudit__common__pb2.GetInferenceRouteRequest.SerializeToString,
             codeaudit__common__pb2.InferenceRouteInfo.FromString,
             options,
@@ -3829,9 +4520,252 @@ class DSHRuntimeService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/codeaudit.common.v1.DSHRuntimeService/SetInferenceRoute',
+            '/codeaudit.common.v1.RuntimeService/SetInferenceRoute',
             codeaudit__common__pb2.SetInferenceRouteRequest.SerializeToString,
             codeaudit__common__pb2.SetInferenceRouteResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListWorkspaces(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.RuntimeService/ListWorkspaces',
+            codeaudit__common__pb2.ListWorkspacesRequest.SerializeToString,
+            codeaudit__common__pb2.ListWorkspacesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListAgents(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.RuntimeService/ListAgents',
+            codeaudit__common__pb2.ListAgentsRequest.SerializeToString,
+            codeaudit__common__pb2.ListAgentsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CreateWorkspace(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.RuntimeService/CreateWorkspace',
+            codeaudit__common__pb2.CreateWorkspaceRequest.SerializeToString,
+            codeaudit__common__pb2.WorkspaceInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteWorkspace(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.RuntimeService/DeleteWorkspace',
+            codeaudit__common__pb2.DeleteWorkspaceRequest.SerializeToString,
+            codeaudit__common__pb2.DeleteWorkspaceResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RunGraphTask(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.RuntimeService/RunGraphTask',
+            codeaudit__common__pb2.RunGraphTaskRequest.SerializeToString,
+            codeaudit__common__pb2.RunGraphTaskResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def InjectGraphNodeMessage(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.RuntimeService/InjectGraphNodeMessage',
+            codeaudit__common__pb2.InjectGraphNodeMessageRequest.SerializeToString,
+            codeaudit__common__pb2.InjectGraphNodeMessageResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReopenGraphNode(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.RuntimeService/ReopenGraphNode',
+            codeaudit__common__pb2.ReopenGraphNodeRequest.SerializeToString,
+            codeaudit__common__pb2.ReopenGraphNodeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ClaimGraphNode(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.RuntimeService/ClaimGraphNode',
+            codeaudit__common__pb2.ClaimGraphNodeRequest.SerializeToString,
+            codeaudit__common__pb2.ClaimGraphNodeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReleaseGraphNode(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/codeaudit.common.v1.RuntimeService/ReleaseGraphNode',
+            codeaudit__common__pb2.ReleaseGraphNodeRequest.SerializeToString,
+            codeaudit__common__pb2.ReleaseGraphNodeResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -3845,7 +4779,7 @@ class DSHRuntimeService:
 
 class CodeAnalysisServiceStub:
     """------------------------------------------------------------
-    CodeAnalysisService（dsh-runtime-service 部署，内嵌模块）
+    CodeAnalysisService（runtime-service 部署，内嵌模块）
     ExtractFeatures 已删除（合并入 AnalyzeCode，架构简化决策）
     ------------------------------------------------------------
     """
@@ -3885,7 +4819,7 @@ class CodeAnalysisServiceStub:
 
 class CodeAnalysisServiceServicer:
     """------------------------------------------------------------
-    CodeAnalysisService（dsh-runtime-service 部署，内嵌模块）
+    CodeAnalysisService（runtime-service 部署，内嵌模块）
     ExtractFeatures 已删除（合并入 AnalyzeCode，架构简化决策）
     ------------------------------------------------------------
     """
@@ -3958,7 +4892,7 @@ def add_CodeAnalysisServiceServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class CodeAnalysisService:
     """------------------------------------------------------------
-    CodeAnalysisService（dsh-runtime-service 部署，内嵌模块）
+    CodeAnalysisService（runtime-service 部署，内嵌模块）
     ExtractFeatures 已删除（合并入 AnalyzeCode，架构简化决策）
     ------------------------------------------------------------
     """
@@ -4103,7 +5037,7 @@ class SASTAdapterServiceStub:
     """ADR-175（2026-09-01 人类裁决）：ai-inference-service 删除（九服务→八服务）——
     LLM 语义分析自 ADR-140 起走沙箱内 DSH；RuleScan 兜底内嵌 dsh-runtime（显式降级标注）
     ADR-197（2026-09-04 人类裁决）：knowledge-service 删除（八服务→七服务）——
-    KnowledgeGraphService/RAGRetrievalService 服务与全部消息、DSHRuntimeService 的 Skills 三 RPC
+    KnowledgeGraphService/RAGRetrievalService 服务与全部消息、RuntimeService 的 Skills 三 RPC
     一并移除；Neo4j/Milvus 后端从未实接（ADR-135 恒降级/哈希伪嵌入），Skills 存储随服务删除
     ------------------------------------------------------------
 
@@ -4160,7 +5094,7 @@ class SASTAdapterServiceServicer:
     """ADR-175（2026-09-01 人类裁决）：ai-inference-service 删除（九服务→八服务）——
     LLM 语义分析自 ADR-140 起走沙箱内 DSH；RuleScan 兜底内嵌 dsh-runtime（显式降级标注）
     ADR-197（2026-09-04 人类裁决）：knowledge-service 删除（八服务→七服务）——
-    KnowledgeGraphService/RAGRetrievalService 服务与全部消息、DSHRuntimeService 的 Skills 三 RPC
+    KnowledgeGraphService/RAGRetrievalService 服务与全部消息、RuntimeService 的 Skills 三 RPC
     一并移除；Neo4j/Milvus 后端从未实接（ADR-135 恒降级/哈希伪嵌入），Skills 存储随服务删除
     ------------------------------------------------------------
 
@@ -4256,7 +5190,7 @@ class SASTAdapterService:
     """ADR-175（2026-09-01 人类裁决）：ai-inference-service 删除（九服务→八服务）——
     LLM 语义分析自 ADR-140 起走沙箱内 DSH；RuleScan 兜底内嵌 dsh-runtime（显式降级标注）
     ADR-197（2026-09-04 人类裁决）：knowledge-service 删除（八服务→七服务）——
-    KnowledgeGraphService/RAGRetrievalService 服务与全部消息、DSHRuntimeService 的 Skills 三 RPC
+    KnowledgeGraphService/RAGRetrievalService 服务与全部消息、RuntimeService 的 Skills 三 RPC
     一并移除；Neo4j/Milvus 后端从未实接（ADR-135 恒降级/哈希伪嵌入），Skills 存储随服务删除
     ------------------------------------------------------------
 

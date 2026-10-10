@@ -1,6 +1,6 @@
 # CodeAudit VS Code 插件（codeaudit-vscode）
 
-CodeAudit 代码审计平台的 VS Code 原生扩展（伞仓子仓 `codeaudit/vscode-plugin`）：在编辑器内一键扫描工作区、实时跟踪任务进度 / 任务日志 / AI 交互上下文、以 Problems + 侧栏树展示漏洞结果，并对带 AI 修复建议的漏洞一键应用补丁——落盘前自动 checkpoint，随时可按发现回滚。
+CodeAudit 代码审计平台的 VS Code 原生扩展（主仓库子仓 `codeaudit/vscode-plugin`）：在编辑器内一键扫描工作区、实时跟踪任务进度 / 任务日志 / AI 交互上下文、以 Problems + 侧栏树展示漏洞结果，并对带 AI 修复建议的漏洞一键应用补丁——落盘前自动 checkpoint，随时可按发现回滚。
 
 - 版本 `0.1.0`，私有项目（`private` + `UNLICENSED`），发布者 `codeaudit`
 - 运行环境：VS Code `^1.94.0`
@@ -14,7 +14,7 @@ CodeAudit 代码审计平台的 VS Code 原生扩展（伞仓子仓 `codeaudit/v
 | 登录 | 用户名/密码换 JWT；access/refresh 存 VS Code SecretStorage；401 单飞刷新（并发请求共享一次刷新）；429 按 `retry_after` 退避（5~60s 钳位） |
 | 项目绑定 | QuickPick 选择平台项目，`project_id` 写入工作区 `.vscode/settings.json`；绑定成功且空闲时自动同步该项目最近完成任务的发现（无完成任务/失败静默） |
 | 一键扫描 | `findFiles` 收集（默认 2 万文件上限）→ 防空包阈值检查 → adm-zip 打包 → 上传 → 建任务 → 启动 → 实时跟踪；同一时刻只允许一个扫描（防重复消耗平台沙箱） |
-| 增量扫描（ADR-225） | 项目有已完成任务时询问「增量/全量」；git 工作区自动采集版本锚点（commit/branch/dirty/origin，vscode.git 内置扩展，非 git 自动退化）、无变更预检、变更预告；增量任务完成显示「变更 N · 删除 D · 继承 M · 新发现 K」与降级原因，继承项在结果树带「继承」角标。基线/对比由平台服务端权威计算（diff_hint 仅审计提示） |
+| 增量扫描 | 项目有已完成任务时询问「增量/全量」；git 工作区自动采集版本锚点（commit/branch/dirty/origin，vscode.git 内置扩展，非 git 自动退化）、无变更预检、变更预告；增量任务完成显示「变更 N · 删除 D · 继承 M · 新发现 K」与降级原因，继承项在结果树带「继承」角标。基线/对比由平台服务端权威计算（diff_hint 仅审计提示） |
 | 任务跟踪 | WS 实时推送 + 断线 5s 重连（带游标续订）+ 10s 快照轮询兜底；支持暂停/恢复/取消 |
 | 实时视图 | 底部面板「AI 交互上下文」webview：任务态头 + 任务日志滚动窗 + AI 正文流式区；postMessage 增量更新，不整页重载，贴底才跟随 |
 | 结果展示 | 行内波浪线 + Problems 面板（source=CodeAudit）；侧栏树按文件分组、组内严重级降序；点击漏洞跳转代码位置并切换出「漏洞详情」视图 |
@@ -40,7 +40,7 @@ CodeAudit 代码审计平台的 VS Code 原生扩展（伞仓子仓 `codeaudit/v
 - 活动栏容器 `codeaudit`：「扫描结果」树、「任务进度」树、「漏洞详情」webview（后两者按 `codeaudit.findingDetail` 上下文互斥切换）
 - 底部面板容器 `codeaudit-panel`：「AI 交互上下文」webview（不占编辑器空间）
 
-**命令清单**（20 个，与 `package.json` contributes 一致）：
+**命令清单**（与 `package.json` contributes 同源，个数以当前定义为准）：
 
 | 命令 | 标题 | 备注 |
 |---|---|---|
@@ -135,7 +135,7 @@ DTO 与平台 proto 对齐（`UnifiedFinding`/`ScanTask`/`TaskProgress` 等 snak
 npm install
 npm run compile   # tsc 编译到 out/
 npm run watch     # 增量编译
-npm test          # tsc 编译测试 + mocha 跑全部测试（当前 262 个全过：单测+胶水层行为测试+结构守卫）
+npm test          # tsc 编译测试 + mocha 跑全部测试（单测+胶水层行为测试+结构守卫；用例数以当次输出为准）
 npm run package   # vsce 打包 vsix + verify-vsix 关卡
 ```
 
@@ -143,6 +143,24 @@ npm run package   # vsce 打包 vsix + verify-vsix 关卡
 - 真实链路脚本（需平台网关在线，默认 `http://localhost:8080`）：`node test/smoke.js`（登录→上传→建任务→轮询→拉发现）、`node test/fixflow.e2e.js`（多风险同文件顺序修复→逐字节回滚→再应用）；`node test/mockGateway.js` 可在无平台时驱动修复 UI 全流程。
 - **打包关卡**：`scripts/verify-vsix.js` 校验 VSIX 内必须含 `node_modules/adm-zip`（workspaceZip 顶层 require，缺它扩展激活即崩、全部命令注册不上——历史上真实发生过两次）。`.vscodeignore` 已放行 adm-zip，勿用 `--no-dependencies` 打包。
 - Node ≥ 20（实测 22）：REST 客户端与测试依赖全局 `fetch`/`FormData`/`Blob`。
+
+## 部署=编译出 VSIX（全文见 `docs/deployment.md`）
+
+本仓是纯客户端产物编译器（TS 源码 → VSIX），在平台栈内**零运行态**——它不是微服务，
+也不做成微服务：VS Code 扩展的分发模型由生态既定
+（VSIX 侧载 / marketplace），为静态工件自建分发服务是用运行时负债换零产品能力。
+因此本仓的完整"编译部署流程"就是一条构建链：
+
+```bash
+npm ci && npm test && npm run package   # → codeaudit-vscode-<版本>.vsix（gitignored 构建产物）
+```
+
+- **可复现**：`@vscode/vsce` 落 devDependencies（版本随锁文件钉死，`npx` 解析本地
+  安装，构建零外网）——与 manager/web/engine 三仓"一仓一镜像"的微服务化攻坚对应，
+  本仓是"一仓一工件"：构建定义唯一（`npm run package` 一条链），不进任何栈
+  compose，不占端口/网段/镜像名。
+- **交付**：VSIX 手工 sideload（`code --install-extension codeaudit-vscode-<版本>.vsix`）；
+  如未来需随发布树分发，属 release 打包层决策，不预建。
 
 ### 接口契约文档与防回归机制（改代码前必读）
 
@@ -152,6 +170,7 @@ npm run package   # vsce 打包 vsix + verify-vsix 关卡
 | `docs/internal-interfaces.md` | 内部接口契约：各纯模块导出符号的预期输入/输出/错误语义/不变量，含 extension 胶水层内部函数 |
 | `docs/data-flows.md` | 其他数据流转：持久化资产、状态机、事件/定时器拓扑、端到端链路走查、宿主进程交互、离线工具链 |
 | `docs/regressions.md` | **防回归机制与缺陷档案**：每类历史 bug 的根因与机器守卫位置；修 bug/改接口的纪律（修 bug 必附回归锁测试+档案行；改契约先改文档再改测试后改实现） |
+| `docs/deployment.md` | 部署设计：部署=编译出 VSIX（非微服务）的第一性原理分析/构建链可复现性/否决方案档案 |
 
 `test/guards.test.ts` 是结构守卫：package.json 命令/配置/视图声明 ⇄ extension.ts 注册互为全集、src 每个模块必须被测试引用——防止"命令 not found / 死配置键 / 测试盲区"类无声漂移。
 

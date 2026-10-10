@@ -1,6 +1,6 @@
 // sourcefile_rehydrate.go — 任务源码树⑤流：从 storage 树 tar 重物化（ADR-225 D6/F14）。
 //
-// 依据: 伞仓 docs/designs/incremental-scan.md §4.10——卷树被 GC 驱逐后 source-file
+// 依据: 主仓库 docs/designs/incremental-scan.md §4.10——卷树被 GC 驱逐后 source-file
 // 仍须 200：按 task.config.tree_tar_file_id（task-service 树 tar 入桶锚点）下载
 // trees/<task_id>.tar.gz 解包到 gateway 本地缓存（字节上限 + LRU），root_via 如实
 // 标注 "tree_tar_rehydrated"。锚点缺失/下载/解包失败 → 诚实维持原 404 口径。
@@ -69,12 +69,12 @@ func (t *Transcoder) rehydrateFromTreeTar(taskID, fileID string) (string, string
 	}
 	dctx, cancel := context.WithTimeout(context.Background(), rehydrateDialTimeout)
 	defer cancel()
-	// R70（2026-09-12 待办收尾）：并发 miss 双下载互拆——解包先入临时目录，成功后
+	// R70：并发 miss 双下载互拆——解包先入临时目录，成功后
 	// rename 原子就位。R79: 临时目录加唯一后缀——共享 `<id>.tmp` 在并发 miss 下，
 	// 入口/收尾的 RemoveAll 会互拆对方目录，可产出"缺文件但 stat 存在"的投毒缓存树
 	// （R70 tmp-rename 原子化的并发盲区）；唯一命名后"只清自己的 tmp"才真正成立。
 	tmpDir := taskDir + ".tmp-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	t.sweepStaleRehydrateTmp(taskID, taskDir) // R86: 孤儿清扫须先确认任务已终态，防止清掉在途业务残留
+	t.sweepStaleRehydrateTmp(taskID, taskDir) // R86（评审）: 孤儿清扫须先确认任务已终态，防止清掉在途业务残留
 	if err := downloadAndUnpackTree(dctx, t.storageConn, fileID, filepath.Join(tmpDir, "unpacked")); err != nil {
 		_ = os.RemoveAll(tmpDir) // 半成品不留（只清自己的 tmp）
 		return "", "", err
@@ -90,7 +90,6 @@ func (t *Transcoder) rehydrateFromTreeTar(taskID, fileID string) (string, string
 	return resolveProjectRoot(unpacked), "tree_tar_rehydrated", nil
 }
 
-
 // rehydrateTmpStaleThreshold — R85: 崩溃孤儿 .tmp-* 清扫阈值（复审定值：远大于正常
 // 解包时长、远小于 LRU 容量污染周期；无 07 基线，取舍见 ADR-230）。
 const rehydrateTmpStaleThreshold = time.Hour
@@ -99,7 +98,7 @@ const rehydrateTmpStaleThreshold = time.Hour
 // 的顺手清理，不得显著加路；定值无 07 基线，取舍见 ADR-230）。
 const rehydrateTmpStatusTimeout = 2 * time.Second
 
-// sweepStaleRehydrateTmp — R85 引入、R86收紧守卫：清扫同任务超阈值未动的
+// sweepStaleRehydrateTmp — R85 引入、R86（评审）收紧守卫：清扫同任务超阈值未动的
 // .tmp-* 孤儿须同时满足——①任务已终态（GetScanTask 查证；在途任务的残留可能属
 // 正常业务，且查不到状态/服务不可达时一律保守跳过）②目录 mtime 超阈值（终态任务
 // 仍可能恰有在途 miss 的新鲜 tmp，时长 guard 防误删并发在途目录）。
@@ -301,7 +300,7 @@ func (t *Transcoder) enforceRehydrateLRU() {
 		if total <= max*9/10 {
 			break
 		}
-		// R70（2026-09-12 待办收尾）：驱逐先改名隔离再删（对齐 task-service GC 的
+		// R70：驱逐先改名隔离再删（对齐 task-service GC 的
 		// quarantine 模式）——正在读缓存的 source-file 请求文件句柄不断流（POSIX），
 		// 且并发方不会命中半删除态目录
 		quarantined := it.dir + ".gc-" + strconv.FormatInt(time.Now().UnixNano(), 10)

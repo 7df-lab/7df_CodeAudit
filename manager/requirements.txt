@@ -1,0 +1,9 @@
+# 服务运行时依赖（host 验证 / deploy/Dockerfile.manager 镜像共用此清单——
+
+fastapi
+uvicorn
+grpcio
+grpcio-status
+protobuf
+httpx
+cloudpickle

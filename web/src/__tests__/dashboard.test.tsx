@@ -1,4 +1,4 @@
-// 首页总览（2026-09-13）：态势聚合的纯客户端渲染——统计带取数口径与
+// 首页总览：态势聚合的纯客户端渲染——统计带取数口径与
 // 任务页统计一致（近 200 条一次性查询）；状态分布零计数分组不渲染；空数据有行动出口。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -27,7 +27,7 @@ const routes: Record<string, unknown> = {
   'GET /v1/reports': () => ({ reports, pagination: { next_cursor: '', has_next: false, total: reports.length } }),
   'GET /v1/notifications': () => ({ notifications }),
 };
-useFakeGateway(routes);
+const gateway = useFakeGateway(routes);
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
@@ -83,5 +83,44 @@ describe('DashboardPage（总览）', () => {
     tasks = []; reports = []; notifications = [];
     renderPage();
     expect(await screen.findByText('创建第一个任务')).toBeTruthy();
+  });
+
+  // 2026-10-08 统计冒充总数修复的页面级回归锁：任务域 listAllTasks 翻全量——统计带
+  // 六项自此是全集口径（此前一次请求 200 被服务端钳 100，页长冒充总数、状态分布
+  // 只描述最近 100 条；<host-id> 实录 569 显示 100）
+  it('多页任务：翻页聚合全集统计（总数/进行中/已完成/失败跨页计数），第二页请求 cursor=100', async () => {
+    const saved = routes['GET /v1/tasks'];
+    const page1 = [
+      TASK({ task_id: 'gw-t00000a1f', status: 'TASK_STATUS_COMPLETED' }),
+      TASK({ task_id: 'gw-t00000b2e', status: 'TASK_STATUS_COMPLETED' }),
+    ];
+    const page2 = [
+      TASK({ task_id: 'gw-t00000c3d', status: 'TASK_STATUS_RUNNING' }),
+      TASK({ task_id: 'gw-t00000d4e', status: 'TASK_STATUS_RUNNING' }),
+      TASK({ task_id: 'gw-t00000e5f', status: 'TASK_STATUS_FAILED' }),
+    ];
+    routes['GET /v1/tasks'] = (ctx: { query: URLSearchParams }) => {
+      const { cursor } = JSON.parse(ctx.query.get('pagination') ?? '{"cursor":"0"}');
+      if (cursor === '0') return { tasks: page1, pagination: { next_cursor: '100', has_next: true, total: 5 } };
+      return { tasks: page2 }; // 末页真实形态：无 pagination 键
+    };
+    try {
+      renderPage();
+      await waitFor(() => expect(screen.getByText('#000c3d')).toBeTruthy()); // 第二页任务落位=翻页完成
+      const statValue = (title: string) => {
+        const el = [...document.querySelectorAll('.ant-statistic')].find(
+          (n) => n.querySelector('.ant-statistic-title')?.textContent === title,
+        );
+        return el?.querySelector('.ant-statistic-content')?.textContent ?? '';
+      };
+      expect(statValue('任务总数')).toBe('5'); // 全集，不再是被钳的页长
+      expect(statValue('进行中')).toBe('2'); // 跨页计数（第二页的 2 条 RUNNING）
+      expect(statValue('已完成')).toBe('2'); // 第一页的 2 条
+      expect(statValue('失败')).toBe('1');
+      const hits = gateway.requests.filter((r) => r.url === '/v1/tasks');
+      expect(hits.some((r) => r.query.includes(encodeURIComponent('"cursor":"100"')))).toBe(true);
+    } finally {
+      routes['GET /v1/tasks'] = saved;
+    }
   });
 });

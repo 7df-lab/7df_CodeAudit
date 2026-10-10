@@ -1,160 +1,122 @@
-// 项目列表（14号 §3.2 P0）：GET /v1/projects；创建→POST（网关生成幂等键）
-// ADR-203（人类 2026-09-05 裁决：保留弹窗上传入口并改造，推翻方案b移除）：
-// 上传压缩包经 gateway 零落盘直传 storage（ADR-200 通道，返回 file_id），file_id 存
-// 项目 config.upload_file_id；扫描任务启动时 task-service 从项目配置兜底解析拉包解包。
+// 项目列表（14号 §3.2 P0）：GET /v1/projects
 // 职责边界：项目=源码归属（上传包/仓库地址二选一），任务=扫描执行（config 留空，
 // 源码来源由项目解析；任务级 config.upload_file_id 保留为单次覆盖档，见 ADR-200/202）。
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button, Card, Form, Input, Modal, Select, Space, Table, Typography, Upload, message, type UploadFile } from 'antd';
-import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { InboxOutlined } from '@ant-design/icons';
-import {
-  createProject,
-  createTask,
-  getProjectConfig,
-  getProjects,
-  MAX_ARCHIVE_UPLOAD_BYTES,
-  updateProjectConfig,
-  uploadArchive,
-} from '../api/client';
-import { autoRunTask } from '../tasks/stateMachine';
-import { DEPRECATED_SCAN_MODES, SCAN_MODE, zh } from '../dict';
+// 创建弹窗自本页抽出为 ProjectCreateModal 共享件（流程统一批 2026-10-07）：项目页按钮
+// 直开 + /projects/new 薄壳页共用，与任务侧 TaskNewModal 同构；?new=1 旧深链改为
+// 兼容重定向至 /projects/new（此前就地开弹窗+剥参，与任务侧两套范式）。
+import type { TableProps } from 'antd';
+import { useQuery } from '@tanstack/react-query';
+import { Button, Card, Table, Typography } from 'antd';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { getProjectConfig, getProjects } from '../api/client';
+import { useCanWrite } from '../auth/session';
+import { SCAN_MODE, zh } from '../dict';
 import PageHeader from '../components/PageHeader';
+import { ProjectCreateModal } from '../components/ProjectCreateModal';
 import { EmptyState, ListSkeleton } from '../components/states';
-import { MODE_SPECS } from './tasks/TaskNewPage';
 import type { Project } from '../api/types';
 import { usePageTitle } from '../hooks/usePageTitle';
+import { NO_SOURCE_LABEL, projectSourceShape, UNNAMED_ARCHIVE_LABEL } from '../utils/projectSource';
 
 // 仓库列的上传件名单元格（2026-09-09 用户指令"项目页应显示上传压缩包的名称"）：
 // 原始文件名不进 storage 对象键（uploads/<id><ext>，网关只拿它判扩展名），落项目
-// config.upload_file_name（创建时写入）；存量项目无此键 → 如实回落"上传压缩包"。
+// config.upload_file_name（web 创建/换源码路径写入）。
+// 2026-10-08 报障修复（口径收口 utils/projectSource.ts）：①无源码项目此前被无条件
+// 假称"上传压缩包"——config 已决且无上传件 → 如实"未配置源码"；②无名上传（API/e2e
+// 路径不写名，服务端无档可恢复）→ 统一短文案，不再冒充也没有冗长注解。
 function UploadNameCell({ projectId }: { projectId: string }) {
-  const { data } = useQuery({
+  const { data, isSuccess, isError } = useQuery({
     queryKey: ['project-config', projectId],
     queryFn: () => getProjectConfig(projectId),
     staleTime: 60_000,
   });
-  const name = data?.config?.upload_file_name;
+  const shape = projectSourceShape(null, data?.config);
+  if (isSuccess && shape.kind === 'none') {
+    return <Typography.Text type="secondary">{NO_SOURCE_LABEL}</Typography.Text>;
+  }
+  if (isError) {
+    return <Typography.Text type="secondary">源码状态未知</Typography.Text>;
+  }
   return (
-    <Typography.Text title={data?.config?.upload_file_id}>
-      {name || '上传压缩包'}
+    <Typography.Text title={shape.fileId}>
+      {shape.kind === 'named-archive' ? shape.fileName
+        : shape.kind === 'unnamed-archive' ? UNNAMED_ARCHIVE_LABEL
+        : '…'}
     </Typography.Text>
   );
 }
 
 export default function ProjectsPage() {
   usePageTitle('项目');
-  const qc = useQueryClient();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
-  const [form] = Form.useForm();
-  // ADR-203: 弹窗上传态——受控 fileList（下一步/上一步往返不适用此页，但弹窗重开需清空）
-  // 与 uploadFileId 单一状态源；onRemove 同步清零，杜绝 ADR-202 在任务页修过的 file_id 残留。
-  const [fileList, setFileList] = useState<UploadFile[]>([]);
-  const [uploadFileId, setUploadFileId] = useState<string | null>(null);
-  // 2026-09-09 用户指令: 原始文件名随 file_id 一并落项目 config（列表/详情展示用）
-  const [uploadFileName, setUploadFileName] = useState<string>('');
-  const [uploading, setUploading] = useState(false);
+  // ?new=1 旧深链（总览"新建项目"入口曾用）→ 兼容重定向 /projects/new（保书签/外链；
+  // 流程统一批 2026-10-07 前为就地开弹窗+剥参）。副作用在 useEffect（render 期
+  // navigate/setState 是路由期写副作用——StrictMode 双调告警，2026-09-21 教训）。
+  const [searchParams] = useSearchParams();
+  const newParam = searchParams.get('new');
+  useEffect(() => {
+    if (newParam === '1') navigate('/projects/new', { replace: true });
+  }, [newParam, navigate]);
   // ADR-164: 服务端游标翻页（offset 游标+total, 契约 L1188-1189；DESC 排序保证新项目首页顶部）
+  // ADR-256: 服务端排序/筛选（sorter/filter 变化即回第一页；排序键白名单 name|created_at，
+  // 筛选白名单 default_scan_mode EQ——与任务页同款服务端语义，量级增长不受前端约束）
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 10;
+  const [sorter, setSorter] = useState<{ field: string; order: 'SORT_ORDER_ASC' | 'SORT_ORDER_DESC' } | null>(null);
+  const [modeFilter, setModeFilter] = useState<string | null>(null);
+  useEffect(() => { setPage(1); }, [sorter, modeFilter]);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['projects', page],
-    queryFn: () => getProjects({ page_size: PAGE_SIZE, cursor: String((page - 1) * PAGE_SIZE) }),
+    queryKey: ['projects', page, sorter, modeFilter],
+    queryFn: () => getProjects({
+      pagination: { page_size: PAGE_SIZE, cursor: String((page - 1) * PAGE_SIZE) },
+      ...(modeFilter ? { filter: { field: 'default_scan_mode', operator: 'FILTER_OPERATOR_EQ', value: modeFilter } } : {}),
+      ...(sorter ?? {}),
+    }),
   });
   const total = data?.pagination?.total ?? 0;
   const rows = data?.projects ?? [];
 
-  // （审计修复）：弹窗收尾清空（确定/取消共用）——此前 onCancel 只 setOpen(false)，
-  // 上传态残留：取消后再开弹窗新建项目，旧 file_id 会随 config 写入新项目（源码指向错包）。
-  // 取消不触发 invalidate（无服务端变更，列表无需重拉）。
-  const resetModalState = () => {
-    form.resetFields();
-    setFileList([]);
-    setUploadFileId(null);
-    setUploadFileName('');
-  };
-  const finishModal = () => {
-    setOpen(false);
-    resetModalState();
-    qc.invalidateQueries({ queryKey: ['projects'] });
+  // 列头排序/筛选 → 服务端参数（受控：sortOrder/filteredValue 由 state 派生）
+  const onTableChange = (_pag: unknown, filters: Record<string, unknown>, sort: unknown) => {
+    const srt = (Array.isArray(sort) ? sort[0] : sort) as { field?: string; order?: string } | undefined;
+    const next = srt?.order
+      ? { field: String(srt.field), order: srt.order === 'ascend' ? ('SORT_ORDER_ASC' as const) : ('SORT_ORDER_DESC' as const) }
+      : null;
+    // 值等不换引用（防 [sorter] 重置效应在纯翻页时把页码打回首页）
+    setSorter((prev) => (prev?.field === next?.field && prev?.order === next?.order ? prev : next));
+    const mode = (filters?.mode as (string | number | boolean)[] | null | undefined)?.[0];
+    setModeFilter(mode != null ? String(mode) : null);
   };
 
-  const create = useMutation({
-    mutationFn: async (values: { name: string; repo_url?: string; default_branch: string; default_scan_mode: string }) => {
-      // 上传与仓库二选一：都缺省在此拦截（repo_url 不设 antd 必填，避免"传了包还被逼填地址"）
-      if (!uploadFileId && !values.repo_url?.trim()) {
-        throw new Error('请上传代码压缩包或填写仓库地址（二选一）');
-      }
-      const resp = await createProject({
-        name: values.name,
-        ...(values.repo_url?.trim() ? { repo_url: values.repo_url.trim() } : {}),
-        default_branch: values.default_branch,
-        default_scan_mode: values.default_scan_mode,
-      });
-      const pid = resp.project_id;
-      // ADR-203: 上传件 file_id 落项目 config（ADR-200 端点返回 file_id，不再有解包目录）；
-      // 2026-09-09 起原始文件名一并落 config.upload_file_name（项目页/详情展示，storage 对象键不含原名）
-      if (pid && uploadFileId) {
-        await updateProjectConfig(pid, {
-          upload_file_id: uploadFileId,
-          ...(uploadFileName ? { upload_file_name: uploadFileName } : {}),
-        });
-      }
-      return { pid, repoUrl: values.repo_url?.trim() ?? '' };
+  const columns: TableProps<Project>['columns'] = [
+    {
+      title: '项目', dataIndex: 'name',
+      sorter: true,
+      sortOrder: sorter?.field === 'name' ? (sorter.order === 'SORT_ORDER_ASC' ? 'ascend' : 'descend') : undefined,
+      render: (_: unknown, rec: Project) => <Link to={`/projects/${rec.project_id}`}>{rec.name}</Link>,
     },
-    onSuccess: async ({ pid, repoUrl }) => {
-      message.success('项目已创建');
-      // ADR-162/163: 创建后按默认模式自动创建扫描任务并自动启动（审批流废除，2026-09-01）。
-      // config 留空——源码来源由 task-service 启动时解析（项目 upload_file_id / project_path /
-      // repo_url 三档兜底链，ADR-203），前端不再拼装任务级源码字段。
-      if (pid && (uploadFileId || repoUrl)) {
-        const mode = form.getFieldValue('default_scan_mode') as string;
-        try {
-          const t = await createTask({
-            project_id: pid,
-            scan_mode: mode,
-            sast_tools: MODE_SPECS[mode]?.needsSastTools ? ['opengrep'] : [], // B5-P1-3：单一事实源=MODE_SPECS（旧 NEEDS_TOOLS 集合漏模式D→任务必 FAILED）
-            config: {},
-          });
-          message.success(uploadFileId ? '已自动创建扫描任务（启动时从存储拉回代码包），正在自动启动…' : '已自动创建扫描任务（启动时自动拉取仓库），正在自动启动…');
-          finishModal();
-          // 失效真实存在的任务缓存 key（['tasks-infinite'] 是无限滚动时代遗物，失效是 no-op）
-          qc.invalidateQueries({ queryKey: ['tasks-page'] });
-          qc.invalidateQueries({ queryKey: ['project-tasks'] });
-          navigate(`/tasks/${t.task_id}`);
-          // 创建→启动直达
-          autoRunTask(t.task_id).then(() => {
-            message.success('扫描任务已自动启动');
-            qc.invalidateQueries({ queryKey: ['tasks-page'] });
-          }).catch((e) => {
-            message.warning(`任务已创建但自动启动失败（${(e as Error).message}），可在任务页手动续走`);
-          });
-          return;
-        } catch {
-          message.warning('任务自动创建失败——请到"新建任务"手动创建（项目已就绪）');
-        }
-      }
-      finishModal();
-    },
-    onError: (e) => message.error((e as Error).message || '创建失败（详见响应）'),
-  });
-
-  const columns = [
-    { title: '项目', dataIndex: 'name', render: (_: unknown, rec: Project) => <Link to={`/projects/${rec.project_id}`}>{rec.name}</Link> },
     { title: 'ID', dataIndex: 'project_id' },
     // 2026-09-09 用户指令: 上传型项目显示压缩包原始文件名（不再千篇一律"（上传压缩包）"）
     { title: '源码', dataIndex: 'repo_url', render: (v: string, rec: Project) => v || (rec.project_id ? <UploadNameCell projectId={rec.project_id} /> : '—') },
     { title: '默认分支', dataIndex: 'default_branch' },
-    { title: '默认模式', dataIndex: 'default_scan_mode', render: (m: string) => zh(SCAN_MODE, m) },
+    {
+      title: '默认模式', dataIndex: 'default_scan_mode',
+      sorter: true,
+      sortOrder: sorter?.field === 'default_scan_mode' ? (sorter.order === 'SORT_ORDER_ASC' ? 'ascend' : 'descend') : undefined,
+      filters: Object.entries(SCAN_MODE).map(([value, label]) => ({ value, text: String(label) })),
+      filteredValue: modeFilter ? [modeFilter] : null,
+      render: (m: string) => zh(SCAN_MODE, m),
+    },
   ];
 
   return (
     <div>
-      {/* ADR-164: 工具栏布局与任务页一致（标题左/新建右）； PageHeader 统一 */}
-      <PageHeader title="项目" extra={<Button type="primary" onClick={() => setOpen(true)}>新建项目</Button>} />
+      {/* ADR-164: 工具栏布局与任务页一致（标题左/新建右）；设计整改 P1: PageHeader 统一 */}
+      <PageHeader title="项目" extra={useCanWrite()
+        ? <Button type="primary" onClick={() => setOpen(true)}>新建项目</Button> : undefined} />
       {isLoading && rows.length === 0 ? (
         <Card><ListSkeleton /></Card>
       ) : (
@@ -172,79 +134,15 @@ export default function ProjectsPage() {
             onChange: (p) => setPage(p),
             showSizeChanger: false,
           }}
-          locale={{ emptyText: <EmptyState description={error ? '项目列表加载失败（服务不可用）' : '暂无项目，点击右上角"新建项目"创建'} /> }}
+          onChange={onTableChange}
+          locale={{ emptyText: <EmptyState description={error
+            ? ((error as { response?: { status?: number } })?.response?.status === 403
+                ? '无权限查看项目列表（当前角色受限）' // ADR-257: 403≠服务不可用，不再误导排障方向
+                : '项目列表加载失败（服务不可用）')
+            : '暂无项目，点击右上角"新建项目"创建'} /> }}
         />
       )}
-      <Modal
-        title="新建项目"
-        open={open}
-        onCancel={() => { setOpen(false); resetModalState(); }}
-        onOk={() => form.submit()}
-        confirmLoading={create.isPending}
-      >
-        <Form form={form} layout="vertical" onFinish={(v) => create.mutate(v)}>
-          <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item
-            name="repo_url"
-            label="仓库地址（与上传压缩包二选一）"
-            extra={uploadFileId ? '已上传压缩包——此栏可留空，项目以压缩包为源码' : '不填则必须上传代码压缩包'}
-          >
-            <Input placeholder="https://git.example.com/team/repo.git" />
-          </Form.Item>
-          {/* ADR-203: 零落盘直传——multipart 经 gateway 流式转发 storage（MinIO），
-              不再有"解包目录/解包文件数"概念（旧 res.dir/res.files 契约已死，勿复活） */}
-          <Form.Item label="代码压缩包（.zip/.tar.gz，≤100MB）">
-            <Upload.Dragger
-              accept=".zip,.tgz,.tar.gz"
-              maxCount={1}
-              fileList={fileList}
-              disabled={uploading}
-              beforeUpload={async (file) => {
-                // (P3-i)：扩展名预检——accept 只约束文件选择器，拖拽可绕过；服务端 400 详情
-                // 此前也不透出（uploadArchive 未提取 {error}），前端拦截给出即时归因
-                if (!/\.(zip|tgz|tar\.gz)$/i.test(file.name) || file.size > MAX_ARCHIVE_UPLOAD_BYTES) {
-                  message.error('上传失败（仅支持 zip/tar.gz，≤100MB）');
-                  return Upload.LIST_IGNORE; // 含 100MB 本地预检：超限不发起请求（nginx 413 兜底）
-                }
-                setUploading(true);
-                try {
-                  const res = await uploadArchive(file);
-                  setUploadFileId(res.file_id);
-                  setUploadFileName(file.name);
-                  setFileList([{ uid: res.file_id, name: file.name, status: 'done' }]);
-                  message.success('上传成功——项目将以该压缩包为源码');
-                } catch (e) {
-                  message.error(`上传失败：${(e as Error).message}`);
-                } finally {
-                  setUploading(false);
-                }
-                return Upload.LIST_IGNORE; // 受控 fileList，禁 antd 自行追加
-              }}
-              onRemove={() => {
-                setFileList([]);
-                setUploadFileId(null);
-                setUploadFileName('');
-              }}
-            >
-              <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-              <p className="ant-upload-text">点击或拖拽上传压缩包</p>
-              <p className="ant-upload-hint">扫描启动时自动拉取并解包，无需手动处理</p>
-            </Upload.Dragger>
-          </Form.Item>
-          <Form.Item name="default_branch" label="默认分支" initialValue="main" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="default_scan_mode" label="默认扫描模式" initialValue="SCAN_MODE_PARALLEL">
-            <Select
-              options={Object.entries(SCAN_MODE)
-                .filter(([value]) => !DEPRECATED_SCAN_MODES.has(value) && value !== 'SCAN_MODE_UNSPECIFIED') // ADR-182 弃用 + R: UNSPECIFIED 不进新建入口
-                .map(([value, label]) => ({ value, label }))}
-            />
-          </Form.Item>
-        </Form>
-      </Modal>
+      <ProjectCreateModal open={open} onClose={() => setOpen(false)} />
     </div>
   );
 }

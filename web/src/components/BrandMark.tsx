@@ -1,4 +1,4 @@
-// 品牌标识（2026-09-13）：靛墨圆角方块 + 等宽白 </>（代码审计的载体）+
+// 品牌标识：靛墨圆角方块 + 等宽白 </>（代码审计的载体）+
 // 右上角绛红 severity 点（产品最重要的语义色——发现"严重"级）。用于 Header 品牌区/
 // 认证页品牌块；favicon 为同构图（public/favicon.svg）。
 export default function BrandMark({ size = 32 }: { size?: number }) {

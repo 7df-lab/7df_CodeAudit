@@ -34,7 +34,7 @@ func (s *ResultServiceImpl) InheritFindings(ctx context.Context, req *pb.Inherit
 	if req.GetBaselineTaskId() == req.GetNewTaskId() {
 		return nil, status.Errorf(codes.InvalidArgument, "baseline_task_id must differ from new_task_id")
 	}
-	// 排除清单规范化——与 task-service diff 产物同口径（伞仓设计 §9-1：changed/deleted
+	// 排除清单规范化——与 task-service diff 产物同口径（主仓库设计 §9-1：changed/deleted
 	// 与 findings.file_path 必须同口径比对；两侧 helper 语义逐行对齐，改则同改）
 	exclude := make(map[string]bool, len(req.GetExcludePaths()))
 	for _, p := range req.GetExcludePaths() {
@@ -47,7 +47,7 @@ func (s *ResultServiceImpl) InheritFindings(ctx context.Context, req *pb.Inherit
 	lastID := ""
 	seq := 0
 	for {
-		rows, next, err := s.repo.List(lastID, inheritPageSize, req.GetBaselineTaskId(), "")
+		rows, next, err := s.repo.List(lastID, inheritPageSize, req.GetBaselineTaskId(), "", "")
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "list baseline findings: %v", err)
 		}

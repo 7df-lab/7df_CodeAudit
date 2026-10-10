@@ -5,7 +5,7 @@
 //   - Same key + different body → return ALREADY_EXISTS(9)
 //   - Missing metadata → return INVALID_ARGUMENT(3)
 //
-// ADR-228（2026-09-12 幂等三套统一）：去重窗口 24h（03 §2 契约值——窗口外同键视同
+// ADR-228：去重窗口 24h（03 §2 契约值——窗口外同键视同
 // 新请求）+ FIFO 上限 10k（内存防护，与 storage-service 内存档同口径）。project-
 // service 为全内存存储（repo/memory.go），本表生命周期=服务生命周期——重启即丢是
 // 服务存储模型边界（与 task-service 实体 PG 兜底 / storage-service Redis TTL 的
@@ -31,8 +31,18 @@ type Result struct {
 	ResponseBytes []byte
 }
 
-// Store is a bounded, windowed, concurrency-safe map keyed by request_id.
-type Store struct {
+// Store — 幂等键面抽象（HA P1-a，ADR-250：接口化后内存/PG 双实现——多副本
+// 一致性要求键跨副本可见；语义契约=03 §2 三态不变）。
+type Store interface {
+	// Check — 新键返回 (nil, nil) 放行；窗口外同键视同新请求；同键同体回放缓存
+	// Result；同键异体返回 ErrAlreadyExists。
+	Check(requestID, bodyHash string) (*Result, error)
+	// Save — 缓存首次响应（供重放）。
+	Save(requestID, bodyHash string, result *Result)
+}
+
+// MemoryStore is a bounded, windowed, concurrency-safe map keyed by request_id.
+type MemoryStore struct {
 	mu      sync.RWMutex
 	entries map[string]entry
 	order   []string // FIFO 驱逐序（首次插入序）
@@ -46,8 +56,8 @@ type entry struct {
 }
 
 // New creates a new in-memory idempotency store.
-func New() *Store {
-	return &Store{
+func New() *MemoryStore {
+	return &MemoryStore{
 		entries: make(map[string]entry),
 		now:     time.Now,
 	}
@@ -65,7 +75,7 @@ func BodyHash(body []byte) string {
 //   - (cachedResult, nil)     if same key + same body (within window) → replay
 //   - (nil, ErrAlreadyExists) if same key + different body (within window) → conflict
 //   - (nil, nil)              if key is new or past the 24h window → caller should proceed
-func (s *Store) Check(requestID, bodyHash string) (*Result, error) {
+func (s *MemoryStore) Check(requestID, bodyHash string) (*Result, error) {
 	s.mu.RLock()
 	existing, ok := s.entries[requestID]
 	s.mu.RUnlock()
@@ -90,7 +100,7 @@ func (s *Store) Check(requestID, bodyHash string) (*Result, error) {
 
 // Save persists the result for a given request_id so future calls can replay.
 // Beyond maxEntries the oldest inserted key is dropped (FIFO, ADR-228).
-func (s *Store) Save(requestID, bodyHash string, result *Result) {
+func (s *MemoryStore) Save(requestID, bodyHash string, result *Result) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.entries[requestID]; !exists {
@@ -109,7 +119,7 @@ func (s *Store) Save(requestID, bodyHash string, result *Result) {
 }
 
 // deleteLocked — 移除键并同步 FIFO 序（调用方持写锁）。
-func (s *Store) deleteLocked(requestID string) {
+func (s *MemoryStore) deleteLocked(requestID string) {
 	delete(s.entries, requestID)
 	for i, id := range s.order {
 		if id == requestID {

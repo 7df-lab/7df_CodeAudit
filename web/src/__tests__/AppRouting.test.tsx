@@ -1,8 +1,8 @@
-// 路由与全局壳契约（docs/internal-interfaces.md §8 [I-80..I-84]）。
+// 路由与全局壳契约（docs/internal-interfaces.md §8 [I-80..I-84, I-101]）。
 // 此前 App.tsx 守卫链零直测——未登录跳转 / must_change_password 锁死 / RequireAdmin / 404 兜底
 // 都是用户可见行为（ADR-147/205 历史修复点），在此行为级锁定。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from '../App';
@@ -29,23 +29,35 @@ const routes: Record<string, unknown> = {
     ],
     pagination: { total: 2 },
   },
-  // 用例：任务详情快照（t-a 带 AI 片段与日志，t-b 全新干净流）
+  // B4-1 用例：任务详情快照（t-a 带 AI 片段与日志，t-b 全新干净流）
   'GET /v1/tasks/:taskId/snapshot': (ctx: { params: Record<string, string> }) => {
     if (ctx.params.taskId === 't-a') {
       return {
         task: { task_id: 't-a', project_id: 'p1', scan_mode: 'SCAN_MODE_PARALLEL', sast_tools: [], status: 'TASK_STATUS_RUNNING', stages: [], retry_count: 0 },
         progress: { task_id: 't-a', status: 'TASK_STATUS_RUNNING', overall_percent: 10, stages: [] },
         logs: { logs: [{ log_id: 'a-1', task_id: 't-a', ts_ms: 1756630000000, level: 'TASK_LOG_LEVEL_INFO', source: 'task', message: '任务A专属日志行' }] },
-        ai: { chunk: b64('任务A专属AI片段'), next_cursor: '20', complete: false, total_bytes: '20' },
+        ai: { chunk: b64('任务A专属AI片段'), next_cursor: '21', complete: false, total_bytes: '21' },
       };
     }
     return {
       task: { task_id: 't-b', project_id: 'p1', scan_mode: 'SCAN_MODE_PARALLEL', sast_tools: [], status: 'TASK_STATUS_RUNNING', stages: [], retry_count: 0 },
       progress: { task_id: 't-b', status: 'TASK_STATUS_RUNNING', overall_percent: 5, stages: [] },
       logs: { logs: [{ log_id: 'b-1', task_id: 't-b', ts_ms: 1756630005000, level: 'TASK_LOG_LEVEL_INFO', source: 'task', message: '任务B专属日志行' }] },
-      ai: { chunk: b64('任务B专属AI片段'), next_cursor: '18', complete: false, total_bytes: '18' },
+      ai: { chunk: b64('任务B专属AI片段'), next_cursor: '21', complete: false, total_bytes: '21' },
     };
   },
+  // I-84 导航重整用例：发现详情深链载荷（最小可渲染形状，同 codeContext.test 口径；
+  // source-file 端点不建模 → 组件走 ADR-195 降级片段路径，与本断言面无关）
+  'GET /v1/findings/:findingId': () => ({
+    finding: {
+      finding_id: 'f-1', task_id: 't1', source_tool: 'bandit', source_rule_id: 'B105',
+      cwe_id: 'CWE-259', title: 'nav-order finding', description: 'd',
+      severity: 'SEVERITY_MEDIUM', confidence: 0.5,
+      verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED', ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '',
+      location: { file_path: 'app.py', start_line: 1 },
+      source_raw: b64(JSON.stringify({ code: 'x = 1\n', filename: 'app.py', line_number: 1, test_id: 'B105' })),
+    },
+  }),
 };
 const gateway = useFakeGateway(routes);
 
@@ -108,7 +120,7 @@ describe('I-82 RequireAdmin + I-83 未读角标', () => {
     expect(await screen.findByText('权限不足')).toBeTruthy();
   });
 
-  it('未读角标 = notifications 未读计数（2 条未读 → 导航 Badge 计数，60s 兜底轮询的初始拉取； 文本括号→Badge）', async () => {
+  it('未读角标 = notifications 未读计数（2 条未读 → 导航 Badge 计数，60s 兜底轮询的初始拉取；设计整改 P2 文本括号→Badge）', async () => {
     localStorage.setItem(TOKEN_KEY, 'ref-1');
     renderApp('/projects');
     expect(await screen.findByText('通知')).toBeTruthy();
@@ -125,17 +137,80 @@ describe('I-80 路由兜底', () => {
   });
 });
 
+// 2026-10-04 导航重整（用户指令"基于第一性原理"）：序/分区（I-101）= 工件流 │ 配置治理横切；
+// 编排是被任务引用的定义库（写面 admin、内置只读），2026-09-20 入口打通批就地插在
+// 任务与报告中心之间无排序理由，凿断 项目→任务→报告 因果链，本批迁至分界线后首位；
+// 品牌区补"点 logo 回家"惯例（此前死 div）；findings 深链归"任务"高亮（I-84 产物下钻不断灯）。
+describe('I-101 导航序·分区·品牌回家 + I-84 findings 高亮', () => {
+  const menuLabels = () =>
+    Array.from(document.querySelectorAll('li.ant-menu-item'), (li) => (li.textContent ?? '').trim());
+
+  it('admin：序=首页·项目·任务·报告中心│编排·用户管理·工作区·通知；分界线钉在报告中心与编排之间（2026-10-05 父含子：「推理 Provider」项退役）', async () => {
+    localStorage.setItem(TOKEN_KEY, 'ref-1');
+    renderApp('/projects');
+    await screen.findAllByText('项目');
+    expect(menuLabels()).toEqual([
+      '首页', '项目', '任务', '报告中心', '编排', '用户管理', '工作区',
+      expect.stringContaining('通知'),
+    ]);
+    // 自绘分隔线（antd 横向 {type:'divider'} 隐形，见 App.tsx 注）钉位：
+    // 左邻=工件流 Menu（末项 报告中心），右邻=配置治理 Menu（首项 编排）；
+    // rc-menu 横向 ul 尾部挂空 measure li，故取"直接子级菜单项"而非 lastElementChild
+    // 自绘分隔线（antd 横向 {type:'divider'} 隐形，见 App.tsx 注）钉位：
+    // 文档序 = 报告中心 < 分界线 < 编排。不耦合 antd Menu 的兄弟结构
+    // 
+    const divider = document.querySelector('[data-testid="nav-zone-divider"]');
+    expect(divider).toBeTruthy();
+    const itemOf = (t: string) =>
+      Array.from(document.querySelectorAll('li.ant-menu-item')).find((li) => (li.textContent ?? '').trim() === t);
+    const reports = itemOf('报告中心');
+    const orch = itemOf('编排');
+    expect(reports).toBeTruthy();
+    expect(orch).toBeTruthy();
+    expect(reports!.compareDocumentPosition(divider!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(divider!.compareDocumentPosition(orch!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('非 admin：管理面三项不渲染，分区结构不变（工件流│编排·通知）', async () => {
+    localStorage.setItem(TOKEN_KEY, 'ref-1');
+    me = { ...me, role: 'ROLE_DEVELOPER' };
+    renderApp('/projects');
+    await screen.findAllByText('项目');
+    expect(menuLabels()).toEqual(['首页', '项目', '任务', '报告中心', '编排', expect.stringContaining('通知')]);
+    expect(document.querySelector('[data-testid="nav-zone-divider"]')).toBeTruthy();
+  });
+
+  it('品牌区点击回首页（消融对照：点击前"首页"未选中，点击后选中——此前品牌区是死 div）', async () => {
+    localStorage.setItem(TOKEN_KEY, 'ref-1');
+    renderApp('/projects');
+    await screen.findAllByText('项目');
+    const header = document.querySelector('.ant-layout-header') as HTMLElement;
+    expect(within(header).getByText('首页').closest('li')?.className).not.toContain('ant-menu-item-selected');
+    fireEvent.click(within(header).getByRole('link', { name: '返回首页' }));
+    await waitFor(() =>
+      expect(within(header).getByText('首页').closest('li')?.className).toContain('ant-menu-item-selected'));
+  });
+
+  it('/findings/:fid 深链 → "任务"高亮（产物下钻不断灯；此前 startsWith 链漏 findings，全导航无选中态）', async () => {
+    localStorage.setItem(TOKEN_KEY, 'ref-1');
+    renderApp('/findings/f-1');
+    expect(await screen.findByText('nav-order finding')).toBeTruthy();
+    const header = document.querySelector('.ant-layout-header') as HTMLElement;
+    expect(within(header).getByText('任务').closest('li')?.className).toContain('ant-menu-item-selected');
+  });
+});
+
 // 测试内导航钩子：经真实 react-router 导航触发同路由 :id 切换（非 rerender 整树）
 function NavButton({ to }: { to: string }) {
   const navigate = useNavigate();
   return <button onClick={() => navigate(to)}>{`goto-${to}`}</button>;
 }
 
-// （审计修复）：同路由 `/tasks/:id` 切换任务必须重建任务详情实例（TaskDetailWithParams
+// B4-1（审计修复）：同路由 `/tasks/:id` 切换任务必须重建任务详情实例（TaskDetailWithParams
 // key={id}）——此前 react-router 复用组件实例，旧任务的增量游标（logs_after/ai_cursor refs）
 // 与已吸收的日志/AI 正文残留进新任务：新任务快照带旧游标（服务端从旧位置起算，头部内容
 // 永久丢失）、面板残留旧任务 AI 正文片段。
-describe('I-A3 同路由切换任务清态', () => {
+describe('I-A3 同路由切换任务清态（B4-1）', () => {
   it('/tasks/t-a → /tasks/t-b：B 面板不含 A 的 AI 正文/日志；B 首个快照请求游标从零起', async () => {
     // WS 桩：不真连（jsdom 真 WebSocket 会打网络且异步错误偶发污染 Errors 计数）；
     // 永不 onopen → 页面自然回退快照轮询，数据路径与真实断线场景一致

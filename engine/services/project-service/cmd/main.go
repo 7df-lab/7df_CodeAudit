@@ -9,6 +9,7 @@ import (
 	codeauditcfg "github.com/codeaudit/go-config"
 	"log"
 	"net"
+	"os"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -45,7 +46,7 @@ func main() {
 		seedAdmin = v
 	}
 	store := repo.NewMemoryStore(seedAdmin)
-	idm := idempotency.New()
+	var idm idempotency.Store = idempotency.New()
 
 	// Business logic.
 	projectSvc := service.NewProjectService(store)
@@ -62,6 +63,60 @@ func main() {
 		inviteCodes = v
 	}
 	userSvc.SetAuthConfig(service.AuthConfig{RegistrationMode: regMode, InviteCodes: inviteCodes})
+	// HA P1-a（ADR-250）：PG 档装配——DSN 空=内存档（现状零变化）；非空=写穿镜像
+	// +读回落+幂等外置+黑名单/纪元回放；PG 不可用=fail-loud（不静默内存分叉）。
+	if pgDSN := os.Getenv("CODEAUDIT_PROJECT_PG_DSN"); pgDSN != "" {
+		mirror, merr := repo.NewPGMirror(pgDSN)
+		if merr != nil {
+			log.Fatalf("project PG mirror: %v (CODEAUDIT_PROJECT_PG_DSN 已配置但不可用——拒绝静默内存分叉)", merr)
+		}
+		projectSvc.SetMirror(mirror)
+		userSvc.SetMirror(mirror)       // 注入即全量回放黑名单/纪元
+		userSvc.SetInviteMirror(mirror) // V2.2 (ADR-255)：邀请码 PG 权威消费+写穿
+		// PG 档下 seedAdmin 若空库补种（走镜像写穿，跨副本可见）
+		if seedAdmin {
+			if users, lerr := mirror.ListUsers(); lerr == nil && len(users) == 0 {
+				log.Println("[project-mirror] 空库：seedAdmin 经正常路径补种（写穿）")
+				// 内存构造已种 user-001——补写穿即可
+				if rec, ok := store.GetUser("user-001"); ok {
+					if err := mirror.UpsertUser(rec); err != nil {
+						log.Printf("[project-mirror] seed admin 写穿失败: %v", err)
+					}
+				}
+			}
+		}
+		// 实体全量回放（跨副本已建数据起步可见）
+		if projs, lerr := mirror.ListProjects(); lerr == nil {
+			for _, rec := range projs {
+				if _, ok := store.GetProject(rec.Project.GetProjectId()); !ok {
+					store.CreateProject(rec)
+				}
+			}
+		} else {
+			log.Printf("[project-mirror] projects 回放失败: %v", lerr)
+		}
+		if users, lerr := mirror.ListUsers(); lerr == nil {
+			for _, rec := range users {
+				if _, ok := store.GetUser(rec.User.GetUserId()); !ok {
+					store.UpdateUser(rec)
+				}
+			}
+		}
+		// V2.2 (ADR-255)：邀请码回放（跨副本已建码起步可见；空库 no-op）
+		if invites, lerr := mirror.ListInviteCodes(); lerr == nil {
+			for _, rec := range invites {
+				store.PutInviteCode(rec)
+			}
+		} else {
+			log.Printf("[project-mirror] invite codes 回放失败: %v", lerr)
+		}
+		if pgIdm, ierr := idempotency.NewPGStore(mirror.DB()); ierr == nil {
+			idm = pgIdm
+		} else {
+			log.Fatalf("project PG idempotency: %v", ierr)
+		}
+		log.Printf("[project-mirror] PG 档启用（写穿+读回落+幂等外置）")
+	}
 
 	// gRPC handlers.
 	projectHandler := handler.NewProjectHandler(projectSvc, idm)

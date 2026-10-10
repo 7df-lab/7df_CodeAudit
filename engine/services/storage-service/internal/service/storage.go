@@ -7,12 +7,12 @@
 package service
 
 import (
-	"os"
-	"strconv"
 	"crypto/sha256"
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"strconv"
 	"time"
 
 	v1 "github.com/codeaudit/proto-gen"
@@ -45,7 +45,7 @@ func (s *StorageSvc) SetPresigner(p repo.Presigner) { s.presigner = p }
 //
 // MinIO integration note (09 §1): in production, each chunk would be written to
 // the object directly via MinIO's PutObject streaming API.
-// maxAssembleBytes — 单对象组装内存上限（R62）：AssembleChunks 全量
+// maxAssembleBytes — 单对象组装内存上限：AssembleChunks 全量
 // 缓冲无上限是 OOM 向量（gateway 100MB 是唯一有闸入口；树 tar/gRPC 直连可更大）。
 // 超限 ResourceExhausted 拒绝，不吞内存。env：CODEAUDIT_STORAGE_MAX_OBJECT_BYTES。
 var maxAssembleBytes = envInt64Or("CODEAUDIT_STORAGE_MAX_OBJECT_BYTES", 512<<20)
@@ -148,7 +148,7 @@ func (s *StorageSvc) ListFiles(prefix string) []*v1.StoredFile {
 
 // GetPresignedURL generates a presigned URL for frontend direct upload/download.
 // MinIO 未接入时的诚实语义: 返回 Unimplemented 而非编造一个必然 404 的假 URL。
-// (2026-08-27 编造审计: 旧实现拼 http://minio:9000/... 假地址冒充可用链接)
+// 
 // MinIO 接入后: 调用 PresignedPutObject/PresignedGetObject（09 §1: reports, cpg, sast-raw）。
 func (s *StorageSvc) GetPresignedURL(filePath string, operation v1.GetPresignedUrlRequest_UrlOp, ttlSeconds int64) (string, *timestamppb.Timestamp, error) {
 	if s.presigner == nil {

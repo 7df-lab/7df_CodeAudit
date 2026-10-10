@@ -1,8 +1,9 @@
 package handler
 
-// R89-R91 锁定测试：资源归属授权矩阵（水平越权收口）。
-// owner（user-a，资源 created_by/成员）与 admin 放行；他人（user-b）403 且门禁
-// 在转发前拦截。列表接口：带 task_id 走归属，裸列表仅 admin。
+// R89-R91→ADR-257 锁定测试：RBAC 层级制矩阵（2026-10-10 决议）。
+// 读面（tasks/findings/reports/projects 列表+详情）=认证即读；操作面（创建/更新/
+// 生命周期动作/图编排/报告生成）=DEVELOPER+（VIEWER 拒）；写判定面（verdict 回写）
+// =owner 或 admin；项目删除/管理面=admin。
 
 import (
 	"context"
@@ -64,6 +65,9 @@ type authzProjectBackend struct {
 	creator string              // CreateProject 后成员登记捕获
 }
 
+func (f *authzProjectBackend) ListProjects(ctx context.Context, req *pb.ListProjectsRequest) (*pb.ListProjectsResponse, error) {
+	return &pb.ListProjectsResponse{}, nil // ADR-257：裸列表读面放开后假体需应答
+}
 func (f *authzProjectBackend) GetProject(ctx context.Context, req *pb.GetProjectRequest) (*pb.Project, error) {
 	return &pb.Project{ProjectId: req.GetProjectId(), Name: "p"}, nil
 }
@@ -139,20 +143,29 @@ func TestAuthz_TaskOwnershipMatrix(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("owner 读任务应 200, got %d", code)
 	}
-	// 他人读 → 403
+	// 他人读 → 200（ADR-257：读面=认证即读，R89 一期 owner 收紧就此反转）
 	code, _ = httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-b", http.MethodGet, "/v1/tasks/t-owned", "")
-	if code != http.StatusForbidden {
-		t.Fatalf("他人读任务应 403, got %d", code)
+	if code != http.StatusOK {
+		t.Fatalf("他人读任务应 200（ADR-257）, got %d", code)
 	}
-	// 他人动作（cancel）→ 403
-	code, _ = httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-b", http.MethodPost, "/v1/tasks/t-owned/cancel", "")
-	if code != http.StatusForbidden {
-		t.Fatalf("他人 cancel 应 403, got %d", code)
-	}
-	// 他人读源码上下文 → 403（内容面）
+	// 他人读源码上下文：门已拆（非 403 即通过门禁；400=夹具无该任务文件，内容面另测）
 	code, _ = httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-b", http.MethodGet, "/v1/tasks/t-owned/source-file", "")
+	if code == http.StatusForbidden {
+		t.Fatalf("他人 source-file 不应 403（ADR-257 读面放开）, got %d", code)
+	}
+	// 他人动作（cancel）→ 200（操作面 DEVELOPER+，层级制不按 owner 收口）
+	code, _ = httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-b", http.MethodPost, "/v1/tasks/t-owned/cancel", "")
+	if code != http.StatusOK {
+		t.Fatalf("他人 cancel 应 200（操作面 DEVELOPER+）, got %d", code)
+	}
+	// VIEWER：读放行、动作拒（RBAC 三角色分层）
+	code, _ = httpJSONAsUser(t, tr, "ROLE_VIEWER", "user-v", http.MethodGet, "/v1/tasks/t-owned", "")
+	if code != http.StatusOK {
+		t.Fatalf("VIEWER 读任务应 200, got %d", code)
+	}
+	code, _ = httpJSONAsUser(t, tr, "ROLE_VIEWER", "user-v", http.MethodPost, "/v1/tasks/t-owned/cancel", "")
 	if code != http.StatusForbidden {
-		t.Fatalf("他人 source-file 应 403, got %d", code)
+		t.Fatalf("VIEWER cancel 应 403, got %d", code)
 	}
 	// admin 全权
 	code, _ = httpJSONAsUser(t, tr, "ROLE_ADMIN", "admin-1", http.MethodGet, "/v1/tasks/t-owned", "")
@@ -169,19 +182,23 @@ func TestAuthz_FindingReportMatrix(t *testing.T) {
 		name, path string
 	}{
 		{"他人读 finding", "/v1/findings/f-1"},
-		{"他人回写 verdict", "/v1/findings/f-1/verdict"},
 		{"他人读报告", "/v1/reports/r-1"},
 		{"他人带 task_id 列 findings", "/v1/findings?task_id=t-owned"},
 	}
 	for _, tc := range cases {
-		method := http.MethodGet
-		if tc.name == "他人回写 verdict" {
-			method = http.MethodPut
+		code, _ := httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-b", http.MethodGet, tc.path, "")
+		if code != http.StatusOK {
+			t.Fatalf("%s: want 200（ADR-257 读面放开）, got %d", tc.name, code)
 		}
-		code, _ := httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-b", method, tc.path, "")
-		if code != http.StatusForbidden {
-			t.Fatalf("%s: want 403, got %d", tc.name, code)
-		}
+	}
+	// 写判定面不随读面反转：他人 verdict 回写仍 owner/admin
+	code, _ := httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-b", http.MethodPut, "/v1/findings/f-1/verdict", "{}")
+	if code != http.StatusForbidden {
+		t.Fatalf("他人回写 verdict: want 403, got %d", code)
+	}
+	code, _ = httpJSONAsUser(t, tr, "ROLE_VIEWER", "user-v", http.MethodPut, "/v1/findings/f-1/verdict", "{}")
+	if code != http.StatusForbidden {
+		t.Fatalf("VIEWER 回写 verdict: want 403, got %d", code)
 	}
 	// owner 放行（finding/report 均挂靠 t-owned=owner 任务）
 	for _, path := range []string{"/v1/findings/f-1", "/v1/findings?task_id=t-owned",
@@ -191,10 +208,10 @@ func TestAuthz_FindingReportMatrix(t *testing.T) {
 			t.Fatalf("owner %s 应 200, got %d", path, code)
 		}
 	}
-	// 裸列表：非 admin 403、admin 200
-	code, _ := httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-b", http.MethodGet, "/v1/findings", "")
-	if code != http.StatusForbidden {
-		t.Fatalf("裸 findings 列表非 admin 应 403, got %d", code)
+	// 裸列表：认证即读（ADR-257；R90 一期 admin 收紧反转）
+	code, _ = httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-b", http.MethodGet, "/v1/findings", "")
+	if code != http.StatusOK {
+		t.Fatalf("裸 findings 列表非 admin 应 200（ADR-257）, got %d", code)
 	}
 	code, _ = httpJSONAsUser(t, tr, "ROLE_ADMIN", "admin-1", http.MethodGet, "/v1/findings", "")
 	if code != http.StatusOK {
@@ -218,36 +235,51 @@ func TestAuthz_ProjectMembershipMatrix(t *testing.T) {
 	members := []*pb.ProjectMember{{ProjectId: "p-owned", UserId: "user-a", Role: "developer"}}
 	tr, project := startAuthzBackends(t, "user-a", members)
 
-	// 读：成员放行、非成员 403
+	// 读：认证即读（ADR-257；R91 成员制读面就此让位，成员基建留作后续资源粒度制）
 	code, _ := httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-a", http.MethodGet, "/v1/projects/p-owned", "")
 	if code != http.StatusOK {
 		t.Fatalf("成员读项目应 200, got %d", code)
 	}
 	code, _ = httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-b", http.MethodGet, "/v1/projects/p-owned", "")
-	if code != http.StatusForbidden {
-		t.Fatalf("非成员读项目应 403, got %d", code)
+	if code != http.StatusOK {
+		t.Fatalf("非成员读项目应 200（ADR-257）, got %d", code)
 	}
-	// 写：成员（非 admin）403、admin 200
+	// 更新：操作面 DEVELOPER+（R91 一期 admin-only 放宽）；删除仍 admin
 	code, _ = httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-a", http.MethodPut, "/v1/projects/p-owned",
 		`{"project":{"project_id":"p-owned","name":"renamed"}}`)
+	if code != http.StatusOK {
+		t.Fatalf("成员更新项目应 200（操作面 DEVELOPER+）, got %d", code)
+	}
+	code, _ = httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-a", http.MethodDelete, "/v1/projects/p-owned", "")
 	if code != http.StatusForbidden {
-		t.Fatalf("成员写项目应 403（写面=管理面）, got %d", code)
+		t.Fatalf("非 admin 删除项目应 403, got %d", code)
+	}
+	code, _ = httpJSONAsUser(t, tr, "ROLE_VIEWER", "user-v", http.MethodPut, "/v1/projects/p-owned",
+		`{"project":{"project_id":"p-owned","name":"renamed"}}`)
+	if code != http.StatusForbidden {
+		t.Fatalf("VIEWER 更新项目应 403, got %d", code)
 	}
 	code, _ = httpJSONAsUser(t, tr, "ROLE_ADMIN", "admin-1", http.MethodPut, "/v1/projects/p-owned",
 		`{"project":{"project_id":"p-owned","name":"renamed"}}`)
 	if code != http.StatusOK {
 		t.Fatalf("admin 写项目应 200, got %d", code)
 	}
-	// 裸列表：非 admin 403
+	// 裸列表：认证即读（ADR-257）
 	code, _ = httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-b", http.MethodGet, "/v1/projects", "")
-	if code != http.StatusForbidden {
-		t.Fatalf("裸项目列表非 admin 应 403, got %d", code)
+	if code != http.StatusOK {
+		t.Fatalf("裸项目列表非 admin 应 200（ADR-257）, got %d", code)
 	}
 	// 创建者自动登记：u-a 建项目 → AddProjectMember(user-a) 被调用
 	code, _ = httpJSONAsUser(t, tr, "ROLE_DEVELOPER", "user-a", http.MethodPost, "/v1/projects",
 		`{"project":{"name":"fresh"}}`)
 	if code != http.StatusOK {
 		t.Fatalf("创建项目应 200, got %d", code)
+	}
+	// VIEWER 建项目：403（操作面）
+	code, _ = httpJSONAsUser(t, tr, "ROLE_VIEWER", "user-v", http.MethodPost, "/v1/projects",
+		`{"project":{"name":"nope"}}`)
+	if code != http.StatusForbidden {
+		t.Fatalf("VIEWER 创建项目应 403, got %d", code)
 	}
 	project.mu.Lock()
 	got := project.creator

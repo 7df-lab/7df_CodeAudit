@@ -5,12 +5,12 @@ package handler
 
 import (
 	"context"
-	"net/url"
-	"strings"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -55,11 +55,11 @@ func validateRepoURL(repoURL, branch string) error {
 type ProjectHandler struct {
 	v1.UnimplementedProjectServiceServer
 	svc *service.ProjectService
-	idm *idempotency.Store
+	idm idempotency.Store
 }
 
 // NewProjectHandler creates a ProjectHandler.
-func NewProjectHandler(svc *service.ProjectService, idm *idempotency.Store) *ProjectHandler {
+func NewProjectHandler(svc *service.ProjectService, idm idempotency.Store) *ProjectHandler {
 	return &ProjectHandler{svc: svc, idm: idm}
 }
 
@@ -143,15 +143,53 @@ func (h *ProjectHandler) DeleteProject(ctx context.Context, req *v1.DeleteProjec
 func (h *ProjectHandler) ListProjects(ctx context.Context, req *v1.ListProjectsRequest) (*v1.ListProjectsResponse, error) {
 	all := h.svc.List()
 
+	// ADR-256：服务端筛选——白名单 name CONTAINS / default_scan_mode EQ，
+	// AND 语义（OR 不支持即拒，不假装）；total=过滤后总数（真实分母）。
+	nameContains, modeEq, ferr := projectFilterParams(req.GetFilter())
+	if ferr != nil {
+		return nil, ferr
+	}
+	if nameContains != "" || modeEq != "" {
+		filtered := all[:0]
+		for _, p := range all {
+			if nameContains != "" && !strings.Contains(p.GetName(), nameContains) {
+				continue
+			}
+			if modeEq != "" && p.GetDefaultScanMode().String() != modeEq {
+				continue
+			}
+			filtered = append(filtered, p)
+		}
+		all = filtered
+	}
+
 	// ADR-161: 与任务/报告列表同一"最新活动优先"口径（ADR-149）——此前按存储插入序
 	// （最老在前），项目数超过前端分页大小时新建项目落在末页，用户"创建成功却看不见"。
 	// created_at 降序 + project_id 决胜保证稳定序（03 §5）。
+	// ADR-256: sort 显式携带时按白名单键定向（name|created_at；UNSPECIFIED=DESC
+	// 与缺省同向），等键 project_id 同向决胜。
+	sortField, sortDesc, serr := projectSortParams(req.GetSort())
+	if serr != nil {
+		return nil, serr
+	}
 	sort.Slice(all, func(i, j int) bool {
-		ci, cj := all[i].GetCreatedAt().AsTime(), all[j].GetCreatedAt().AsTime()
-		if !ci.Equal(cj) {
-			return ci.After(cj)
+		a, b := all[i], all[j]
+		var aLess, bLess bool
+		switch sortField {
+		case "name":
+			aLess, bLess = a.GetName() < b.GetName(), b.GetName() < a.GetName()
+		default: // created_at（缺省口径）
+			ci, cj := a.GetCreatedAt().AsTime(), b.GetCreatedAt().AsTime()
+			aLess, bLess = ci.Before(cj), cj.Before(ci)
 		}
-		return all[i].GetProjectId() > all[j].GetProjectId()
+		asc := !sortDesc
+		if aLess {
+			return asc
+		}
+		if bLess {
+			return !asc
+		}
+		return (a.GetProjectId() < b.GetProjectId()) == asc
 	})
 
 	// Simple offset-based pagination using cursor as index
@@ -313,4 +351,44 @@ func (h *ProjectHandler) ListProjectMembers(ctx context.Context, req *v1.ListPro
 			Total:      total,
 		},
 	}, nil
+}
+
+// projectFilterParams — ADR-256 筛选白名单：name CONTAINS / default_scan_mode EQ，
+// 仅 AND 语义。白名单 fail-loud（未知字段/操作符拒绝——不静默忽略假装已过滤）。
+func projectFilterParams(f *v1.FilterRequest) (nameContains, modeEq string, err error) {
+	if f == nil {
+		return "", "", nil
+	}
+	if f.GetOperator() == v1.LogicalOperator_LOGICAL_OPERATOR_OR { // 显式 OR 信号即拒（零条件也不含糊）
+		return "", "", status.Error(codes.InvalidArgument, "filter operator OR unsupported (AND only)")
+	}
+	if len(f.GetConditions()) == 0 {
+		return "", "", nil
+	}
+	for _, c := range f.GetConditions() {
+		switch {
+		case c.GetField() == "name" && c.GetOperator() == v1.FilterOperator_FILTER_OPERATOR_CONTAINS:
+			nameContains = c.GetValue()
+		case c.GetField() == "default_scan_mode" && c.GetOperator() == v1.FilterOperator_FILTER_OPERATOR_EQ:
+			modeEq = c.GetValue()
+		default:
+			return "", "", status.Errorf(codes.InvalidArgument,
+				"unsupported filter (name CONTAINS / default_scan_mode EQ): %s %s", c.GetField(), c.GetOperator())
+		}
+	}
+	return nameContains, modeEq, nil
+}
+
+// projectSortParams — ADR-256 排序白名单（内存排序无注入面，白名单为契约稳定性）：
+// name|created_at；order UNSPECIFIED=DESC（与缺省口径同向）；缺省=created_at DESC。
+func projectSortParams(s *v1.SortRequest) (string, bool, error) {
+	if s == nil || s.GetField() == "" {
+		return "created_at", true, nil
+	}
+	switch s.GetField() {
+	case "name", "created_at":
+	default:
+		return "", false, status.Errorf(codes.InvalidArgument, "unsupported sort field: %s", s.GetField())
+	}
+	return s.GetField(), s.GetOrder() != v1.SortOrder_SORT_ORDER_ASC, nil
 }

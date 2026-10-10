@@ -19,14 +19,14 @@ import (
 // 往返必须保真（含 stages/sast_tools/config/时间戳），否则重启回放即数据变形。
 func TestTaskStorePayloadRoundTrip(t *testing.T) {
 	src := &pb.ScanTask{
-		TaskId:     "gw-roundtrip-1",
-		ProjectId:  "proj-1",
-		Status:     pb.TaskStatus_TASK_STATUS_COMPLETED,
-		ScanMode:   pb.ScanMode_SCAN_MODE_SAST_ONLY,
-		CreatedBy:  "user-001",
-		SastTools:  []string{"opengrep", "bandit"},
-		CreatedAt:  timestamppb.New(time.Unix(1788827300, 0)),
-		UpdatedAt:  timestamppb.New(time.Unix(1788827900, 0)),
+		TaskId:       "gw-roundtrip-1",
+		ProjectId:    "proj-1",
+		Status:       pb.TaskStatus_TASK_STATUS_COMPLETED,
+		ScanMode:     pb.ScanMode_SCAN_MODE_SAST_ONLY,
+		CreatedBy:    "user-001",
+		SastTools:    []string{"opengrep", "bandit"},
+		CreatedAt:    timestamppb.New(time.Unix(1788827300, 0)),
+		UpdatedAt:    timestamppb.New(time.Unix(1788827900, 0)),
 		ErrorMessage: "",
 	}
 	src.Config = map[string]string{"upload_file_id": "file-1"}

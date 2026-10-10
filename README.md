@@ -1,258 +1,248 @@
-<div align="center">
-
 # CodeAudit
 
-**SAST × 多智能体大模型 —— 融合式智能代码安全审计平台**
+**SAST × AI 智能体的代码审计平台**——规则引擎的确定性与大模型分析的纵深理解运行在同一平台：
+从代码接入、双引擎扫描、发现裁决到补丁修复、报告输出的完整审计闭环。
 
-上传一个代码包，让 10 类传统 SAST 引擎与五角色 AI 审计流水线并行工作，
-融合去重后输出一份**可解释、可修复、可回滚**的审计报告。
-
-[![Go](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev)
-[![gRPC](https://img.shields.io/badge/gRPC-microservices-244C5C?logo=gRPC)](https://grpc.io)
-[![Docker](https://img.shields.io/badge/deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
-[![VS Code](https://img.shields.io/badge/IDE-VS%20Code%20Extension-007ACC?logo=visualstudiocode&logoColor=white)](https://code.visualstudio.com)
-
-[核心特性](#-核心特性) · [系统架构](#%EF%B8%8F-系统架构) · [快速开始](#-快速开始) · [文档导航](#-文档导航) · [Roadmap](#%EF%B8%8F-roadmap)
-
-</div>
-
----
-
-## 为什么做 CodeAudit
-
-| 痛点 | CodeAudit 的回答 |
-|------|------------------|
-| **SAST 误报噪音大**：规则引擎只认模式不认语义，海量告警靠人肉过滤 | 五种审计模式任选；跨工具去重 + 融合引擎（对齐 → 聚类 → 冲突消解 → AI 验证），输出**单一高信噪比清单** |
-| **AI 结论不可信、不敢用**：模型报的漏洞既无法验证也难以度量 | 每条结论带 **Source→Sink 证据链**，经 Quality Validator 交叉验证；模式 E 支持 SAST 与 AI 结果**同维度对比**，可信度可度量 |
-| **审计结果难落地**：报告躺在 PDF 里，修复靠人工搬运 | 发现直接携带**机器可应用补丁**，VS Code 内一键应用、落盘前自动 checkpoint、随时按发现回滚 |
-
-一次典型审计：上传代码包 → 选择扫描模式 → 任务编排（状态机 + Saga 补偿）→ SAST 与 AI 流水线并行 → 融合去重 → 审计报告 + 通知 → IDE 内修复闭环。
-
-## ✨ 核心特性
-
-### 五种审计模式
-
-| 模式 | 流程 | 适用场景 |
-|------|------|----------|
-| A 纯 SAST | 多工具并行扫描 → 跨工具去重合并 → 报告 | 快速扫描、修复验证、无 AI 依赖 |
-| B 纯 AI | CPG 构建 → 沙箱内五 Agent 语义审计 → 报告 | 逻辑缺陷挖掘 |
-| **C SAST + AI 融合（默认）** | SAST 工具组 ∥ AI 审计并行 → 融合去重输出单一清单 | 深度审计、CI/CD、定时批量 |
-| D AI 增强 SAST | SAST 多工具扫描 → 逐条沙箱 AI 复核 → 汇总融合 | SAST 结果逐条精判、可信度优先 |
-| E SAST + AI 对比 | 两者独立完成 → 三分桶（纯 SAST / 纯 AI / 重合）同维度对比 | 能力评估、工具选型、合规留痕 |
-
-### 五角色 AI 审计流水线
-
-| 角色 | 职责 |
-|------|------|
-| **Code Analyst** | 代码结构与依赖分析（CPG / AST） |
-| **Vuln Detector** | 污点追踪 + LLM 语义分析定位漏洞 |
-| **Severity Assessor** | CVSS 评分与影响面评估 |
-| **Fix Advisor** | 生成修复方案与机器可应用补丁 |
-| **Quality Validator** | 交叉验证与误报过滤（元审计闭环） |
-
-### 多引擎融合，统一结果模型
-
-- 内置 **10 类 SAST 适配器**（CodeQL / Semgrep / Bandit / SpotBugs / ESLint / PMD / Brakeman / Trivy / Flake8 / 自定义），全部解析为统一的 `UnifiedFinding` 模型；
-- 融合引擎完成对齐、聚类、冲突消解与 AI 验证；审计、对比、审核**三类报告**经 Kafka 异步生成。
-
-### 可解释，可修复，可回滚
-
-- **证据链**：AI 结论还原 Source→Sink 逐步路径，控制台内逐跳点选查看，AI 交互全过程时间线留痕；
-- **修复**：Fix Advisor 输出统一 diff 补丁（支持多文件增删移），VS Code 内一键应用；低风险修复可批量裁决；
-- **回滚**：落盘前自动 checkpoint，支持按发现回滚与批量回滚，修复前后 diff 一目了然。
-
-### 沙箱化的 AI 执行
-
-AI 代码分析运行在**一次性 MicroVM 沙箱**中（按需拉起、任务结束即回收），引擎与沙箱之间只有一条受控南向通道。LLM 经统一推理路由接入（OpenAI 兼容协议），默认 MiMo-v2.5-pro，可切换 DeepSeek-Coder-V2、Qwen2.5-Coder 或任意兼容模型服务。
-
-### Web 控制台 + IDE 插件双入口
-
-- **Web 控制台**（React 18 + antd 5）：项目、任务、发现、融合/审核/对比视图、报告、通知中心、用户管理；流水线日志与 AI 交互时间线全程可视；
-- **VS Code 插件**（19 个命令）：编辑器内一键扫描工作区、实时任务进度、漏洞行内标注 + 侧栏树、AI 交互上下文面板、修复与回滚；WebSocket 推送 + 轮询兜底，断线自动重连续订。
-
-### 语言支持
-
-- **第一梯队（完整支持）**：Python、JavaScript、TypeScript、Java、Go；
-- **第二梯队（基础支持）**：C、C++、Rust、Ruby、PHP。
-
-## 🖼️ 界面预览
-
-以下为 Web 控制台实际运行截图——一次对真实开源 C++ 图像解码库（RawSpeed）的模式 C 融合扫描任务。
-
-| 总览：任务状态与最近任务 | 任务详情：AI 交互时间线 |
-|---|---|
-| ![总览](docs/screenshots/dashboard.png) | ![任务详情](docs/screenshots/task-detail.png) |
-
-| 发现列表：严重级 / 来源 / 位置与人工复核 | 融合视图：双引擎发现归并 |
-|---|---|
-| ![发现列表](docs/screenshots/findings.png) | ![融合视图](docs/screenshots/fusion-view.png) |
-
-## 🏗️ 系统架构
+- **一句话**：上传代码，同时获得 SAST 的规则级确定发现与 AI 的污点链级深度分析，在 Web 控制台
+  或 VS Code 里完成裁决与一键修复。
+- **一图**：
 
 ```
-     浏览器（Web 控制台）            VS Code 插件
-            └──────── REST + WebSocket（/v1，JWT）────────┐
-                                                         ▼
-   ┌─────────────────────────────────────────────────────────────┐
-   │                  engine（Go 微服务 × 7）                     │
-   │                                                             │
-   │   gateway ── 认证 · 路由 · 限流（对外唯一 API 入口）          │
-   │      ├── project     项目 / 用户管理                         │
-   │      ├── task        任务编排（状态机 + Saga）                │
-   │      ├── result      审计结果 / 报告生成                     │
-   │      ├── sast-adapter 10×SAST 适配 → 融合 / 对比引擎          │
-   │      ├── storage     文件 / 消息 / 通知                      │
-   │      └── dsh-runtime 五角色 Agent 编排                        │
-   │                                                             │
-   │   数据层：PostgreSQL · Redis · MinIO · Kafka                 │
-   └──────────────────────────┬──────────────────────────────────┘
-                              │ 沙箱唯一南向通道（受控 + Bearer）
-                              ▼
-        openshell-manager ──gRPC── openshell-gateway
-                              │
-                              ▼
-        沙箱容器（MicroVM，按需拉起）：五角色 DSH Agent 流水线
+ 浏览器 ──► web 控制台 ──/v1 反代──► engine 网关 ◄── REST + WS ── VS Code 插件
+                                      (REST+WS,对外唯一入口,JWT)
+                                        │
+                 ┌──────────────────────┼─────────────────────┐
+                 ▼                      ▼                     ▼
+           gRPC 微服务 × 5        中间件 × 4             runtime(沙箱通道)
+        project / task / result   PostgreSQL · Redis         │ HTTP/JSON + Bearer
+        storage / sast-adapter    MinIO · Kafka              ▼
+                                                     manager(沙箱管理服务)
+                                                          │ gRPC
+                                                          ▼
+                                                 openshell-gateway(DooD)
+                                                          │ 按需拉起
+                                                          ▼
+                                                 沙箱容器(AI 智能体 + 安全工具)
+                                                          └─ 唯一出网 → 用户注册的 LLM 服务
 ```
 
-| 类别 | 选型 |
-|------|------|
-| 后端 | Go 1.22 · gRPC · 7 微服务 · Kafka 异步事件 · JWT 网关 |
-| 前端 | React 18 · TypeScript 5（strict）· antd 5 · Vite · nginx 容器化 |
-| IDE | VS Code Extension（TypeScript） |
-| AI | DSH 多智能体运行时 · OpenShell MicroVM 沙箱 · OpenAI 兼容推理路由 |
-| 代码分析 | Joern（CPG）· Tree-sitter（AST）· 10×SAST 适配器 |
-| 数据层 | PostgreSQL · Redis · MinIO · Kafka |
-| 部署 | Docker Compose 一键部署（Kubernetes + Helm 规划中） |
+## 核心特性
 
-## 📦 仓库结构
+### 双引擎扫描与自定义图编排
 
-本仓库为总览仓，七个组件目录各司其职：
+- 规则侧：容器镜像内置 bandit 与 opengrep（Semgrep 兼容引擎）；适配器框架已实现
+  bandit / Semgrep 系 / CodeQL / ESLint / SpotBugs / 通用 JSON 六类适配器，接入即扫。
+- AI 侧：沙箱内智能体对代码做深度分析，产出带 Source→Sink 污点链与机器可应用补丁
+  （apply_patch 语法）的结构化结论。
+- 五种扫描模式自由组合（见下表），缺省推荐的融合模式一次任务同时收获两引擎的互补发现。
 
-| 目录 | 说明 |
-|------|------|
-| [`engine/`](engine/) | 平台引擎：7 个 Go 微服务、proto 数据契约（SSOT）、14 册设计文档 |
-| [`web/`](web/) | Web 控制台（React + antd，多阶段构建 nginx 容器） |
-| [`vscode-plugin/`](vscode-plugin/) | VS Code 插件：扫描、结果展示、修复补丁应用与回滚 |
-| [`manager/`](manager/) | 沙箱管理服务（FastAPI，纯管道不持业务状态） |
-| [`openshell-gateway/`](openshell-gateway/) | 沙箱管控网关（按需拉起与调度沙箱） |
-| [`dsh-pentest-sse/`](dsh-pentest-sse/) | 沙箱镜像配方（可复现构建：SBOM + sha256 + 溯源清单） |
-| [`dsh-runtime/`](dsh-runtime/) | DSH 多智能体运行时（上游 fork + 加固补丁，849 个 spec） |
+| 模式 | 名称 | 说明 |
+|------|------|------|
+| A | 纯 SAST | 只跑规则引擎，输出确定、速度最快 |
+| B | 纯 AI | 只跑沙箱智能体，深度分析与修复建议 |
+| C | SAST+AI 融合（**缺省推荐**） | 双引擎发现融合去重，配套融合视图综合裁决 |
+| D | AI 增强 SAST | 规则发现交 AI 逐条深化分析与补全 |
+| E | SAST+AI 对比 | 双引擎结果三分桶对比（仅 SAST / 仅 AI / 双方一致）+ 指标脚注 |
 
-## 🚀 快速开始
+内置模式之外，平台提供**自定义编排（pack）**：以 YAML 声明负载与执行形态，内置编排
+只读，用户编排经 API 创建、修订 append-only 留痕。声明 `execution: graph` 的编排按图
+执行——节点是独立沙箱会话，支持运行期动态声明节点与计划触发；控制台提供图执行视图
+（真实拓扑连线、逐节点 AI 交互、计划触发史与挂起/收敛态回放）。
 
-### 方式一：一键自部署（任意 Docker 宿主）
+### AI 全程沙箱化，代码不出栈
+
+- AI 智能体运行在管控网关按需拉起的隔离容器中；沙箱预置 sqlmap、testssl、nuclei 模板、
+  Playwright 等安全工具供智能体按需调用。
+- 上传代码经网关零落盘直转对象存储（MinIO），任务源只在栈内共享卷流转。
+- 运行期唯一出网方向是用户自行注册的 LLM 服务——代码与密钥都不经过任何第三方。
+
+### 过程可观测，失败诚实
+
+- 任务详情页 WebSocket 实时推帧，断线自动回退轮询续订（游标不重发）；执行日志与
+  AI 交互时间线全程可见。
+- 沙箱不可达或 LLM 故障时明确降级：兜底走规则扫描并标注"待人工"，或完整报错落终态——
+  绝不静默吞错，绝不产出误导性的"零发现"白审。
+
+### 发现裁决（triage）工作台
+
+- 发现按严重级与 AI 置信度分级；AI 结论的 Source→Sink 链路逐跳还原为可点选跳转，
+  点击即定位代码行。
+- 人工裁决（结论 + 理由）回写平台与 AI 结论同档留存；融合/对比视图辅助横向判断。
+
+### 编辑器内修复闭环（VS Code 插件）
+
+- 编辑器内一键扫描工作区：打包上传、建任务、实时跟踪，结果进 Problems 面板与侧栏树。
+- AI 机器补丁一键应用：内容锚定不信任声明行号（四级容差，模糊锚定透明标注），任一块
+  锚定失败即整体拒绝——绝不部分应用、绝不静默错切。
+- 落盘前自动 checkpoint：按发现回滚、回滚最近一次批量修复；低风险修复（低严重级 +
+  高置信度 + 带机器补丁）可多选批量应用，由人触发，插件绝不自动改盘。
+
+### 从源码构建（贡献者路径）
+
+- 全部镜像可从本仓库源码直接构建（引擎 ×7、manager、web、沙箱三层），无需内部环境。
+- **受限网络（如 CN）**：Go 模块走构建参数覆写
+  `docker build --build-arg GOPROXY=https://goproxy.cn,direct …`（公共源为缺省）。
+- **gitignored 构建供给**（按各仓 PROVENANCE 获取，sha256 门禁）：
+  sast-adapter 需 `opengrep` 二进制；沙箱 DSH 源码经
+  `sandbox-artifacts/fetch-dsh-src.sh`（上游 pin + 补丁线再生）。
+- 运行姿态：web 容器在 Linux 需 `--add-host host.docker.internal:host-gateway`；
+  引擎服务未设 `CODEAUDIT_JWT_SECRET` 时拒绝启动（安全设计，非缺陷）。
+
+### 一键部署，零 DNS 依赖
+
+- 任意 Docker 主机一条命令拉起全栈：密钥首跑自动随机生成，端口/网段交互确认（可 `--yes`
+  跳过），联动配置自动重算——改一个端口，全链跟随。
+- 全新安装不需要任何 DNS：服务互访走容器内嵌 DNS 与 hosts 别名，用户以 IP+端口直接
+  访问控制台与 API；沙箱路由域是纯字符串路由键，全程不发生解析。
+- 沙箱构建素材按 SBOM+sha256 清单获取：在位即离线复用（`--verify` 复核），缺失才拉取，
+  构建可复现。
+- Windows 原生入口（PowerShell）：`deploy\deploy.ps1` 一键（预检→密钥→镜像源探测→
+  五段式部署→验收门，全程 PS 直驱 docker，零 bash 依赖）；环境引导
+  `deploy\internal\windows\bootstrap.ps1` 可选（缺 Docker/首次使用时装配）。
+  WSL2 壳兜底用户继续走 Linux 命令面。
+- **信任边界提示**：沙箱网关经宿主 `docker.sock` 创建与管理沙箱容器（DooD），这等同把
+  宿主的容器管理权授予网关组件（网关为 digest 钉版最小面，并以策略层限制可执行操作）。
+  请将整套栈部署在您信任的宿主或隔离单元（如独立虚拟机/容器宿主）内，勿与不可信负载混部。
+
+### 企业级底座
+
+- JWT 认证（access/refresh 双令牌、401 单飞刷新）与分链限流；API 网关是后端唯一对外入口。
+- PostgreSQL / Redis / MinIO / Kafka 中间件自携带；任务完成等事件经消息队列进通知中心
+  （控制台未读角标）。
+- 报告在线查看、下载与失败重生成；管理面统一治理用户与 LLM provider/路由（admin 门禁）。
+
+## 端到端工作流
+
+1. **接入代码**：控制台或 VS Code 插件上传 zip/tar.gz 压缩包（≤100MB），或登记 git 仓库
+   地址由平台拉取。
+2. **发起扫描**：五种扫描模式或自定义编排任选，SAST 工具手动多选或按项目语言自动
+   选择；创建即启动，全程支持暂停/恢复/取消。
+3. **实时观测**：任务详情双栏——AI 交互时间线常驻左侧，阶段进度、执行日志、发现列表
+   随任务演进实时刷新。
+4. **裁决发现**：发现详情即 triage 工作台——代码上下文全文、Source→Sink 链路点选定位、
+   AI 分析与修复建议；模式 C/E 另有融合/对比视图。
+5. **应用修复**：VS Code 插件一键应用机器补丁（锚定校验、checkpoint、可回滚），
+   或在控制台查阅补丁建议后人工处置。
+6. **输出报告**：报告中心在线查看/下载（JSON），失败可重新生成；完成通知自动送达
+   通知中心。
+
+## 仓库结构
+
+本仓库为拍平单仓（monorepo）：七个模块目录 + 统一部署编排 `deploy/`：
+
+| 目录 | 角色 | 技术栈 |
+|------|------|--------|
+| `engine/` | 平台引擎：API 网关 + 6 个 gRPC 微服务（project / task / result / storage / sast-adapter / runtime），proto 契约与全套设计文档 | Go |
+| `web/` | Web 控制台（SPA + `/v1` 反代，浏览器只与同源通信） | React 18 · TypeScript · antd 5 · Vite |
+| `vscode-plugin/` | VS Code 插件（扫描 / 结果展示 / 修复 / 回滚） | TypeScript |
+| `manager/` | 沙箱管理服务（纯管道，不持业务状态，不挂 docker.sock） | Python · FastAPI |
+| `openshell-gateway/` | 沙箱管控网关部署事实源（gRPC，DooD 按需拉起沙箱） | 配置仓 |
+| `dsh-pentest-sse/` | 沙箱镜像配方（两阶段 Dockerfile + SBOM 可复现构建输入） | Docker |
+| `dsh-pentest-sse/sandbox-artifacts/dsh-src/` | 沙箱内智能体（DSH）运行时源码供给：上游 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) pin 基线 + `patches/dsh/` 补丁线再生（`fetch-dsh-src.sh`） | Node · TypeScript |
+| `deploy/` | 一键部署与生产编排（Linux/macOS：`production-deploy.sh`；Windows：`deploy.ps1` PowerShell 原生） | bash + PowerShell |
+
+## 快速开始
+
+### 环境要求
+
+- Linux：任意装有 Docker 的服务器（物理机/虚拟机/云主机均可）。
+- Windows：Windows 10 1809+ 与 Docker Desktop（`deploy\deploy.ps1` 原生一键；未启动
+  Docker Desktop 时脚本自动拉起等待）。
+
+### 部署（Linux）
 
 ```bash
-git clone --recurse-submodules https://github.com/7df-lab/7df_CodeAudit.git
-cd 7df_CodeAudit
-bash deploy/production-deploy.sh deploy
+git clone <仓库地址> && cd codeaudit
+bash deploy/internal/production-deploy.sh configure   # 可选：交互确认访问 IP/端口/网段，只落盘不部署
+bash deploy/internal/production-deploy.sh deploy      # 预检→密钥→镜像→五段式部署，幂等可重跑
+bash deploy/internal/production-deploy.sh status      # 栈状态；另有 stop / down [-v]
 ```
 
-脚本自动完成：环境预检 → 生成随机密钥 → 镜像多源预拉 → gateway → manager → engine → 沙箱镜像 → 控制台。
-完成后访问：控制台 `http://<服务器IP>:8088`，网关 API `http://<服务器IP>:8090`（端口可在生成的 `deploy/production.env` 中调整）。
+#### 预建镜像部署（推荐：零编译，sha256 由 registry 背书）
 
-### 方式二：模拟栈体验 + 黑盒验收
+每次正式发布（tag `v*`）由 GitHub Actions 构建九个应用镜像（engine×7 +
+web + manager）推送到 GHCR，版本↔内容对应关系见 Release 附件
+`RELEASE-MANIFEST.txt`（逐镜像 digest）。部署时指向发布通道即跳过全部本地编译：
 
 ```bash
-git clone --recurse-submodules https://github.com/7df-lab/7df_CodeAudit.git
-cd 7df_CodeAudit
-cp deploy/env.sim.example deploy/env.sim
-make deploy-sim        # 构建 + 启动 + 健康等待 + 库表种子
-make test-sim          # 黑盒 e2e：9 个用例只走 HTTP 面
+RELEASE_REGISTRY=ghcr.io/7df-lab RELEASE_IMAGE_TAG=v0.1.3 \
+  bash deploy/internal/production-deploy.sh deploy
 ```
 
-控制台 <http://localhost:18088>（模拟栈种子账号 `admin` / `admin`，仅用于体验环境），
-网关 API <http://localhost:18080>。GUI 全流程约 3 分钟：登录 → 新建项目 → 上传代码包（≤25MB）→ 启动任务 → 查看发现与报告。
+- `RELEASE_IMAGE_TAG` 缺省 `latest`；也可钉 `@sha256:<digest>`（取自
+  manifest 右列）逐字节复现。
+- 任一镜像拉取失败时自动回落本地构建（诚实降级，不会半套混部）。
+- 离线宿主：先在任一有出口的机器下载 Release 素材包（`agent-tools` /
+  `pdtools` / `nuclei-templates` / `dsh-src` 四个 tar.gz），解包到
+  `dsh-pentest-sse/sandbox-artifacts/`——`fetch.sh --verify` 离线复核通过
+  即零下载；`SELFHOST_ASSET_BASE=<解包目录>` 可让 opengrep 同走本地件。
 
-### 方式三：本地开发
+### 部署（Windows，PowerShell 原生）
 
-```bash
-# 后端引擎（Go ≥ 1.22；7 服务逐 module 构建）
-cd engine && make build && make test          # Go 单测 + proto 契约测试（需 python3 + pytest）
-
-# 前端控制台（Node ≥ 20）
-cd web && npm ci
-CODEAUDIT_GATEWAY_URL=http://localhost:8080 npm run dev   # /v1 代理到引擎网关（含 WS）
-
-# VS Code 插件
-cd vscode-plugin && npm ci && npm run compile  # VS Code 中 F5 启动扩展开发宿主
+```powershell
+git clone <仓库地址>; cd codeaudit
+powershell -ExecutionPolicy Bypass -File deploy\deploy.ps1          # 一键：预检→密钥→五段式部署→验收门
+powershell -ExecutionPolicy Bypass -File deploy\deploy.ps1 status   # 另有 stop / down [-v]
 ```
 
-### 关于 AI 全链
+- 非交互环境（CI/管道）加 `--yes`（或环境变量 `PROD_DEPLOY_ASSUME_YES=1`）按现值执行。
+- 部署完成横幅会打印实际访问地址，缺省：
 
-完整 AI 审计需要三个外部组件：**沙箱管理服务（manager）**、**沙箱镜像**与**可出网的 LLM 推理服务**（OpenAI 兼容，在网关侧配置 provider 即可）。
-未配置时平台**诚实降级**：任务在 AI 阶段走内置规则兜底（RuleScan），相关发现标注 `NEEDS_MANUAL`，任务终态与错误信息完整可查——绝不静默挂死；SAST 链路不受影响，两者都是被 e2e 明确测试的行为。
-
-## 🧪 测试与质量门禁
-
-| 模块 | 门禁 |
+| 入口 | 地址（缺省端口） |
 |------|------|
-| engine | SSOT 红线检查 + 7 服务逐 module Go 单测 + pytest + proto 契约测试 |
-| web | Vitest 组件/集成测试 + `tsc -b` 严格类型门禁 |
-| vscode-plugin | Mocha 单测（补丁解析/应用为大头）+ VSIX 构建产物校验 |
-| manager | 离线契约测试（真 HTTP 层 + 假 SDK 注入） |
-| dsh-runtime | 分层 849 个 spec + 逐文件 100% 覆盖率门 + 快照测试 |
-| 全栈 | 黑盒 e2e 9 用例（上传 → SAST 全链 → 报告 → 通知 → 控制台 → AI 链路/诚实降级） |
+| Web 控制台 | `http://<宿主IP>:8088` |
+| 平台 API（REST + WS） | `http://<宿主IP>:8090` |
 
-## 📚 文档导航
+- 缺省账号 `admin / admin`：**仅用于首次登录，登录后请立即修改口令**。
+- LLM 接入：AI 扫描依赖你自己的大模型服务。部署完成后以管理员身份经平台管理 API
+  （`/v1/inference`，admin 门禁）注册 provider 并设置模型路由——部署完成横幅附具体指引；
+  密钥只存于你的部署内。
 
-| 内容 | 入口 |
-|------|------|
-| 总体架构 / 八层设计 / 五模式 | [engine/01_总体架构设计.md](engine/01_总体架构设计.md) |
-| 数据契约唯一事实源 | [engine/codeaudit_common.proto](engine/codeaudit_common.proto) |
-| 接口规范 | [engine/03_接口规范.md](engine/03_接口规范.md) |
-| 工作流 / 状态机 / Saga | [engine/04_工作流设计.md](engine/04_工作流设计.md) |
-| 沙箱安全模型 | [engine/06_OpenShell集成设计.md](engine/06_OpenShell集成设计.md) |
-| 性能与 SLO 基线 | [engine/07_非功能指标基线.md](engine/07_非功能指标基线.md) |
-| 测试计划 | [engine/10_测试计划.md](engine/10_测试计划.md) |
-| 部署与运维 | [deploy/README.md](deploy/README.md) |
-| 开发 / 测试 / 生产全景速查 | [docs/dev-prod-map.md](docs/dev-prod-map.md) |
+### 部署（Windows，实验性）
 
-## 🗺️ Roadmap
-
-- [ ] Kubernetes + Helm 交付形态
-- [ ] IntelliJ 平台插件、CLI 与 CI Webhook 入口
-- [ ] 第二梯队语言（C/C++/Rust/Ruby/PHP）支持完善
-- [ ] 增量扫描落地（变更文件级复扫）
-
-## 🤝 参与贡献
-
-欢迎 Issue 与 PR。本仓库同时是 AI 协作工作区：AI 会话开工请先读 [AGENTS.md](AGENTS.md)（红线与并行认领协议），历史问题档案见 [LESSONS.md](LESSONS.md)，步骤级操作手册见 [docs/playbooks/](docs/playbooks/)。
-
-提交均经 pre-commit 敏感信息门禁（`make hooks` 安装，`make sanitize-check` 手动触发）——内网地址与密钥不入库。
-
-## 📄 License
-
-各组件目录当前尚未附带开源许可证，正式对外发布与二次分发前请先确认许可条款。
-
----
-
-<details>
-<summary><b>仓库维护（内部协作速查）</b></summary>
-
-伞仓 = 并行开发工作区：每个子目录都是完整独立仓库，日常开发直接在子目录进行。
-
-```bash
-make status                        # 各子仓 分支/领先落后/未提交 一览（开工先看）
-make pull                          # 全部子仓 pull --ff-only（日常同步入口）
-make update                        # 新 clone 引导：submodule init + 检出
-make pin MSG="..."                 # 可选：记录部署/对账版本锚点
-make hooks                         # 安装 pre-commit 敏感信息门禁（新 clone 必跑）
-make sanitize                      # 工作区内网地址 → 占位符（幂等）
-make sanitize-check                # 提交前门禁：硬违例阻断 + 人工确认清单
-make deploy-sim / test-sim         # 模拟栈部署 / e2e
-make down-sim / destroy-sim / logs-sim   # 停栈 / 彻底重置 / 排障
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\internal\windows\bootstrap.ps1 -RepoUrl <仓库地址>
+# 引导完成后自动进入同一 bash 部署入口（-Action 透传 configure/deploy/status/stop/down）
+powershell -ExecutionPolicy Bypass -File deploy\internal\windows\expose-lan.ps1   # 可选：向局域网开放访问
 ```
 
-- 部署纪律与四步自检：[deploy/README.md](deploy/README.md)；
-- 测试部署一律走容器，宿主机裸栈已退役；
-- 端口/SSOT/入口命令口径以 [docs/dev-prod-map.md](docs/dev-prod-map.md) 为准。
+## 安全设计
 
-</details>
+| 面 | 机制 |
+|----|------|
+| AI 隔离 | 智能体只在按需拉起的沙箱容器内运行；沙箱内桥接组件零出站连接；运行期唯一出网 = 用户注册的 LLM endpoint |
+| 代码边界 | 上传件经网关零落盘直转对象存储；任务源栈内共享卷流转，不出部署栈 |
+| 认证限流 | JWT 登录/刷新/登出；免认证链与保护链分别限流，限流键绑定身份 |
+| 上传约束 | 仅 zip/tar.gz，≤100MB，multipart 直传（网关 MaxBytesReader + 计数双保险） |
+| 补丁安全 | 服务端先做一道补丁规范化校验；插件侧工作区禁闭（拒绝绝对路径与 `..` 逃逸）+ 锚定失败整体拒绝 + 应用前 checkpoint 可回滚 |
+| 密钥治理 | 一键部署首跑自动生成随机 JWT 密钥与内部服务 token，无缺省弱密钥旁门 |
 
-<div align="center">
+## 质量工程
 
-如果 CodeAudit 对你有帮助，欢迎点一个 Star ⭐
+- **单仓门禁**：每个子仓自带交付门禁——引擎仓 11 项检查（SSOT 红线/单测/契约/守门/变异自检），
+  前端仓类型门禁 + 静态守卫 + 变异检验，插件仓结构守卫（命令/配置/注册互为全集），沙箱镜像仓
+  生命周期/线协议/静态一致性用例。
+- **契约先行**：各仓维护外部接口/内部接口/数据流三件套文档，测试与文档锚点双向追溯；
+  数据契约以 proto 为单一事实源。
+- **端到端**：11 场景 e2e 套件（健康/认证/项目/上传→SAST 全链/控制台/通知/AI 链路/
+  GUI 用户路径/可观测面/推理管理面/增量扫描两连扫），黑盒只走用户可见面，样本漏洞自带。
+- **GUI 黑盒门禁**：真实浏览器驱动登录→上传→流式观测→裁决→报告→通知全流程闭环。
+- **变异检验**：对历史缺陷注入等价变异，证明回归锁真的会红——"测试全绿"必须可信。
 
-</div>
+## 已知边界（如实声明）
+
+| 边界 | 说明 |
+|------|------|
+| 压缩包上传 ≤100MB | 更大代码库请用 git 仓库地址方式接入 |
+| 用户体系 V1 | 暂无自助注册与用户列表；管理员按 ID 查询与停/启用账号 |
+| VS Code 插件 | 单根工作区（多根只认第一个）；AI 正文以纯文本流渲染 |
+| Windows 部署 | 引导脚本为实验性路径，优先推荐 Linux 主机部署 |
+| AI 外部依赖 | AI 链路需要可达的 LLM 服务；不可达时规则扫描兜底或明确失败，不静默 |
+
+## 致谢
+
+- 沙箱智能体运行时基于开源项目 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（fork + 补丁）。
+- 沙箱管控使用 OpenShell 网关（`ghcr.io/nvidia/openshell`）。
+- VS Code 插件的补丁解析器移植自 Cline PatchParser。
+- SAST 能力使用 bandit 与 opengrep。
+

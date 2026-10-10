@@ -1,27 +1,39 @@
 // 项目列表组件回归（14号 P0 页面）：渲染 + 创建流行为（ADR-203 fakeGateway 测试台）
-// ADR-203（人类 2026-09-05 裁决，推翻方案b移除）：弹窗上传入口保留并改造为零落盘直传——
+// ADR-203：弹窗上传入口保留并改造为零落盘直传——
 // uploadArchive(ADR-200 file_id 契约) → 项目 config.upload_file_id → 任务启动时后端拉包。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import ProjectsPage from '../pages/ProjectsPage';
+import ProjectNewPage from '../pages/ProjectNewPage';
 import { SessionProvider } from '../auth/session';
-import { useFakeGateway } from '../testsupport/fakeGateway';
+import { httpError, useFakeGateway } from '../testsupport/fakeGateway';
+
+let configFail = false;
 
 const gateway = useFakeGateway({
   'GET /v1/projects': () => ({
-    // ADR-164: 列表走服务端游标翻页——响应含 pagination.total；p-up 为上传型项目（无 repo_url）
+    // ADR-164: 列表走服务端游标翻页——响应含 pagination.total；p-up 为上传型项目（无 repo_url）；
+    // p-e2e/p-bare=2026-10-08 报障夹具：无名上传（API/e2e 路径不写名）与全无源码两种失真态
     projects: [
       { project_id: 'p1', name: 'Demo', repo_url: 'https://x', default_branch: 'main', default_scan_mode: 'SCAN_MODE_AI_ONLY', created_at: null },
       { project_id: 'p-up', name: '上传型', repo_url: '', default_branch: 'main', default_scan_mode: 'SCAN_MODE_AI_ONLY', created_at: null },
+      { project_id: 'p-e2e', name: 'E2E无名上传', repo_url: '', default_branch: 'main', default_scan_mode: 'SCAN_MODE_SAST_ONLY', created_at: null },
+      { project_id: 'p-bare', name: '裸项目', repo_url: '', default_branch: 'main', default_scan_mode: 'SCAN_MODE_SAST_ONLY', created_at: null },
     ],
-    pagination: { next_cursor: '', has_next: false, total: 2 },
+    pagination: { next_cursor: '', has_next: false, total: 4 },
   }),
   'GET /v1/projects/p-up/config': () => ({ project_id: 'p-up', config: { upload_file_id: 'file-9', upload_file_name: 'code9.zip' } }),
+  'GET /v1/projects/p-e2e/config': () => ({ project_id: 'p-e2e', config: { upload_file_id: 'file-x' } }),
+  'GET /v1/projects/p-bare/config': () => ({ project_id: 'p-bare', config: {} }),
   'POST /v1/uploads/archive': () => ({ upload_id: 'up-1', file_id: 'file-1', file_path: 'uploads/up-1/src.zip', size_bytes: 3 }),
   'POST /v1/projects': () => ({ project_id: 'p-new' }),
-  'PUT /v1/projects/:projectId/config': () => ({ project_id: 'p-new', config: {} }),
+  // 交互审计 Top4-③：源码关联失败可注入（此前整体 onError 报"创建失败"，重试=重复建项目）
+  'PUT /v1/projects/:projectId/config': () => {
+    if (configFail) throw httpError(500, { error: 'storage down' });
+    return { project_id: 'p-new', config: {} };
+  },
   'POST /v1/tasks': () => ({ task_id: 't-new' }),
   'POST /v1/tasks/:taskId/start': () => ({}),
 });
@@ -61,12 +73,18 @@ describe('ProjectsPage', () => {
     expect(screen.getAllByText('模式B 纯AI').length).toBe(2);
   });
 
-  it('上传型项目源码列显示压缩包原始文件名（2026-09-09 用户指令；存量无键回落"上传压缩包"）', async () => {
+  it('源码列三态（2026-10-08 报障收口）：有名=文件名 / 无名=统一短文案 / 无源码=如实未配置', async () => {
     renderWith();
     await waitFor(() => expect(screen.getByText('上传型')).toBeTruthy());
-    // config.upload_file_name 在位 → 显示文件名（悬浮见 file_id）
+    // ①有名（web 创建/换源码路径写入）→ 显示文件名（悬浮见 file_id）
     await waitFor(() => expect(screen.getByText('code9.zip')).toBeTruthy());
     expect(screen.getByText('code9.zip').closest('span')?.getAttribute('title')).toBe('file-9');
+    // ②无名上传（API/e2e 路径不写名、原名服务端无档）→ 统一短文案，悬浮见 file_id 溯源
+    await waitFor(() => expect(screen.getByText('压缩包（名称未记录）')).toBeTruthy());
+    expect(screen.getByText('压缩包（名称未记录）').closest('span')?.getAttribute('title')).toBe('file-x');
+    // ③全无源码 → 如实"未配置源码"；泛称"上传压缩包"从列表绝迹（此前无源码项目被假称有上传件）
+    await waitFor(() => expect(screen.getByText('未配置源码')).toBeTruthy());
+    expect(screen.queryByText('上传压缩包')).toBeNull();
   });
 
   it('ADR-203: 上传压缩包创建项目——file_id 落项目 config，自动建任务 config 留空', async () => {
@@ -108,6 +126,29 @@ describe('ProjectsPage', () => {
     );
   });
 
+  it('交互审计 Top4-③: 项目已建但源码关联失败——如实警告并跳详情，不误报"创建失败"不自动建任务', async () => {
+    configFail = true;
+    try {
+      renderWith();
+      await waitFor(() => expect(screen.getByText('Demo')).toBeTruthy());
+      await openModal();
+      const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+      fireEvent.change(fileInput, {
+        target: { files: [new File(['zip'], 'src.zip', { type: 'application/zip' })] },
+      });
+      await waitFor(() =>
+        expect(gateway.requests.some((r) => r.url === '/v1/uploads/archive')).toBe(true),
+      );
+      await submitModal();
+      // 部分成功如实呈现：警告而非错误，自动建任务被跳过（源码未关联，启动必败）
+      expect(await screen.findByText(/项目已创建，但压缩包关联失败/)).toBeTruthy();
+      await waitFor(() =>
+        expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/tasks')).toBe(false));
+    } finally {
+      configFail = false;
+    }
+  });
+
   // 复审修正（R）：dict 补 SCAN_MODE_UNSPECIFIED 展示键后，新建入口过滤谓词没同步——
   // 可选"未指定"→ MODE_SPECS 缺项 → sast_tools:[] → P-26 同型任务必 FAILED 复活
   it('R: 新建项目模式下拉不含"未指定"（UNSPECIFIED 不进新建入口）', async () => {
@@ -121,7 +162,7 @@ describe('ProjectsPage', () => {
     expect(titles).toContain('模式D AI增强SAST'); // 正常模式不受牵连
   });
 
-  // (P3-i)：accept 只约束文件选择器，拖拽可绕过——非压缩包扩展名本地拦截不发请求
+  // B5(P3-i)：accept 只约束文件选择器，拖拽可绕过——非压缩包扩展名本地拦截不发请求
   it('B5: 扩展名预检——非 zip/tar.gz 不发起上传请求', async () => {
     renderWith();
     await waitFor(() => expect(screen.getByText('Demo')).toBeTruthy());
@@ -145,7 +186,7 @@ describe('ProjectsPage', () => {
     expect(gateway.requests.some((r) => r.url === '/v1/uploads/archive')).toBe(false);
   });
 
-  // B5-P1-3（web-audit-2026-09-12）：模式D（AI_ENHANCED_SAST）需要 SAST 工具——
+  // B5-P1-3：模式D（AI_ENHANCED_SAST）需要 SAST 工具——
   // 旧 NEEDS_TOOLS 集合漏了它，自动任务 sast_tools:[] 被 sast-adapter RunMultipleScans
   // 以 "tool_ids is required" 400 拒绝→runModeDEnhanced 判全失败→任务必 FAILED。
   // 修复后与 TaskNewPage MODE_SPECS.needsSastTools 单一事实源对齐。
@@ -187,7 +228,23 @@ describe('ProjectsPage', () => {
     );
   });
 
-  it('ADR-203: 上传与仓库都缺省——mutation 层拦截，不发创建请求', async () => {
+  // P1-4：自动链显式化——"创建后立即按默认模式扫描"默认勾选
+  // ，取消则只建项目
+  it('P1-4: 取消"创建后立即扫描"→ 只建项目，不 POST /v1/tasks', async () => {
+    renderWith();
+    await waitFor(() => expect(screen.getByText('Demo')).toBeTruthy());
+    await openModal();
+    // 弹窗内唯一复选框=auto_scan（默认勾选 → 取消）
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.change(screen.getByPlaceholderText('https://git.example.com/team/repo.git'),
+      { target: { value: 'https://git.example.com/team/repo5.git' } });
+    await submitModal();
+    // antd message 单例跨用例残留（B5 扩展名用例同款先例）——findAll 容忍多命中
+    expect((await screen.findAllByText('项目已创建')).length).toBeGreaterThan(0);
+    expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/tasks')).toBe(false);
+  });
+
+  it('ADR-203: 上传与仓库都默认——mutation 层拦截，不发创建请求', async () => {
     renderWith();
     await waitFor(() => expect(screen.getByText('Demo')).toBeTruthy());
     await openModal();
@@ -196,7 +253,7 @@ describe('ProjectsPage', () => {
     expect(gateway.requests.some((r) => r.url === '/v1/projects' && r.method === 'POST')).toBe(false);
   });
 
-  // （审计修复）：上传→取消→再建项目——取消必须清空上传态。此前 onCancel 只关弹窗，
+  // B4-2（审计修复）：上传→取消→再建项目——取消必须清空上传态。此前 onCancel 只关弹窗，
   // 旧 file_id 残留：再建项目时 config 被写入上一个已取消项目的上传件（新项目源码指向错包）。
   it('B4-2: 上传→取消→再建项目——取消清空上传态，新建链路 payload 无 upload_file_id', async () => {
     renderWith();
@@ -234,5 +291,42 @@ describe('ProjectsPage', () => {
     expect(gateway.requests.some((r) => JSON.stringify(r.body ?? {}).includes('upload_file_id'))).toBe(false);
     // 也没有旧包触发的 config 写入（上传态已清，uploadFileId=null 分支不进）
     expect(gateway.requests.some((r) => r.method === 'PUT' && /\/v1\/projects\/.+\/config$/.test(r.url))).toBe(false);
+  });
+});
+
+// ?new=1 旧深链——流程统一批
+// 改为兼容重定向 /projects/new 薄壳（与 /tasks/new 同构的入口范式）
+describe('ProjectsPage（?new=1 旧深链兼容重定向）', () => {
+  it('带 ?new=1 进入 → 重定向 /projects/new 薄壳（弹窗自动打开）', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <MemoryRouter initialEntries={['/projects?new=1']}>
+            <Routes>
+              <Route path="/projects" element={<ProjectsPage />} />
+              <Route path="/projects/new" element={<ProjectNewPage />} />
+            </Routes>
+          </MemoryRouter>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+    // 薄壳页弹窗自动打开；auto_scan 复选框文案佐证落点在新版 ProjectCreateModal
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy());
+    expect(await screen.findByText(/创建后立即按默认模式扫描并启动/)).toBeTruthy();
+  });
+
+  it('不带参数 → 弹窗不自动打开', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionProvider>
+          <MemoryRouter initialEntries={['/projects']}>
+            <ProjectsPage />
+          </MemoryRouter>
+        </SessionProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

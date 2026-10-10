@@ -69,6 +69,9 @@ func (s *TaskServiceImpl) StreamTaskSnapshot(req *pb.StreamTaskSnapshotRequest, 
 	if taskID == "" {
 		return status.Error(codes.InvalidArgument, "task_id is required")
 	}
+	if _, ok := s.taskByIDRW(taskID); !ok { // HA P1-c 读回落（跨副本任务可订阅）
+		return status.Errorf(codes.NotFound, "task %s not found", taskID)
+	}
 	notify, unsub := s.hub.subscribe(taskID)
 	defer unsub()
 

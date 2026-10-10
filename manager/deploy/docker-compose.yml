@@ -1,4 +1,4 @@
-# openshell-manager —— LXC 107 docker compose 部署。
+# openshell-manager —— 部署主机 docker compose 部署。
 #
 # 链路：codeaudit / 引擎 → 本服务(:18800) → 网关 gRPC(缺省 host.docker.internal:<发布口>)。
 # 容器内天然非环回绑定，OPENSHELL_MANAGER_TOKEN 必配（服务自身 validate()
@@ -7,14 +7,34 @@
 # 不挂 docker.sock：本服务只通过 gRPC 与网关交互，沙箱容器由网关创建。
 # 网关端点经 host.docker.internal(host-gateway 别名)走宿主已发布口，零 DNS 依赖
 # （与网关 compose 的 host.openshell.internal 同一机制；自定义域名自行加 extra_hosts）。
+#
+# 2026-09-15（R31）：项目名显式钉死（顶层 name），--project-directory 的目录
+# basename 不再决定项目名——本地仓根与远端 DEPLOY_DIR 两路径收敛同一项目；
+# build context=..（本文件所在 deploy/ 的父目录 = 构建上下文根），与仓内布局
+# 同构，staging 摊平退役。
+
+name: openshell-manager
+
+# 日志轮转：docker json-file 缺省无上限——bridge 线材/任务日志
+# 长运行膨胀吞磁盘。诊断面轮转（max-size 20m×5=每容器至多 100m）；审计真相
+# 不在 docker logs（业务面=.tasklog/ai-interaction 卷+PG+events 档案）。
+x-logging: &default_logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
 
 services:
   manager:
+    logging: *default_logging
     build:
-      context: .
-      dockerfile: Dockerfile.manager
-    image: openshell-manager:2.0.0
-    container_name: openshell-manager
+      context: ..
+      dockerfile: deploy/Dockerfile.manager
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
+    image: openshell-manager:${MANAGER_IMAGE_TAG:-2.0.0}
+    # HA P2（ADR-250）：去固定 container_name——manager 无状态（探查实证 Stateless/
+    # 零 DB/纯 gRPC 直通），多副本可直接 scale；服务寻址走服务名/网络别名。
     restart: unless-stopped
 
     user: "65534"
@@ -39,11 +59,11 @@ services:
 
 networks:
   default:
-    # 网络名带项目全名（伞仓部署链一览：codeaudit-engine / -sandbox-gateway /
+    # 网络名带项目全名（主仓库部署链一览：codeaudit-engine / -sandbox-gateway /
     # -sandbox-gateway-manager / -web），不用缩写
     name: codeaudit-sandbox-gateway-manager-net
     ipam:
       config:
         # 显式钉住网段：daemon.json 的默认池含 192.168.0.0/16，避免自动分配
-        # 撞上物理 LAN（LXC=gateway.internal / PVE=pve.internal）。
-        - subnet: 10.10.109.0/24
+        # 撞上物理 LAN（部署主机=192.0.2.122 / 宿主机=192.0.2.200）。
+        - subnet: 172.28.109.0/24

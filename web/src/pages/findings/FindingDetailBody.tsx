@@ -1,11 +1,13 @@
-// 发现详情（14号 §3.3 ④，P0 triage 工作台）：字段全部溯源 proto UnifiedFinding
+// 发现详情（14号 §3.3 ④，P0 triage 工作台）：字段全部溯源 proto UnifiedFinding（P4）
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Card, Descriptions, Input, Select, Space, Spin, Tag, Tooltip, Typography, message } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, getSourceFile, probeSourceFile } from '../../api/client';
+import { api, apiErrorMessage, errStatus, getSourceFile, probeSourceFile } from '../../api/client';
 import type { UnifiedFinding } from '../../api/types';
-import { AI_VERDICT, SEVERITY, zh } from '../../dict';
-import { MONO_FONT, SEVERITY_COLOR, VERDICT_COLOR } from '../../dict/tokens';
+import { SEVERITY, zh } from '../../dict';
+import { MONO_FONT, SEVERITY_COLOR } from '../../dict/tokens';
+import { VERDICT_STATE_COLOR, VERDICT_STATE_LABEL, hasConclusion, needsReview, verdictState } from '../../dict/verdict';
+import { useCanWrite } from '../../auth/session';
 import { EVIDENCE } from '../../theme/evidence';
 import PageHeader from '../../components/PageHeader';
 import { PageLoading } from '../../components/states';
@@ -142,18 +144,23 @@ function extractCodeContext(rawB64: string | undefined, hintFile?: string, hintL
 
 export function FindingDetailBody({ findingId }: { findingId: string }) {
   const qc = useQueryClient();
-  const [verdict, setVerdict] = useState<string>('AI_VERDICT_TRUE_POSITIVE');
+  // ADR-257: verdict 回写=owner/admin 写面；VIEWER 不渲染人工裁决卡（后端为最终防线）
+  const canVerdict = useCanWrite();
+  // 人工裁决=确定档方向判定（两轴 2026-10-09）：tier 服务端钉 DEFINITE，界面只选方向
+  const [verdict, setVerdict] = useState<string>('VERDICT_DIRECTION_TRUE');
   const [reasoning, setReasoning] = useState('');
   // ADR-195: 链路点选态——path 为原文写法（裸文件名/截断路径，服务端 source-file 回退解析）
   const [selHop, setSelHop] = useState<{ path: string; line?: number; endLine?: number } | null>(null);
 
-  // (P3-k)：主查询失败显性化——data 空涵盖"加载中/出错/不存在"，旧实现只认加载态，
+  // B5(P3-k)：主查询失败显性化——data 空涵盖"加载中/出错/不存在"，旧实现只认加载态，
   // 404/网络失败时永远停在"加载中…"（深链场景直达此页）
   const { data: resp, isError: findingError, error: findingErr, refetch: refetchFinding } = useQuery({
     queryKey: ['finding', findingId],
     queryFn: async () => (await api.get(`/v1/findings/${findingId}`)).data as { finding: UnifiedFinding },
   });
   const f = resp?.finding;
+  // R97 报障批：服务端 NormalizeDiffPatch 校验后的修复补丁（空串=未产出/失配丢弃）
+  const diffPatch = (f?.diff_patch || '').trim();
 
   // ADR-195: AI 结论 Source→Sink 链路解析（普适解析器，原文顺序 hops）。
   // 两阶段（2026-09-13 误挂接根治）：chainRaw=无校验解析（现行为，提供待探测文件表）；
@@ -221,18 +228,18 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
   });
 
   const triage = useMutation({
-    mutationFn: async () => api.put(`/v1/findings/${findingId}/verdict`, { verdict, reasoning }),
+    mutationFn: async () => api.put(`/v1/findings/${findingId}/verdict`, { direction: verdict, reasoning }),
     onSuccess: () => {
       message.success('结论已回写');
       // ADR-152 补充：同步失效发现列表缓存——否则外层行标签停留在"未判定"
       qc.invalidateQueries({ queryKey: ['findings'] });
       qc.invalidateQueries({ queryKey: ['finding', findingId] });
-      // （审计修复）：本组件还内嵌于 ReviewView 行展开（I-A0），且任务详情 Tabs 的
+      // B4-3（审计修复）：本组件还内嵌于 ReviewView 行展开（I-A0），且任务详情 Tabs 的
       // 融合/审核视图读 ai_verdict——裁决成功联动前缀失效，切 Tab/展开不再停留旧结论。
       qc.invalidateQueries({ queryKey: ['fusion-findings'] });
       qc.invalidateQueries({ queryKey: ['review-findings'] });
     },
-    onError: (e) => message.error(`回写失败：${(e as Error).message}`),
+    onError: (e) => message.error(`回写失败${errStatus(e) ? `（HTTP ${errStatus(e)}）` : ''}：${apiErrorMessage(e)}`),
   });
 
   usePageTitle(f?.title?.slice(0, 40) ?? '发现详情');
@@ -255,12 +262,12 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
   // 写入方推断（ADR-167 补遗 + 2026-09-09 三分法）：AI 链路创建期即写 verdict+reasoning
   // （带 [DSH-sandbox]/[LLM:] 前缀），系统降级标记带 [降级] 前缀 → 由此区分；其余有理由的
   // 判定=人工（UpdateVerdict 链路）。
-  const verdictSet = !!f.ai_verdict && f.ai_verdict !== 'AI_VERDICT_UNSPECIFIED';
+  const verdictSet = hasConclusion(f.verdict_direction);
   const isAI = isAIReasoning(f.ai_reasoning);
   const isSystem = !isAI && isSystemReasoning(f.ai_reasoning);
   const isHuman = verdictSet && !!f.ai_reasoning && !isAI && !isSystem;
 
-  //  签名元素: Source→Sink 证据链一眼视图。数据优先级：OpenGrep 变量级
+  // 设计整改 P3 签名元素: Source→Sink 证据链一眼视图。数据优先级：OpenGrep 变量级
   // dataflow_trace > AI 结论解析链（role 标注）；两者皆无则不渲染（不为单点造流程感）
   const chainSteps: ChainStep[] = (() => {
     if (isTaintRule(f.source_rule_id) && dfTrace && (dfTrace.source || dfTrace.sink)) {
@@ -278,7 +285,7 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
 
   return (
     // ADR-151: 展开态铺满表格宽度（与其他内容对齐）；独立页场景同为响应式全宽。
-    //  标题降 level 4（本组件常嵌在表格展开行/Tab 内，level 3 与外层页面同级过大）
+    // 设计整改 P1: 标题降 level 4（本组件常嵌在表格展开行/Tab 内，level 3 与外层页面同级过大）
     <div style={{ width: '100%' }}>
       <PageHeader level={4} title={f.title} />
       {chainSteps.length >= 2 && (
@@ -540,9 +547,12 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
       <Card title="当前结论" style={{ marginBottom: 16 }}>
         <Space direction="vertical" style={{ width: '100%' }}>
           <Space wrap>
-            {/* 空值显式归一"未判定"（zh 已无枚举特判，B3-5；展示行为不变） */}
-            <Tag color={VERDICT_COLOR[f.ai_verdict]}>{zh(AI_VERDICT, f.ai_verdict || 'AI_VERDICT_UNSPECIFIED')}</Tag>
-            {verdictSet && (
+            {/* 五态组合标签（两轴 2026-10-09，与列表页/CSV 同源 dict/verdict） */}
+            <Tag color={VERDICT_STATE_COLOR[verdictState(f)]}>{VERDICT_STATE_LABEL[verdictState(f)]}</Tag>
+            {/* 写入方门控（两轴重构 2026-10-09）：降级/AI 写入可发生在"未判定"上
+                （原 NEEDS_MANUAL 曾计入已判定）——只要能推断写入方就标注；
+                "未记录"档仍要求有结论（无结论又无前缀=确实没人写过） */}
+            {(verdictSet || isAI || isSystem) && (
               <Tag color={isAI ? 'geekblue' : isSystem ? 'gold' : isHuman ? 'blue' : 'default'}>
                 {isAI
                   ? '写入方：AI 分析'
@@ -580,7 +590,7 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
           {/* P4：裁决理由必须原文展示 */}
           {isHuman && (
             <Alert
-              type={f.ai_verdict === 'AI_VERDICT_NEEDS_MANUAL' ? 'warning' : 'info'}
+              type={needsReview(f) ? 'warning' : 'info'}
               showIcon
             message="裁决理由"
             description={<Typography.Text style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{f.ai_reasoning}</Typography.Text>}
@@ -594,16 +604,61 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
               )}
             </Card>
           )}
+          {/* R97 报障批（2026-09-18）：服务端校验后的修复补丁此前 web 全无消费入口
+              （仅 vscode-plugin 消费）——此处只读渲染+复制；应用补丁仍走插件工作区链路 */}
+          {diffPatch && (
+            <Card
+              size="small"
+              title="修复补丁（apply_patch）"
+              extra={(
+                <Button
+                  size="small"
+                  onClick={() => {
+                    // clipboard API 仅安全上下文（https/localhost）可用——生产 http 部署
+                    // 该对象为 undefined，须走 execCommand 降级（对抗审查 R97 补遗）
+                    const done = () => message.success('补丁已复制到剪贴板');
+                    const fail = () => message.error('复制失败');
+                    if (navigator.clipboard?.writeText) {
+                      navigator.clipboard.writeText(diffPatch).then(done, fail);
+                      return;
+                    }
+                    const ta = document.createElement('textarea');
+                    ta.value = diffPatch;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    try {
+                      if (document.execCommand('copy')) done(); else fail();
+                    } catch {
+                      fail();
+                    } finally {
+                      document.body.removeChild(ta);
+                    }
+                  }}
+                >
+                  复制
+                </Button>
+              )}
+            >
+              <Typography.Text style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: MONO_FONT, fontSize: 12, display: 'block' }}>
+                {diffPatch}
+              </Typography.Text>
+            </Card>
+          )}
         </Space>
       </Card>
 
-      <Card title="人工裁决">
+      {canVerdict && (<Card title="人工裁决">
         <Space direction="vertical" style={{ width: '100%' }}>
           <Select
             style={{ width: 240 }}
             value={verdict}
             onChange={setVerdict}
-            options={Object.entries(AI_VERDICT).filter(([k]) => k !== 'AI_VERDICT_UNSPECIFIED').map(([value, label]) => ({ value, label }))}
+            options={[
+              { value: 'VERDICT_DIRECTION_TRUE', label: '确认为真' },
+              { value: 'VERDICT_DIRECTION_FALSE', label: '误报' },
+            ]}
           />
           <Input.TextArea
             value={reasoning}
@@ -614,7 +669,7 @@ export function FindingDetailBody({ findingId }: { findingId: string }) {
             提交裁决
           </Button>
         </Space>
-      </Card>
+      </Card>)}
     </div>
   );
 }

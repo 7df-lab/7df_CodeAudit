@@ -3,7 +3,7 @@
 E2E 五模式垂直贯通测试（tests/e2e/test_e2e_four_modes.py；文件名保留 four_modes 兼容既有引用）
 
 设计依据:
-  - ADR-186 五模式矩阵（2026-09-03 ；ADR-182 四模式矩阵的扩展）:
+  - ADR-186 五模式矩阵（2026-09-03 人类决策；ADR-182 四模式矩阵的扩展）:
       A=SCAN_MODE_SAST_ONLY 纯SAST多工具并行→去重合并
       B=SCAN_MODE_AI_ONLY 纯AI
       C=SCAN_MODE_PARALLEL SAST+AI并行→融合去重（默认推荐）
@@ -15,7 +15,7 @@ E2E 五模式垂直贯通测试（tests/e2e/test_e2e_four_modes.py；文件名�
 
 贯通路径（每个模式均为真实 gRPC 跨服务调用链）:
   gateway(可选) → task-service(编排) → sast-adapter(RunMultipleScans→真bandit) 
-    → dsh-runtime(AnalyzeCode/RunAIAnalysis/Verify/Missed/Review→沙箱DSH；降级内置RuleScan ADR-175)
+    → runtime(AnalyzeCode/RunAIAnalysis/Verify/Missed/Review→沙箱DSH；降级内置RuleScan ADR-175)
     → result-service(BatchCreateFindings/BatchUpdateVerdict/GenerateReport, memory store)
 """
 import os
@@ -177,7 +177,7 @@ def test_mode_c_parallel_fusion_end_to_end(services_up):
 # ============================================================
 def test_mode_d_ai_enhanced_end_to_end(services_up):
     # ADR-186: SAST 全工具扫描（模式A 内容来源段）→ VerifySASTResults 逐条沙箱验证
-    #（dsh-runtime 侧同文件同段去重：一组一轮沙箱）→ BatchUpdateVerdict 回写 → 融合 → 报告。
+    #（runtime 侧同文件同段去重：一组一轮沙箱）→ BatchUpdateVerdict 回写 → 融合 → 报告。
     # 验证轮次=去重后组数 × 真实 DSH 回合时长，预算对齐模式B（600s）再加验证轮余量。
     task_id, status = create_and_run(pb.SCAN_MODE_AI_ENHANCED_SAST, ["bandit", "opengrep"], timeout=900)
     assert status == pb.TASK_STATUS_COMPLETED, f"mode D ended {pb.TaskStatus.Name(status)}"

@@ -22,7 +22,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// 源码全文读取上限（ADR-195；2026-09-08 用户指令上调）：5MiB——覆盖常规源码文件；超限如实 413，
+// 源码全文读取上限：5MiB——覆盖常规源码文件；超限如实 413，
 // 前端降级回 ADR-143 扫描时捕获的 ±10 行片段。
 const maxSourceFileBytes = 5 << 20
 
@@ -52,7 +52,7 @@ func resolveProjectRoot(dir string) string {
 // resolveTaskRoot — 任务源根解析（ADR-195 顺序 + ADR-225 ⑤流）：
 // ①repos_dir/<task_id>（仓库拉取流）①b uploads-<task_id>/unpacked（ADR-200 storage
 // 拉包流：task-service FetchUploadArchive 的落点布局，2026-09-06 起含剥壳——
-// 实证：布局迁移后旧四流对上传流任务全部落空 → 源码全文 404）
+// gw-f6a3523 实证：布局迁移后旧四流对上传流任务全部落空 → 源码全文 404）
 // ②上传目录链接文件 ③project config project_path（ADR-148 上传流）
 // ④唯一内容回退（按 seedPath 在全部上传目录查包含者；唯一命中即用，多命中取
 // mtime 最新——覆盖 ADR-195 之前创建的无链接存量任务）
@@ -244,7 +244,7 @@ func resolveWithinRoot(root, path string) (string, string, error) {
 
 // sourceFile — GET /v1/tasks/{id}/source-file?path=<项目相对路径|裸文件名>[&resolve_only=1]。
 // 响应: {path, content, total_lines, bytes, root_via, resolved_via}。
-// resolve_only=1（2026-09-13 链路 chip 文件存在性探测）：命中只返回
+// resolve_only=1：命中只返回
 // {path, bytes, root_via, resolved_via}，不读内容、不受大小上限/二进制探测约束——
 // 存在性与可读性是两个语义：超限/二进制文件存在但全文复核降级，chip 不应因此标"未定位"。
 // 兼容：老网关忽略未知 query 参数照常返回全文，前端探测把 200 一律视为存在。

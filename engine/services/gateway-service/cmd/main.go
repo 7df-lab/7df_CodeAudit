@@ -34,7 +34,6 @@ func main() {
 	// /health 豁免 JWT+限流：compose healthcheck 与 LB 探活依赖它（ADR-132；
 	// 此前被中间件包住导致容器永远 unhealthy）。
 	publicMux := http.NewServeMux()
-	publicMux.HandleFunc("/health", handler.HealthHandler)
 
 	// ---- 业务路由 /v1/*：真实 JSON↔gRPC 转码（03 §1.1，ADR-132）----
 	// 此前是 HTTP 反代直打 gRPC 端口（协议错配必失败），已删除。
@@ -44,9 +43,13 @@ func main() {
 		ResultAddr:      cfg.ResultServiceAddr,
 		StorageAddr:     cfg.StorageAddr,
 		SastAdapterAddr: cfg.SastAdapterAddr,
-		DSHRuntimeAddr:    cfg.DSHRuntimeAddr,
+		RuntimeAddr:     cfg.RuntimeAddr,
 		CallTimeoutS:    cfg.GRPCCallTimeoutS,
 	})
+
+	// P0 聚合真探（ADR-250）：/health 挂 Transcoder——六后端 gRPC health 并行探测，
+	// 任一非 SERVING → 503+分项（编排器感知后端死活是 HA 前提，设计档 §4 P0）。
+	publicMux.HandleFunc("/health", transcoder.HealthHandler)
 	defer transcoder.Close()
 
 	apiMux := http.NewServeMux()
@@ -67,8 +70,12 @@ func main() {
 	authMux.Handle("/v1/", transcoder.Handler())
 	authLimited := middleware.LoggingMiddleware(
 		middleware.RateLimitMiddleware(cfg.TrustProxy, cfg.RateLimitPerMin, authMux))
-	protected := middleware.JWTMiddleware(cfg.JWTSecret,
-		middleware.RateLimitMiddleware(cfg.TrustProxy, cfg.RateLimitPerMin, apiMux))
+	// 第四轮审计 P2：保护链补回 Logging（17d584eb ADR-212③ 重排序时顺手丢包——
+	// 此前全部业务 /v1/* 路由零访问日志，authz 只剩拒绝留痕；WS ?token= 的
+	// redactToken 脱敏也随之成为死路径）。链序恢复 Logging→JWT→RateLimit。
+	protected := middleware.LoggingMiddleware(
+		middleware.JWTMiddleware(cfg.JWTSecret,
+			middleware.RateLimitMiddleware(cfg.TrustProxy, cfg.RateLimitPerMin, apiMux)))
 
 	// /v1/auth/* 免认证链；/health 公共；其余 /v1/* 走 JWT 保护链
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

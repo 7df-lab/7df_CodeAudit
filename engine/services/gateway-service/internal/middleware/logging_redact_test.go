@@ -11,7 +11,10 @@ import (
 func TestRedactToken(t *testing.T) {
 	// 多参数场景只断言语义（token 值被替换、其余参数保留），不断言参数顺序
 	// ——url.Encode 会按字典序归一化。
-	multi := map[string]struct{ in string; drop map[string]string }{
+	multi := map[string]struct {
+		in   string
+		drop map[string]string
+	}{
 		"token-first":  {"/v1/tasks/t-1/ws?token=abc&expand=1", map[string]string{"token": "REDACTED", "expand": "1"}},
 		"token-middle": {"/v1/tasks/t-1/ws?expand=1&token=zz", map[string]string{"token": "REDACTED", "expand": "1"}},
 	}

@@ -4,7 +4,7 @@
 > `pages/ → (client.ts 端点层 | stateMachine | chainParser | dict) → axios → [外部]`，
 > 横切：`session.tsx 上下文`、`apiEvents 事件总线`、`components 展示组件`、`testsupport/fakeGateway 测试台`。
 >
-> 纪律（ADR-203）：**页面禁止 `.data as {手写形状}`**——REST 响应形状单点锚定在 client.ts 类型化端点；
+> 纪律：**页面禁止 `.data as {手写形状}`**——REST 响应形状单点锚定在 client.ts 类型化端点；
 > 形状漂移由 `tsc -b` 在消费点报红，而非等 GUI 事故。守卫脚本 `npm run guard` 部分强制。
 >
 > **锚点编号 [I-nn]**：对应 `src/__tests__/` 用例（本文档 ↔ 测试双向追溯）。
@@ -22,16 +22,22 @@
 | I-03 | `saveRefreshToken / readRefreshToken` | string ↔ string；键 `codeaudit.refresh_token`（`TOKEN_KEY` 导出） | 经 `globalThis.localStorage?.` 可选访问（node 测试环境可注入桩） | client.test.ts |
 | I-04 | `clearSession` | — → void | 同时清内存 access 与 localStorage refresh | client.test.ts「refresh 失败」 |
 | I-05 | `noteRateLimit(retryAfterS?) / pollIntervalMs(base)` | number → void / number | clamp [5,60]s；退避期内返回剩余毫秒（ceil），否则原样 base | clientInterceptors.test.ts「429」 |
-| I-06 | `uploadArchive(file: File)` | File → `UploadArchiveResponse{upload_id, file_id, file_path, size_bytes}` | FormData 字段名 `file`；`Content-Type: multipart/form-data` 显式；timeout 300_000（120s→300s，慢速上行大包与 nginx 反代窗对齐） | clientContract.test.ts |
+| I-06 | `uploadArchive(file: File)` | File → `UploadArchiveResponse{upload_id, file_id, file_path, size_bytes}` | FormData 字段名 `file`；`Content-Type: multipart/form-data` 显式；timeout 300_000（B4-3：120s→300s，慢速上行大包与 nginx 反代窗对齐） | clientContract.test.ts |
 | I-07 | `getProjects(pagination?)` | `{page_size, cursor?}?` → `ListProjectsResponse` | cursor 缺省补 `''`（首屏语义，E-00a JSON 内空游标保留） | clientParams.test.ts |
 | I-08 | `getProject(id)` / `getProjectConfig(id)` | string → `Project` / `ProjectConfigResponse` | 响应**裸形**（E-14/E-15） | clientContract.test.ts |
 | I-09 | `updateProjectConfig(id, config)` | `(string, Record<string,string>)` → `ProjectConfigResponse` | 请求体**双层包装** `{config:{project_id, config}}`（E-16——扁平体被 protojson 丢字段） | clientContract.test.ts |
 | I-10 | `createProject(payload)` | `CreateProjectPayload` → `Project` | 请求体包装 `{project: payload}`（E-13） | clientContract.test.ts |
+| I-100 | `updateProject(id, project)` | `(string, Project)` → `Project` | 请求体双层包装 `{project: 整对象}`（E-58）；**服务端整体替换无合并——必须 GET 全量回写**；客户端钉 `project.project_id`=URL 段（与网关 R73/R91 同口径） | clientContract.test.ts「updateProject 双层包装…（E-58）」 |
 | I-11 | `getTools()` | — → `{tools: ToolInfo[]}` | gateway 手写形状在此锚定（E-32） | TaskNewPage.test.tsx |
-| I-12 | `createTask(payload)` | `CreateTaskPayload{project_id, scan_mode, sast_tools, config}` → `{task_id}` | config 键域见 E-19 | TaskNewPage.test.tsx |
+| I-12 | `createTask(payload)` | `CreateTaskPayload{project_id, scan_mode, sast_tools, config}` → `{task_id}` | config 键域见 E-19；payload 组装经 `buildScanTaskPayload` | TaskNewPage.test.tsx；scanModes.test.ts |
 | I-13 | `bootRefresh()` | — → `Promise<string \| null>` | 有 refresh→裸 fetch 续签返回新 access；失败/无 token → clearSession + null（**不抛错**，F5 恢复永不阻塞进站） | session.test.tsx boot 分支 |
 | I-14 | `getReportContent(reportId)` | string → `{format: 'html'\|'json', content: string}` | `responseType:'text'` + `transformResponse:[(d)=>d]`（禁 axios 自动 parse）；`<` 前缀嗅探分型 | clientContract.test.ts |
 | I-15 | `getSourceFile(taskId, path)` | `(string, string)` → `SourceFileResp` | 失败时把服务端 `{error}` 详情提为 `Error.message`（降级横幅可读） | clientContract.test.ts |
+| I-16 | `getInferenceProviders(ws?) / upsertInferenceProvider(...) / updateInferenceProvider(name,...) / deleteInferenceProvider(name,ws?) / getInferenceRoute(ws?) / setInferenceRoute(payload,ws?)` | 详见 E-34..E-39 | workspace 经 `?workspace=` 统一 query（wsQ 单点，空=全局缺省）；路径 name encodeURIComponent | clientContract.test.ts「切片3b workspace 参数透传」；InferenceConfigPanel.test.tsx |
+| I-17 | `listOrchestrations(params) / createOrchestration(name, specYAML) / updateOrchestration(name, specYAML) / deprecateOrchestration(name, undePrecate)` | 详见 E-50..E-53 | 路径寻址全用编排 name；spec 以全量 YAML 传输 | clientContract.test.ts「编排 CRUD 契约锚定」（批1-Step4 补锚） |
+| I-18 | `getWorkspaces() / createWorkspace({name}) / deleteWorkspace(name)` | 详见 E-54..E-56（切片3b） | 409 守卫 `{error}` details 原文透出（throw Error(detail)） | clientContract.test.ts「工作区管理写通道」 |
+| I-19 | （组件内联）`api.get('/v1/tasks/:id/usage')` / `api.get('/v1/tasks/:id/graph')` | TaskUsageCard / TaskGraphCanvas 直调（E-48/E-49） | 响应形状锚定 `api/types.ts`（TaskUsageSummary/TaskGraph——b5f2424 契约锁） | TaskUsageCard.test.tsx；TaskGraphCanvas.test.tsx |
+| I-1A | `listInviteCodes(opts?) / createInviteCode(body) / revokeInviteCode(id) / deleteInviteCode(id) / getRegistrationPolicy()` | 详见 E-59..E-63 | 形状单点锚定本层（审查批收口：页面禁手写形状/内联 axios）；created_by 网关注入 body 不传 | clientContract.test.ts「V2.2 邀请码端点契约」；InviteCodesPanel.test.tsx |
 
 ## 2. api/apiEvents.ts —— 事件总线常量（client ↔ errors 组件解耦）
 
@@ -56,9 +62,9 @@
 
 | ID | 导出 | 输入 → 输出 | 契约要点 | 锚点 |
 |----|------|-------------|----------|------|
-| I-40 | `ALLOWED_ACTIONS / allowedActions(status?)` | 状态枚举串 → `TaskAction[]` | **客户端展示镜像**：只决定按钮可见性；服务端才是转换权威。未知状态 → `[]`（不自造动作）。2026-09-01 审批流废除后 CREATED=[start]、RUNNING=[pause,cancel]、PAUSED=[resume,cancel]、DEAD=[retry,cancel] | stateMachine.test.ts（全状态分支） |
+| I-40 | `ALLOWED_ACTIONS / allowedActions(status?)
 | I-41 | `isTerminal(status?)` | 状态 → boolean | 终态四值 COMPLETED/CANCELLED/TIMEOUT/DEAD（与服务端 IsTerminal 同源口径） | stateMachine.test.ts |
-| I-42 | ~~progressRefetchInterval~~（已删除） | — | 生产轮询=TaskDetailPage 内联 `pollIntervalMs(10_000)`（10s+429 退避接线，2026-09-01 口径）；旧 3s 死导出与 I-42 漂移已随 B5 清理 | — |
+| I-42 | ~~progressRefetchInterval~~（已删除，B5） | — | 生产轮询=TaskDetailPage 内联 `pollIntervalMs(10_000)`；旧 3s 死导出与 I-42 漂移已随 B5 清理 | — |
 | I-43 | `actionLabel(a)` | TaskAction → 中文 | 启动/取消/人工重试/暂停任务/恢复任务 | — |
 | I-44 | `dispatchAction(task, a)` | `(ScanTask, TaskAction)` → task_id | 动作→端点映射：start/cancel/retry/pause/resume → `POST /v1/tasks/{id}/<动作>`（E-21）；非法提交交后端拒绝 | TaskDetailSnapshot.test.tsx |
 | I-45 | `autoRunTask(taskId)` | string → void | `POST /v1/tasks/{id}/start`（创建后自动启动；失败上抛由调用方 warning） | ProjectsPage.test.tsx（行为级） |
@@ -67,7 +73,7 @@
 
 | ID | 导出 | 输入 → 输出 | 契约要点 | 锚点 |
 |----|------|-------------|----------|------|
-| I-50 | `parseChain(text?, opts?)` | 自由文本 + `{fileExists?, fallbackFile?}` → `{hops: ChainHop[], files: string[]}` | 六类引用形态（file:line / 行区间 / 中文行引用 / L 前缀 / lines 英文 / 全角括号数字区间）；反引号段置零抑制噪声；hops 按原文顺序去重；行引用挂接最近文件；role 仅关键词命中（sink 优先），**不推测**；行引用先于文件→丢弃。**两阶段存在性校验**（2026-09-13 误挂接根治）：fileExists=false 的 token 不进 files/不产 hop/不抢挂接，其上显式引用标 `unresolved`（幻觉可见），挂其上的裸行引用重挂最近有效 token（无则 fallbackFile=漏洞所在文件）；裸行引用一律标 `inferred`；fileExists 缺省/undefined=旧行为逐字节等价（fail-open） | chainParser.test.ts（真实实例逐字 + sbx-14 两阶段语料 + 普适形态） |
+| I-50 | `parseChain(text?, opts?)` | 自由文本 + `{fileExists?, fallbackFile?}` → `{hops: ChainHop[], files: string[]}` | 六类引用形态（file:line / 行区间 / 中文行引用 / L 前缀 / lines 英文 / 全角括号数字区间）；反引号段置零抑制噪声；hops 按原文顺序去重；行引用挂接最近文件；role 仅关键词命中（sink 优先），**不推测**；行引用先于文件→丢弃。**两阶段存在性校验**：fileExists=false 的 token 不进 files/不产 hop/不抢挂接，其上显式引用标 `unresolved`（幻觉可见），挂其上的裸行引用重挂最近有效 token（无则 fallbackFile=漏洞所在文件）；裸行引用一律标 `inferred`；fileExists 缺省/undefined=旧行为逐字节等价（fail-open） | chainParser.test.ts |
 | I-51 | `baseName(p)` | 路径 → 末段 | 文件选择器基名对齐 | chainParser.test.ts |
 | I-52 | `ChainHop` | `{path, line?, endLine?, snippet, role?, inferred?, unresolved?}` | path 为**原文写法**（裸文件名/截断路径），消费方交服务端回退解析（E-24）；`inferred`=裸行引用的文件归属系解析器推断（chip 加 `*`）；`unresolved`=显式引用但源树无此文件（chip 标 `（未定位）`，不进下拉） | codeContext.test.tsx（两阶段三态组） |
 
@@ -75,17 +81,18 @@
 
 | ID | 导出 | 契约要点 | 锚点 |
 |----|------|----------|------|
-| I-60 | `AI_VERDICT`（7 键）/ `SCAN_MODE`（5 新 + 2 弃用，键序=展示序）/ `TASK_STATUS`（含 PENDING 保留值）/ `SEVERITY` / `STAGE_STATUS` / `STAGE_TYPE` / `REVIEW_DEPTH` / `ROLE` / `USER_STATE` / `REPORT_FORMAT`（数值键） | 完整性由 dict.test.ts 锁定（新增 proto 枚举值必须同步，否则 fallback 显示原键——P4 不隐藏数据） | dict.test.ts |
+| I-60 | `VERDICT_STATE_LABEL/COLOR`+谓词/ `SCAN_MODE`（5 新 + 2 弃用，键序=展示序）/ `TASK_STATUS`（含 PENDING 保留值）/ `SEVERITY` / `STAGE_STATUS` / `STAGE_TYPE` / `REVIEW_DEPTH` / `ROLE` / `USER_STATE` / `REPORT_FORMAT`（枚举名字符串键 `REPORT_FORMAT_*`，同 external E-28/E-00c 口径） | 完整性由 dict.test.ts 锁定（新增 proto 枚举值必须同步，否则 fallback 显示原键——P4 不隐藏数据） | dict.test.ts |
 | I-61 | `zh(map, key)` | 未知键回显原键；空键 → UNSPECIFIED 中文 | dict.test.ts |
 | I-62 | `DEPRECATED_SCAN_MODES` | 新建入口过滤弃用模式；历史展示不过滤 | dict.test.ts；TaskNewPage.test.tsx |
-| I-63 | `reportFileExt(format?)` | 1=pdf/2=html/4=csv/其余(0,3,undefined)=json（编排器缺省产 JSON） | dict.test.ts |
+| I-63 | `reportFileExt(format?)` | 枚举名键控：`REPORT_FORMAT_PDF`→pdf / `REPORT_FORMAT_HTML`→html / `REPORT_FORMAT_CSV`→csv / 其余（UNSPECIFIED/未知/undefined）→json（编排器缺省产 JSON；旧"1=pdf/2=html 数值键"口径已随 B5-P1-1 废弃，对齐 E-28） | dict.test.ts |
+| I-64 | （dict/tokens.ts）`GRAPH_NODE_STATUS_COLOR / GRAPH_NODE_TYPE_COLOR / GRAPH_PLAN_BAND` | 图执行视图卡的节点状态/类型配色与计划批次带（b5f2424 收编 tokens SSOT——禁内联色值，视觉契约详见 design-tokens.md） | TaskGraphCanvas.test.tsx |
 
 ## 7. components —— 受控展示组件（props 契约，数据由页面下发，不自拉）
 
 | ID | 组件 | Props 输入 | 行为契约 | 锚点 |
 |----|------|------------|----------|------|
-| I-70 | `TaskLogPanel` | `{logs: TaskLogEntry[], terminal, onRefresh, refreshing, live?}` | 级别过滤（all/warn/error）；warn/err 徽标；`hhmmss(Number(ts_ms))`（int64 字符串防御，E-00c）；**滚底跟随**：新数据滚底、用户上翻 40px 阈值停跟随；空态文案；**导出 `MAX_LOG_ROWS=1000`**（任务详情页日志保尾上限，窗口满时顶部渲染「仅显示最近 1000 条」提示——完整内容下载入口延后） | TaskLogPanel.test.tsx |
-| I-71 | `AIInteractionLogPanel` | `{text, totalBytes, complete, onRefresh, refreshing, live?}` | `parseTimeline` 标记行解析（💭/✍/📋/🤖/──/══/■/⚠/▶ 六类条目）；思考流式展开（未收束）/折叠（归档）；任务下发/子任务折叠块（字节数+首行预览）；渐进回看窗口 400 条；下载完整日志；整页 Modal 辅入口；**内联与 Modal 各持 ref**（共享 ref 被 Modal 抢占致滚底永久失效——2026-09-06 修复，变异 M8 锁定） | AIInteractionLogPanel.test.tsx（7 例） |
+| I-70 | `TaskLogPanel` | `{logs: TaskLogEntry[], terminal, onRefresh, refreshing, live?, maxHeight?, collapsible?, defaultCollapsed?}` | 级别过滤（all/warn/error）；warn/err 徽标；`hhmmss(Number(ts_ms))`（int64 字符串防御，E-00c）；**滚底跟随**：新数据滚底、用户上翻 40px 阈值停跟随；空态文案；**导出 `MAX_LOG_ROWS=1000`**（B4-3：任务详情页日志保尾上限，窗口满时顶部渲染「仅显示最近 1000 条」提示——完整内容下载入口延后）；**可折叠**：`collapsible` 开启后 extra 首位出折叠钮，折叠用 `display:none` 而非卸载（日志行留驻 DOM 保住保尾/截断断言面，重展滚动位不丢），计数/警告/错误徽标常驻头部——任务详情页终态默认收起为产出视图让位 | TaskLogPanel.test.tsx |
+| I-71 | `AIInteractionLogPanel` | `{text, totalBytes, complete, onRefresh, refreshing, live?}` | `parseTimeline` 标记行解析（💭/✍/📋/🤖/──/══/■/⚠/▶ 六类条目）；思考流式展开（未收束）/折叠（归档）；任务下发/子任务折叠块（字节数+首行预览）；渐进回看窗口 400 条；下载完整日志；整页 Modal 辅入口；**内联与 Modal 各持 ref** | AIInteractionLogPanel.test.tsx |
 | I-72 | `ErrorPage({code: 403\|404\|501})` | code | 403/404 Result 页 + 501 灰卡（诚实降级话术，非故障话术） | errors.test.tsx |
 | I-73 | `ApiErrorOverlay()` | 无 props（事件驱动） | 订阅 I-20/I-21；503 横幅可关闭；403/501 整页可关闭返回项目页 | errors.test.tsx |
 
@@ -93,25 +100,30 @@
 
 | ID | 接口 | 契约要点 | 锚点 |
 |----|------|----------|------|
-| I-80 | 路由表 | 见 README；`*` → 404 不静默重定向；`/` → `/projects` | AppRouting.test.tsx |
+| I-80 | 路由表 | 见 README；`*` → 404 不静默重定向；`/` → 总览仪表盘 DashboardPage | AppRouting.test.tsx |
 | I-81 | Shell 守卫链 | 顺序：`booting` → 恢复中；`!user` → `/login`（replace）；`must_change_password && path!==/change-password` → 锁改密页（防回环放行自身） | AppRouting.test.tsx |
 | I-82 | `RequireAdmin` | `user.role !== 'ROLE_ADMIN'` → ErrorPage 403（后端 requireAdmin 为最终防线，前端仅体验层） | AppRouting.test.tsx；UsersPage.test.tsx（页面级双保险） |
 | I-83 | `useUnreadCount()` | — → number | queryKey `['notify-unread', user_id]`，enabled !!user，60s 兜底轮询；菜单项渲染 `（N 未读）`，点击失效缓存并跳通知页 | AppRouting.test.tsx |
-| I-84 | 菜单高亮 | 按路径前缀选中（projects/tasks/reports/notifications/admin/users） | — |
+| I-84 | 菜单高亮 | 按路径前缀选中（projects/tasks/**findings→tasks**（产物下钻不断灯）/orchestrations/reports/notifications/admin/users） | AppRouting.test.tsx |
+
 
 ## 9. 跨模块状态契约：react-query 缓存键与失效图（曾多发静默失效 bug，此处单点化）
 
 | ID | queryKey | 写入方 | 失效方（必须成对） | 锚点 |
 |----|----------|--------|--------------------|------|
 | I-90 | `['task-snapshot', taskId]` | 快照轮询 + **WS 帧 setQueryData**（同构吸收） | 动作成功后 invalidate；`['tasks-page']` 前缀同刷（B5 修正：旧 ['tasks'] 与真实键 ['tasks-page',…] 前缀失配恒 no-op） | TaskDetailSnapshot.test.tsx |
-| I-91 | `['task-reports', taskId]` / `['report-content', id]` | 任务详情报告卡 | regenerate 成功必须失效 `['task-reports', taskId]`（**只失效 `['reports']` 前缀不覆盖此键**——2026-09-06 修复） | TaskDetailPage.test.tsx |
+| I-91 | `['task-reports', taskId]` / `['report-content', id]` | 任务详情报告卡 + 报告阅读视图 | regenerate 成功必须失效 `['task-reports', taskId]`；阅读视图另失效 `['report-content', id]` 自身 | TaskDetailPage.test.tsx；ReportDetailPage.test.tsx |
 | I-92 | `['reports', taskFilter, page, cursor]` / `['reports-index']` | 报告中心 / 任务列表索引 | regenerate 失效 `['reports']` 前缀 | ReportsTasksPaging.test.tsx |
-| I-93 | `['findings', taskId]`（无限查询无 cursor 段，B5 键形修正） / `['finding', id]` / `['fusion-findings', taskId]` / `['review-findings', taskId]` | 列表 / 详情 / 融合视图 / 审核视图 | triage 成功失效**四者**（只刷详情则列表行停留旧标签，ADR-152；起融合/审核视图同键失效——它们读 ai_verdict，漏刷则切 Tab 停留旧结论） | FindingDetailPage.test.tsx；FindingsPage.test.tsx |
-| I-94 | `['notify-unread', uid]` / `['notifications', uid]` | App 角标 / 通知页 | markRead / markAllRead（E-31a）失效**两者**（ADR-156 角标即时消失） | pages2.test.tsx |
-| I-95 | `['projects', page]` / `['project', id]` / `['project-config', id]` / `['project-tasks', id]` / `['projects-index']` / `['tasks-index']` | 项目页群 / 任务与报告页项目名列 | 建项目/删项目后 invalidate `['projects']`；`upload_file_name`（config 键，2026-09-09）随 upload_file_id 一并写入——storage 对象键不含原始文件名，展示名只认此键，存量项目无键回落 ID/文件占位 | ProjectsPage.test.tsx；TasksPage.test.tsx；ReportsTasksPaging.test.tsx |
-| I-96 | `['tasks-page', project, mode, page]` | 任务列表 | 自动建任务后 invalidate（**禁用死键** `['tasks-infinite']`——无限滚动时代遗物，invalidate 是 no-op，2026-09-06 修复；guard.sh 禁复活） | ProjectsPage.test.tsx |
+| I-93 | `['findings', taskId]`（无限查询无 cursor 段，B5 键形修正） / `['finding', id]` / `['fusion-findings', taskId]` / `['review-findings', taskId]` | 列表 / 详情 / 融合视图 / 审核视图 | triage 成功失效**四者**（只刷详情则列表行停留旧标签，；B4-3 起融合/审核视图同键失效——它们读判定两轴，漏刷则切 Tab 停留旧结论） | FindingDetailPage.test.tsx；FindingsPage.test.tsx |
+| I-94 | `['notify-unread', uid]` / `['notifications', uid]` | App 角标 / 通知页 | markRead / markAllRead（E-31a）失效**两者**（角标即时消失） | pages2.test.tsx |
+
+| I-96 | `['tasks-page', project, mode, page]` | 任务列表 | 自动建任务后 invalidate | ProjectsPage.test.tsx |
+| I-99 | `['tasks-all']` | 总览统计带 + 任务页统计卡带 + 报告中心/阅读视图项目名索引（`listAllTasks` 翻全量，page_size 恒 100=服务端上限，30 页熔断；staleTime 60s，跨页导航共享不重走） | 统计自此为全集口径——**禁止任何消费点退回单页页长冒充总数**（<host-id> 实录 569 显示 100）；建任务后 invalidate（自动建任务链已失效 `['tasks-page']` 前缀，本键同批失效） | dashboard.test.tsx（跨页聚合断言）；clientContract.test.ts（翻页/熔断/不越上限） |
 | I-97 | `['source-file', taskId, path]` | 发现详情全文 | staleTime 5min；失败降级片段不缓存错误 | codeContext.test.tsx |
-| I-98 | `['inference-providers']` / `['inference-route']` | Provider 管理页两卡（ADR-217） | 保存/删除失效 `['inference-providers']`；**切路由失效两者**（列表"当前使用"标记读 route，漏刷则标记滞留旧 provider） | ProvidersPage.test.tsx |
+| I-98 | `['inference-providers']` / `['inference-route']` | 推理配置面板两卡 | 保存/删除失效 `['inference-providers']`；**切路由失效两者**（列表"当前使用"标记读 route，漏刷则标记滞留旧 provider）；保存/删除/切路由另失效 `['workspaces-detail']`（宿主页就绪度列联动） | InferenceConfigPanel.test.tsx |
+| I-9C | `['task-usage', taskId]` / `['task-graph', taskId]` | 计量卡 / 图执行视图卡 | graph 5s 轮询（分钟级节点时长下近实时，跨服务通知链成本不配——65642f1 裁决注记）；终态停轮询 | TaskUsageCard.test.tsx；TaskGraphCanvas.test.tsx |
+| I-9A | `['orchestrations', showDeprecated?]` / `['workspaces']` / `['workspaces-detail', <names>]` | 编排管理页 / 工作区管理页 | CRUD 成功后失效 `['orchestrations']` / `['workspaces']` 前缀（含 detail 重建） | clientContract.test.ts「编排 CRUD 契约锚定」（批1-Step4 补锚） |
+| I-9B | `['invites', includeTerminal]`（无限查询，cursor 走 pageParam）/ `['registration-policy']`（staleTime 60s） | 邀请码面板 / 注册·登录页档位自适应（V2.2） | 写操作成功失效 `['invites']` 前缀；policy 失败回落 invitation 形态 | InviteCodesPanel.test.tsx；RegisterPage.test.tsx 档位用例 |
 
 **QueryClient 全局缺省**（main.tsx）：`retry: 1, refetchOnWindowFocus: false`。快照/源码/用户列表按需覆写 `retry: false`（404 终态语义，E-47）。
 
@@ -122,7 +134,7 @@
 | I-A0 | `FindingDetailBody({findingId})` | 路由薄壳 FindingDetailPage（深链 `/findings/:fid`）+ FindingsPage 行展开 + ReviewView 行展开 | 同一 props；内嵌态随外层缓存失效联动（I-93） |
 | I-A1 | `FindingsPage({taskId})` | 任务详情终态 Tabs 内嵌 | 内嵌时不带路由（taskId 直传） |
 | I-A2 | `FusionView / ComparisonView / ReviewView({taskId})` | Tabs 内嵌 + 对比路由页 | ComparisonView 仅模式E入口（E-21 完成态按钮） |
-| I-A3 | `TaskDetailPage({taskId})` | 路由经 `TaskDetailWithParams` 从 useParams 取 id | **`key={id}` 随任务重建实例**（同路由 `/tasks/:id` 切换任务不复用旧实例——增量游标 refs 与已吸收日志/AI 正文不得跨任务残留）；空串 id → 快照 404 专页（内存存储重启语义） | AppRouting.test.tsx |
+| I-A3 | `TaskDetailPage({taskId})` | 路由经 `TaskDetailWithParams` 从 useParams 取 id | **`key={id}` 随任务重建实例**（B4-1：同路由 `/tasks/:id` 切换任务不复用旧实例——增量游标 refs 与已吸收日志/AI 正文不得跨任务残留）；空串 id → 快照 404 专页（内存存储重启语义） | AppRouting.test.tsx |
 
 ## 11. 测试台接口（testsupport/fakeGateway.ts —— 测试代码的公共内部契约）
 
@@ -131,5 +143,67 @@
 | I-B0 | `useFakeGateway(routes)` | axios **adapter 层**造假：`api/client` 真实代码全量执行；路由键 `'GET /v1/tasks/:id'`（`:seg` 路径参数、`* /path` 任意方法）；值=handler`(ctx)=>payload` 或直接载荷；**未建模路由抛错**（响亮失败，禁静默空成功）；`requests` 日志按用例隔离（beforeEach 清空） |
 | I-B1 | `httpError(status, body)` | handler 内抛出 → 转 axios 形状 → **经真实拦截器链回放**（401 刷新/429 退避/503 重试均可测） |
 | I-B2 | `HandlerCtx` | `{params, query: URLSearchParams, body(已 JSON 解析), raw(FormData 原样), config}` |
+| I-B3 | `TaskStageRail` | `{stages: TaskStage[]}` | 阶段时间线点轨：单行 dot rail——完成=实心绿/运行=脉冲蓝(尊重 prefers-reduced-motion)/失败=红/跳过=空心灰+副行「已跳过」常驻（承 P-34 修复语义）/未启动=空心浅；连段颜色承前段状态（完成路径绿填充）；起止耗时/降级/错误全文收 hover Tooltip，进行中时刻/已跳过/降级/失败原因副行常驻；空 stages=「任务尚未启动」诚实空态；零硬编码色（antd 语义 token 经 CSS 变量下发） | TaskDetailSnapshot.test.tsx「布局改版」（`.task-stage-rail` 存在性+阶段名渲染）；SKIPPED 语义锁见 TaskDetailPage.test.tsx（P-34） |
 
-**纪律（guard.sh 强制）**：测试代码禁止 `vi.mock('../api/client')` 整模块替换——那会绕过全部真实客户端行为，mock 与契约无任何关联（ADR-203 前的假绿根源；pages2.test.tsx 已迁移，此模式禁再入）。
+**纪律（guard.sh 强制）**：测试代码禁止 `vi.mock('../api/client')` 整模块替换——那会绕过全部真实客户端行为，mock 与契约无任何关联（前的假绿根源；pages2.test.tsx 已迁移，此模式禁再入）。
+
+## graph-ui-channels 批3/4 模块锚
+
+- `components/aiTimeline.tsx`：AI 交互时间线共享渲染层（parseTimeline/KIND_STYLE/
+  ReasoningBody/FoldableBody/TimelineBody+渐进窗口）——AIInteractionLogPanel/
+  GraphNodePopup/TaskGraphCanvas(分区) 三方共用；**同步义务**：渲染语义变更三处同源。
+- `components/G6View.tsx`：@antv/g6@5 懒加载画布（签名门控防轮询重建/视口保持/
+  位置持久 localStorage `codeaudit.task_graph_layout_<taskId>`/点空白回调）。
+- `components/TaskGraphCanvas.tsx`：图面板（/graph 5s 轮询/分区汇总 Modal/onReady
+  即时刷新句柄）。
+
+- `components/TaskStageRail.tsx`：阶段点轨——
+  TaskDetailPage 阶段时间线卡的唯一渲染体。
+- `utils/graphChannels.ts`：纯函数层（absorbChannels 通道吸收游标单调/
+  segmentFlatByMarkers 旧任务双锚回落/computeLRLayout LR 布局/channelQuery）。
+- `TaskDetailPage`：通道吸收单路 absorbSnapshot；图任务画布占主面板位（偏好键
+  `codeaudit.task_detail_ai_side` 沿用=主面板身份）；信息栏=任务概况合并首卡
+  → 阶段点轨 →
+  可折叠执行日志 → 产出视图（minHeight 320 锚点）。
+
+## 流程统一批模块锚
+
+- `tasks/scanModes.ts`：扫描模式规格与任务 payload 组装的**单一事实源**——
+  `MODE_SPECS/DEFAULT_SCAN_MODE`（自 TaskNewPage 迁入，页面 re-export 保测试锚）/
+  `DEFAULT_SAST_TOOLS`（部署缺省工具）/ `buildScanTaskPayload`（三处创建入口共用：
+  向导·项目页自动链·详情页快捷弹窗——B5-P1-3 三份拷贝漂移的根治）/
+  `resolveDefaultScanMode`（项目 default_scan_mode 兑现为任务入口默认模式，空值/
+  弃用/UNSPECIFIED 回落 DEFAULT_SCAN_MODE）。**同步义务**：payload 口径变更只改
+  本模块；页面层直拼 `sast_tools:`（不经 builder）被 guard G-08 拦截。
+- `components/ProjectCreateModal.tsx`：新建项目弹窗共享件（ProjectsPage 按钮直开 +
+  `/projects/new` 薄壳页 ProjectNewPage 共用，与任务侧 TaskNewModal 同构）；表单含
+
+  的默认行为，取消则只建项目）；`?new=1` 旧深链由 ProjectsPage 兼容重定向。
+- 创建任务单一 UI=向导：详情页独立
+  快捷弹窗（模式+auto_start 两字段）退役。向导=三宿主弹窗组件（TasksPage 按钮直开 /
+  `/tasks/new` 薄壳深链 `?project_id=` 预选 / ProjectDetailPage 悬浮窗 `presetProjectId`
+  预选——三次反馈收口：跳转 /tasks/new 断回程，薄壳关闭落任务列表而非来源详情页，故
+  详情页原地挂载，关闭回原地）。
+  **同步义务**：任务创建入口只此一个组件，新增参数只改 TaskNewModal+buildScanTaskPayload。
+- 向导 Step0 就地创建（P1-5）：表单与 ProjectCreateModal 同构（名称+源码二选一+
+  默认分支，ArchiveUploadDragger 共享），建完即配齐——不再叠 ProjectSourceModal
+  二级弹窗（该弹窗仍服务参数步无来源警告"立即配置"）。
+
+## 报告人性化批模块锚
+
+- `pages/reports/reportContent.ts`：报告正文解析纯函数（报告阅读视图专用）——
+  `parseReportContent(text)` 内容嗅探分型 json/html/text/empty（**不信列表行 format
+  标签**——UNSPECIFIED 历史档实证同为 JSON 形状，<host-id> sim 库抽样）；`ReportFinding.evidence`
+  解析 `source_raw`（**明文 JSON 字符串**，与发现域 API 的 base64 口径不同——
+  `FindingDetailBody.base64ToUtf8` 不适用于此）；老档 code 自带行号前缀无 context →
+  原样文本不臆造行号；无 `finding_id` 条目整条不采。`SEVERITY_LADDER`/`severityBucket`/
+  `countBySeverity` 供阅读视图排序与光谱带共用。**同步义务**：报告 JSON 顶层形状变更
+  （findings/summary/generated_at/task_id）只改本模块，页面只管渲染。
+- `pages/reports/ReportDetailPage.tsx`（/reports/:id）：JSON 报告站内阅读——签名元素=
+  严重度光谱带（六级实心色比例堆叠、点选过滤，宽度编码真实分布）；发现阅读卡展开
+  碳黑代码证据（EVIDENCE 令牌、命中行 matchBg 高亮，与发现详情同一证据嗓音）。
+  消费面复用：`['report-content', id]`（I-91 键，与任务详情报告卡同源缓存）、
+  `['tasks-index']`/`['projects-index']`（与报告中心列表共享，导航进入零额外请求）。
+  「在线查看」分流：JSON/UNSPECIFIED/CSV → 本页；HTML → 维持 openReportWindow 沙箱窗
+  （B3-2 通道不变）；PDF → 直接下载。注入面=React 文本节点转义（弹窗转义 <pre> 通道
+  随本批退役，B3AuditFixes 守卫已随契约更新）。

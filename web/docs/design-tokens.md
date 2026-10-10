@@ -1,6 +1,6 @@
 # 视觉设计令牌（design tokens）——代码级 SSOT 的文档面
 
-> 设计整改 2026-09-13（四批落地，P0/P1 引入本体系）。
+
 > 代码事实源：`src/dict/tokens.ts`（语义配色）· `src/theme/index.ts`（antd 主题）·
 > `src/theme/evidence.ts`（证据面板色板）。本文只做索引与规则，改值改代码、同步本文。
 
@@ -22,6 +22,9 @@
 | AI 结论（verdict） | TRUE_POSITIVE=error / LIKELY_TRUE·NEEDS_MANUAL=warning / 误报族=default | `dict/tokens.ts` `VERDICT_COLOR` |
 | 阶段圆点 | 完成 `#52c41a` / 执行中 `#3056D3` / 失败 `#ff4d4f` | `dict/tokens.ts` `STAGE_DOT_COLOR` |
 | 证据面板·碳黑 | 底 `#0D1117`（全站唯一暗底）+ 语义 6 色（link/ai/ok/system/warn/accent/error）+ 正文/弱化/边框 | `theme/evidence.ts` `EVIDENCE` |
+| 图视图·节点状态 | 未决 `#9e9e9e` / 运行中 `#1f6feb`（脉冲同系）/ 完成 `#1a7f37` / 失败 `#cf222e` / 拒绝 `#8b949e` / 结果不明 `#d4a72c` | `dict/tokens.ts` `GRAPH_NODE_STATUS_COLOR` |
+| 图视图·节点类型 | antd preset 词：planner=purple / executor=blue / verifier=cyan | `dict/tokens.ts` `GRAPH_NODE_TYPE_COLOR` |
+| 图视图·计划批次带 | 底 `#f3ecff` / 边+字 `#6b4fd8`（计划/编排语义紫，与节点状态色正交） | `dict/tokens.ts` `GRAPH_PLAN_BAND` |
 
 语义规则（P0 修正的历史撞义，勿回退）：
 
@@ -36,14 +39,14 @@
 - **证据嗓音（等宽）**：`MONO_FONT`（JetBrains Mono → SFMono → Menlo → Consolas，零
   webfont）。规则：凡机器产生的标识一律等宽——任务/报告短 ID、项目 ID、文件路径、
   代码、日志、行号。中文回落系统字体，仅 ASCII 走等宽。
-- AI 交互面板字号 14/18px 已定版，**保留不动**。
+
 
 ## 版式
 
 - 内容区**全宽流式**：不定宽——1440 定宽在 ≥1920 屏两侧各浪费
   ~240px+，数据密集型控制台应吃满宽度；窄屏走 P2 的媒体查询折叠。
 
-- **创建/编辑类操作统一 Modal 形态**（2026-09-14 二期）：列表页 `PageHeader` 右上 primary
+- **创建/编辑类操作统一 Modal 形态**：列表页 `PageHeader` 右上 primary
   按钮直开弹窗（新建项目/项目编辑/用户/Provider/新建任务一致），footer 集中主按钮，关闭
   即回收表单状态；新建任务为四步向导弹窗（width 760，Steps+策略卡内嵌，`/tasks/new` 深
   链由薄壳宿主页承接自动开弹窗）。

@@ -52,14 +52,14 @@ func TestSweepStaleRehydrateTmp_RemovesOnlyAged(t *testing.T) {
 	}
 }
 
-// R86: 孤儿清扫的终态守卫——任务在途（RUNNING）或状态查不到时一律不扫，
+// R86（评审）: 孤儿清扫的终态守卫——任务在途（RUNNING）或状态查不到时一律不扫，
 // 防清掉正常业务的在途残留；任务已终态（DEAD）时超阈值孤儿才被移除。
 func TestSweepStaleRehydrateTmp_TerminalGuard(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		status    pb.TaskStatus
+		name       string
+		status     pb.TaskStatus
 		getScanErr error
-		wantSweep bool
+		wantSweep  bool
 	}{
 		{"任务在途 RUNNING → 不扫", pb.TaskStatus_TASK_STATUS_RUNNING, nil, false},
 		{"任务已终态 DEAD → 扫", pb.TaskStatus_TASK_STATUS_DEAD, nil, true},

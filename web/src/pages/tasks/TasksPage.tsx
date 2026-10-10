@@ -6,13 +6,14 @@ import { useQuery } from '@tanstack/react-query';
 import { Button, Card, Select, Space, Statistic, Table, Tag, Typography } from 'antd';
 import { Link } from 'react-router-dom';
 import { useState } from 'react';
-import { api, listAllProjects } from '../../api/client';
+import { api, listAllProjects, listAllTasks } from '../../api/client';
 import type { PaginationResponse, ScanTask, TaskStage } from '../../api/types';
 import { SCAN_MODE, STAGE_STATUS, STAGE_TYPE, TASK_STATUS, zh } from '../../dict';
 import { MONO_FONT, SEVERITY_COLOR, STAGE_DOT_COLOR, STATUS_COLOR } from '../../dict/tokens';
 import PageHeader from '../../components/PageHeader';
 import { EmptyState, ListSkeleton } from '../../components/states';
-import { isTerminal } from '../../tasks/stateMachine';
+import { useCanWrite } from '../../auth/session';
+import { isTerminal, taskBucket } from '../../tasks/stateMachine';
 import { TaskNewModal } from './TaskNewPage';
 import { usePageTitle } from '../../hooks/usePageTitle';
 
@@ -38,8 +39,8 @@ function StageDots({ stages }: { stages: TaskStage[] | undefined }) {
 
 // 2026-09-09 对标竞品"漏洞数量"列: 每任务发现数（总数 + 高危及以上彩签）。
 // 行级懒加载查询（每页 ≤20 个、staleTime 缓存；发现按任务隔离查询是现有契约面）。
-// （审计修复）：带 pagination:{page_size:100}（契约形状分页缺省会命中服务端极小缺省页，
-// >缺省条数任务发现数被截成缺省值）；计数优先消费 pagination.total（服务端权威总数），
+// B4-3（审计修复）：带 pagination:{page_size:100}（契约形状分页默认会命中服务端极小默认页，
+// >默认条数任务发现数被截成默认值）；计数优先消费 pagination.total（服务端权威总数），
 // 缺失回退已加载行数（历史载荷兼容）。
 function FindingCountCell({ taskId }: { taskId: string }) {
   const { data } = useQuery({
@@ -110,7 +111,7 @@ export default function TasksPage() {
   });
   const rows = data?.tasks ?? [];
   // B5-P1-2: 服务端只在还有下页时填 pagination（task_service.go:1107），末页该字段为 null——
-  // 旧 `?? 0` 塌成 0 → antd 本地切片把末页切空+分页器塌缩。缺省时按页位推导真总数兜底。
+  // 旧 `?? 0` 塌成 0 → antd 本地切片把末页切空+分页器塌缩。默认时按页位推导真总数兜底。
   const total = data?.pagination?.total ?? (page - 1) * PAGE_SIZE + rows.length;
 
   // 报告索引（ADR-142 对称列真实性）：task_id → 报告数。一次拉取，避免逐任务查询。
@@ -127,15 +128,23 @@ export default function TasksPage() {
     staleTime: 30_000,
   });
 
-  // 2026-09-09 对标竞品统计卡带: 任务域聚合（近 200 条内），全部来自既有一次性查询
+  // 2026-09-09 对标竞品统计卡带: 任务域聚合。2026-10-08 统计冒充总数修复：改
+  // listAllTasks 全量翻页（['tasks-all'] 与总览/报告中心索引共享缓存）——此前一次
+  // 请求 200 被服务端钳到 100（proto 上限），"近 200 条内"实为最近 100 条
   const { data: tasksStats } = useQuery({
-    queryKey: ['tasks-stats'],
-    queryFn: async () => (await api.get('/v1/tasks', {
-      params: { pagination: { page_size: 200, cursor: '0' } },
-    })).data as { tasks: ScanTask[] },
-    staleTime: 30_000,
+    queryKey: ['tasks-all'],
+    queryFn: listAllTasks,
+    staleTime: 15_000, // ADR-257 批: 统计条新鲜度与表格查询拉近（此前 60s 陈旧窗口）
   });
-  const stat = (pred: (t: ScanTask) => boolean) => (tasksStats?.tasks ?? []).filter(pred).length;
+  const stat = (pred: (t: ScanTask) => boolean) => (tasksStats ?? []).filter(pred).length;
+
+  // statusWeight — 客户端排序的状态权重（活跃/异常态靠前，终态靠后）。
+  const statusWeight = (s: string) => {
+    if (s === 'TASK_STATUS_RUNNING') return 0
+    if (s === 'TASK_STATUS_FAILED' || s === 'TASK_STATUS_TIMEOUT' || s === 'TASK_STATUS_DEAD') return 1
+    if (s === 'TASK_STATUS_CANCELLED' || s === 'TASK_STATUS_PAUSED') return 2
+    return 3 // COMPLETED 等
+  }
 
   const columns = [
     // 2026-09-12 用户指令"主要目的是看任务"：任务列改为弹性列（唯一不设宽度的列，
@@ -144,6 +153,7 @@ export default function TasksPage() {
     // 2026-09-09 对标竞品短 ID: gw- 前缀+24 hex 全量展示无信息量, 取尾部 6 位短码, 悬停全 ID
     {
       title: '任务', dataIndex: 'task_id',
+      sorter: (a: ScanTask, b: ScanTask) => a.task_id.localeCompare(b.task_id),
       render: (v: string, rec: ScanTask) => (
         <div>
           <Link to={`/tasks/${v}`} title={v} style={{ fontFamily: MONO_FONT }}>#{v.slice(-6)}</Link>
@@ -169,9 +179,22 @@ export default function TasksPage() {
       title: '发现', dataIndex: 'task_id', width: 110,
       render: (v: string) => <FindingCountCell taskId={v} />,
     },
-    { title: '模式', dataIndex: 'scan_mode', width: 132, render: (s: string) => <Tag style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }} title={zh(SCAN_MODE, s)}>{zh(SCAN_MODE, s)}</Tag> },
-    { title: '状态', dataIndex: 'status', width: 90, render: (s: string) => <Tag color={STATUS_COLOR[s]}>{zh(TASK_STATUS, s)}</Tag> },
-    { title: '更新时间', dataIndex: 'updated_at', width: 150, render: (v: string | null) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '—') },
+    {
+      title: '模式', dataIndex: 'scan_mode', width: 132,
+      sorter: (a: ScanTask, b: ScanTask) => zh(SCAN_MODE, a.scan_mode).localeCompare(zh(SCAN_MODE, b.scan_mode)),
+      render: (s: string) => <Tag style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }} title={zh(SCAN_MODE, s)}>{zh(SCAN_MODE, s)}</Tag>,
+    },
+    {
+      title: '状态', dataIndex: 'status', width: 90,
+      sorter: (a: ScanTask, b: ScanTask) => statusWeight(a.status) - statusWeight(b.status),
+      render: (s: string) => <Tag color={STATUS_COLOR[s]}>{zh(TASK_STATUS, s)}</Tag>,
+    },
+    {
+      title: '更新时间', dataIndex: 'updated_at', width: 170,
+      sorter: (a: ScanTask, b: ScanTask) => dayjs(a.updated_at ?? 0).valueOf() - dayjs(b.updated_at ?? 0).valueOf(),
+      defaultSortOrder: 'descend' as const,
+      render: (v: string | null) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '—'),
+    },
     {
       // 任务↔报告双向导航（对称列）：真实计数——有报告才可点（此前无报告也显示链接，误导）
       title: '报告', dataIndex: 'task_id', width: 100,
@@ -184,19 +207,22 @@ export default function TasksPage() {
 
   return (
     <div>
-      {/*  页首置顶（此前统计卡带在标题之上，"任务"大标题出现在首屏中部） */}
-      <PageHeader title="任务" extra={<Button type="primary" onClick={() => setNewOpen(true)}>新建任务</Button>} />
+      {/* 设计整改 P1: 页首置顶（此前统计卡带在标题之上，"任务"大标题出现在首屏中部） */}
+      <PageHeader title="任务" extra={useCanWrite()
+        ? <Button type="primary" onClick={() => setNewOpen(true)}>新建任务</Button> : undefined} />
       {/* 创建向导弹窗：与新建项目 Modal 同构（创建成功后跳详情页）；/tasks/new 深链由薄壳宿主页承接 */}
       <TaskNewModal open={newOpen} onClose={() => setNewOpen(false)} />
-      {/* 2026-09-09 对标竞品统计卡带: 任务域概览（数值来自近 200 条一次性聚合） */}
+      {/* 2026-09-09 对标竞品统计卡带: 任务域概览（2026-10-08 起全集口径，listAllTasks 翻全量） */}
       <Card size="small" style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-around', flexWrap: 'wrap', gap: 8 }}>
-          <Statistic title="任务总数" value={(tasksStats?.tasks ?? []).length} />
-          <Statistic title="已完成" value={stat((t) => t.status === 'TASK_STATUS_COMPLETED')} valueStyle={{ color: '#52c41a' }} />
-          <Statistic title="进行中" value={stat((t) => !isTerminal(t.status))} valueStyle={{ color: '#3056D3' }} />
-          <Statistic title="失败" value={stat((t) => t.status === 'TASK_STATUS_FAILED' || t.status === 'TASK_STATUS_DEAD')} valueStyle={{ color: '#ff4d4f' }} />
+          <Statistic title="任务总数" value={(tasksStats ?? []).length} />
+          {/* ADR-257 批: 闭合分桶（taskBucket 互斥四桶，分项和≡总数；与总览口径一致） */}
+          <Statistic title="已完成" value={stat((t) => taskBucket(t.status) === 'completed')} valueStyle={{ color: '#52c41a' }} />
+          <Statistic title="进行中" value={stat((t) => taskBucket(t.status) === 'active')} valueStyle={{ color: '#3056D3' }} />
+          <Statistic title="失败" value={stat((t) => taskBucket(t.status) === 'failed')} valueStyle={{ color: '#ff4d4f' }} />
+          <Statistic title="已取消" value={stat((t) => taskBucket(t.status) === 'cancelled')} valueStyle={{ color: '#8c8c8c' }} />
           <Statistic title="已完成占比" value={(() => {
-            const all = tasksStats?.tasks ?? [];
+            const all = tasksStats ?? [];
             if (all.length === 0) return '—';
             const done = all.filter((t) => t.status === 'TASK_STATUS_COMPLETED').length;
             return `${Math.round((done / all.length) * 100)}%`;

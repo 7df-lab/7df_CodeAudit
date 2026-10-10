@@ -1,7 +1,10 @@
 package handler
 
 // R89-R91: 资源归属授权（水平越权收口，设计提案获批 2026-09-13）。
-// 口径：admin 全权；其余按资源 owner（任务 created_by）或项目成员判定。
+// ADR-257（2026-10-10 RBAC 层级制决议）部分反转：审计数据读面（projects/reports/
+// findings/tasks 的列表与详情）放开为认证即读；项目 create/update 放宽为操作面
+// DEVELOPER+。写面判定（verdict 回写=owner 或 admin；项目删除/管理面=admin）不随
+// 读面反转，R89-R91 的归属判定就此收敛为写面专用。
 // 纪律（吸收 R73 教训）：归属判定只用路径参数，禁信 body 字段；拒绝统一 403
 // writeError + 审计日志（侦测面：谁在何时探谁的资源）；查询失败保守拒绝。
 
@@ -34,8 +37,25 @@ func denyAuthz(w http.ResponseWriter, r *http.Request, resource string) {
 	writeError(w, http.StatusForbidden, "resource owner or admin required")
 }
 
-// canAccessTask — R89: 任务域归属门禁（owner 或 admin）。NotFound 如实 404；
-// 查证失败保守拒绝（403/502），不放行。
+// isOperator — ADR-257 操作面角色：DEVELOPER 或 ADMIN（VIEWER 只读审计数据面）。
+func isOperator(r *http.Request) bool {
+	role, _ := r.Context().Value(middleware.UserRoleKey).(string)
+	return role == "ROLE_DEVELOPER" || role == "ROLE_ADMIN"
+}
+
+// requireOperator — 操作面门禁（项目创建/更新、任务生命周期、图编排互动、报告
+// 生成）：DEVELOPER+；VIEWER 拒。403 + 审计日志（与 denyAuthz 同型）。
+func requireOperator(w http.ResponseWriter, r *http.Request, resource string) bool {
+	if isOperator(r) {
+		return true
+	}
+	log.Printf("[authz] deny operator-only user=%q role-missing resource=%s path=%s", callerID(r), resource, r.URL.Path)
+	writeError(w, http.StatusForbidden, "operator role (developer or admin) required")
+	return false
+}
+
+// canAccessTask — R89→ADR-257: 任务域写面归属门禁（verdict 回写专用路径；owner
+// 或 admin）。读面已放开为认证即读。NotFound 如实 404；查证失败保守拒绝（403/502）。
 func (t *Transcoder) canAccessTask(w http.ResponseWriter, r *http.Request, taskID string) bool {
 	if isAdmin(r) {
 		return true
@@ -64,46 +84,8 @@ func (t *Transcoder) canAccessTask(w http.ResponseWriter, r *http.Request, taskI
 	return true
 }
 
-// canAccessProject — R91: 项目域门禁。读=成员或 admin；写（更新/删除/配置变更）=
-// admin（一期口径：项目写面=管理面，成员写力如需下放另立裁决）。NotFound 404；
-// 查证失败保守拒绝。
-func (t *Transcoder) canAccessProject(w http.ResponseWriter, r *http.Request, projectID string, write bool) bool {
-	if isAdmin(r) {
-		return true
-	}
-	uid := callerID(r)
-	if uid == "" {
-		denyAuthz(w, r, "project/"+projectID)
-		return false
-	}
-	if write {
-		// 一期写面收紧为管理面（此前任意认证用户可改/删任意项目）
-		log.Printf("[authz] deny project write user=%q project=%s path=%s", uid, projectID, r.URL.Path)
-		writeError(w, http.StatusForbidden, "project write requires admin")
-		return false
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), authzLookupTimeout)
-	defer cancel()
-	resp, err := pb.NewProjectServiceClient(t.projectConn).ListProjectMembers(ctx, &pb.ListProjectMembersRequest{ProjectId: projectID})
-	if err != nil {
-		if status.Code(err) == codes.NotFound {
-			writeError(w, http.StatusNotFound, "project not found: "+projectID)
-			return false
-		}
-		log.Printf("[authz] project members lookup failed project=%s: %v", projectID, err)
-		denyAuthz(w, r, "project/"+projectID)
-		return false
-	}
-	for _, m := range resp.GetMembers() {
-		if m.GetUserId() == uid {
-			return true
-		}
-	}
-	denyAuthz(w, r, "project/"+projectID)
-	return false
-}
-
-// canAccessTaskViaFinding — R90: finding 域按 ID 访问 → 解析 task_id → 任务归属。
+// canAccessTaskViaFinding — R90→ADR-257: finding 域写面（verdict）按 ID 访问 →
+// 解析 task_id → 任务归属。读面已放开。
 func (t *Transcoder) canAccessTaskViaFinding(w http.ResponseWriter, r *http.Request, findingID string) bool {
 	if isAdmin(r) {
 		return true
@@ -123,7 +105,8 @@ func (t *Transcoder) canAccessTaskViaFinding(w http.ResponseWriter, r *http.Requ
 	return t.canAccessTask(w, r, resp.GetFinding().GetTaskId())
 }
 
-// canAccessTaskViaReport — R90: 报告域按 ID 访问 → 解析 task_id → 任务归属。
+// canAccessTaskViaReport — R90→ADR-257: 报告域写面按 ID 访问 → 解析 task_id →
+// 任务归属。读面已放开。
 func (t *Transcoder) canAccessTaskViaReport(w http.ResponseWriter, r *http.Request, reportID string) bool {
 	if isAdmin(r) {
 		return true
@@ -164,18 +147,4 @@ func (t *Transcoder) canBatchVerdict(w http.ResponseWriter, r *http.Request, fin
 		}
 	}
 	return true
-}
-
-// gateTaskScopedList — R89/R90: 任务维度列表接口（findings/reports list 带 task_id）
-// 的归属门禁；不带 task_id 的裸列表=全量枚举面，一期收紧为 admin（owner 经 ID/自己
-// 的 task_id 访问；服务端 owner 过滤能力立项后可放宽——设计提案 §一.二期）。
-func (t *Transcoder) gateTaskScopedList(w http.ResponseWriter, r *http.Request, taskID string) bool {
-	if taskID != "" {
-		return t.canAccessTask(w, r, taskID)
-	}
-	if isAdmin(r) {
-		return true
-	}
-	denyAuthz(w, r, r.URL.Path+" (unscoped list)")
-	return false
 }

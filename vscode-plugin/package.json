@@ -2,13 +2,13 @@
   "name": "codeaudit-vscode",
   "displayName": "CodeAudit 代码审计",
   "description": "CodeAudit 扫描平台 VS Code 插件：工作区一键扫描、漏洞结果内联展示、AI 修复建议审批落盘",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "codeaudit",
   "license": "UNLICENSED",
   "private": true,
   "repository": {
     "type": "git",
-    "url": "https://gitlab.local/admins/codeaudit-vscode-plugin.git"
+    "url": "https://gitlab.example.com/admins/codeaudit-vscode-plugin.git"
   },
   "engines": {
     "vscode": "^1.94.0"
@@ -436,6 +436,7 @@
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.94.0",
+    "@vscode/vsce": "^4.0.0",
     "glob": "^10.4.5",
     "mocha": "^11.1.0",
     "typescript": "^5.7.0"

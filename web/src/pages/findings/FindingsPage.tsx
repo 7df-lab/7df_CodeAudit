@@ -4,12 +4,14 @@ import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-q
 import { Button, Input, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
 import { useState } from 'react';
-import { api, errStatus } from '../../api/client';
+import { api, apiErrorMessage, errStatus } from '../../api/client';
 import FindingDetailBody, { extractDataflowTrace, isAIReasoning } from './FindingDetailBody';
 import { buildFindingsCsv, downloadCsv } from '../../findings/csv';
 import type { PaginationResponse, UnifiedFinding } from '../../api/types';
-import { AI_VERDICT, SEVERITY, zh } from '../../dict';
-import { MONO_FONT, SEVERITY_COLOR, VERDICT_COLOR } from '../../dict/tokens';
+import { SEVERITY, zh } from '../../dict';
+import { MONO_FONT, SEVERITY_COLOR } from '../../dict/tokens';
+import { VERDICT_STATE_COLOR, VERDICT_STATE_LABEL, hasConclusion, verdictState } from '../../dict/verdict';
+import { useCanWrite } from '../../auth/session';
 
 // AI 降级判定（2026-09-11 用户报障：RuleScan 兜底任务仍 COMPLETED、时间线全绿，用户无从
 // 得知 AI 推理未生效）。降级痕迹只在发现级：source_rule_id 带 rulescan-fallback: 前缀，
@@ -20,18 +22,19 @@ export function isDegradedFinding(f: { source_rule_id?: string; ai_reasoning?: s
 
 export default function FindingsPage({ taskId }: { taskId: string }) {
   const qc = useQueryClient();
+  const canWrite = useCanWrite(); // ADR-257: VIEWER 隐藏行内快捷 triage（后端为最终防线）
   const [verdictFilter, setVerdictFilter] = useState<string>('');
   const [localFilter, setLocalFilter] = useState<'all' | 'reviewed' | 'unreviewed'>('all');
   // 2026-09-09 对标竞品: 缺陷列表按严重程度/文件路径筛选 + CSV 导出
   const [severityFilter, setSeverityFilter] = useState<string>('');
   const [pathFilter, setPathFilter] = useState<string>('');
-  // ADR-225 D2 双视图：来源筛选（全部=完整视图缺省 / 新发现 / 继承）——
+  // ADR-225 D2 双视图：来源筛选（全部=完整视图默认 / 新发现 / 继承）——
   // 纯客户端过滤（inherited_from_task_id 空/非空），与结论/严重级筛选同链路
   const [sourceFilter, setSourceFilter] = useState<'all' | 'new' | 'inherited'>('all');
 
-  // （审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询——
+  // B3-1（审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询——
   // "加载更多"翻页后前页保留（pages 累积），不再是整表替换。
-  // 过滤条件不进 queryKey（ 复核结论）：结论/严重级/路径/来源筛选全是纯客户端行为
+  // 过滤条件不进 queryKey（审计 B3-1 复核结论）：结论/严重级/路径/来源筛选全是纯客户端行为
   // （服务端 ListFindings 未接线 filter——result-service repo.List 第 4 参硬编码空串，proto
   // FilterRequest 只认 conditions 形状且网关 DiscardUnknown 静默丢弃未知字段，发 {filter:…}
   // 等于没发）。筛选在渲染层对已累计页过滤，游标分页序列不受影响，无"过滤后翻页错位"面；
@@ -54,21 +57,24 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
   });
 
   const quickTriage = useMutation({
-    mutationFn: async ({ id, verdict }: { id: string; verdict: string }) =>
-      api.put(`/v1/findings/${id}/verdict`, { verdict, reasoning: 'console quick triage' }),
+    // 两轴重构（2026-10-09）：写 direction（tier 服务端钉 DEFINITE——人工 triage 即结构化裁决）
+    mutationFn: async ({ id, direction }: { id: string; direction: string }) =>
+      api.put(`/v1/findings/${id}/verdict`, { direction, reasoning: 'console quick triage' }),
     onSuccess: () => {
       message.success('结论已回写');
       qc.invalidateQueries({ queryKey: ['findings', taskId] });
-      // （审计修复）：任务详情 Tabs 里本页与融合/审核视图并列——裁决改写 ai_verdict，
+      // B4-3（审计修复）：任务详情 Tabs 里本页与融合/审核视图并列——裁决改写 ai_verdict，
       // 融合去重分区/审核视图列读同一字段，不联动失效则切换 Tab 停留旧结论（前缀失效覆盖
       // ['fusion-findings', taskId] / ['review-findings', taskId]）。
       qc.invalidateQueries({ queryKey: ['fusion-findings'] });
       qc.invalidateQueries({ queryKey: ['review-findings'] });
+      // v0.1.2：概况实时统计联动（复核概况吃 findings 两轴桶，裁决后必须重取）
+      qc.invalidateQueries({ queryKey: ['task-stats', taskId] });
     },
-    // （审计修复）：此前失败静默——补页面现有 message.error 通道，携带状态码
+    // B3-3（审计修复）：此前失败静默——补页面现有 message.error 通道，携带状态码
     onError: (e) => {
       const status = errStatus(e);
-      message.error(`结论回写失败${status ? `（HTTP ${status}）` : ''}：${(e as Error).message}`);
+      message.error(`结论回写失败${status ? `（HTTP ${status}）` : ''}：${apiErrorMessage(e)}`);
     },
   });
 
@@ -80,7 +86,7 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
   const columns = [
     // 2026-09-09 GUI 评审: 窄容器（任务详情产出视图）下无宽度约束会把标题挤成竖排单字
     { title: '发现', dataIndex: 'title', width: 150, ellipsis: true }, // ADR-150: 审核功能内嵌行展开，不再跳独立页
-    { title: '严重级', dataIndex: 'severity', width: 52, render: (s: string) => <Tag color={SEVERITY_COLOR[s]}>{zh(SEVERITY, s)}</Tag> },
+    { title: '严重级', dataIndex: 'severity', width: 64, render: (s: string) => <Tag color={SEVERITY_COLOR[s]}>{zh(SEVERITY, s)}</Tag> },
     // CWE 是代码型 token（CWE-1104），禁止连字符处折行（折行比溢出更伤可读性）
     { title: 'CWE', dataIndex: 'cwe_id', width: 84, render: (v: string) => <span style={{ fontFamily: MONO_FONT, whiteSpace: 'nowrap' }}>{v || '—'}</span> },
     {
@@ -118,7 +124,7 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
         );
       },
     },
-    // ADR-153 方案A: V1 契约 AI/人工共用 ai_verdict（proto L78/L1240），列头如实标注并悬停说明
+    // ADR-153 方案A: V1 契约 AI/人工共用判定两轴（原 proto L78，2026-10-09 拆轴），列头如实标注并悬停说明
     // 人类需求（ADR-167 补遗）：AI 结论文本直接进当前结论列并标明 AI 输出——
     // 创建期 AI 链路的 reasoning 带 [DSH-sandbox]/[LLM:] 前缀，以此标注；两行预览+悬停全文
     {
@@ -127,14 +133,14 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
           当前结论
         </Tooltip>
       ),
-      dataIndex: 'ai_verdict',
-      render: (v: string, rec: UnifiedFinding) => {
+      render: (_: unknown, rec: UnifiedFinding) => {
         const aiText = isAIReasoning(rec.ai_reasoning) ? rec.ai_reasoning : '';
+        const st = verdictState(rec);
         return (
           <div style={{ maxWidth: 340 }}>
             <Space size={4} wrap>
-              {/* 空值显式归一"未判定"（zh 已无枚举特判，B3-5；展示行为不变） */}
-              <Tag color={VERDICT_COLOR[v]}>{zh(AI_VERDICT, v || 'AI_VERDICT_UNSPECIFIED')}</Tag>
+              {/* 五态组合标签（两轴 2026-10-09）：展示/筛选/CSV 同源 dict/verdict */}
+              <Tag color={VERDICT_STATE_COLOR[st]}>{VERDICT_STATE_LABEL[st]}</Tag>
               {aiText && <Tag color="geekblue" style={{ marginRight: 0 }}>AI 输出</Tag>}
             </Space>
             {aiText && (
@@ -154,11 +160,13 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
       // ADR-152 + ADR-151 合并列（2026-09-13 间距整改）：复核状态（判定态+时间）与行内
       // 快捷 triage 同属复核动作域，分开两列在 50% 窄容器里把"当前结论"挤到溢出——合并后
       // 让位给结论预览。判定态/时间/快捷按钮三信息全保留。
+      // v0.1.2（2026-10-10 GUI 判例）：fixed right——scroll.x=820 下限对任务详情右栏
+      //（~780px）必启内滚，操作列排最右=最先被裁出视区；钉右保证 确认/误报 恒可见。
       title: '复核',
-      dataIndex: 'ai_verdict',
       width: 112,
-      render: (v: string, rec: UnifiedFinding) => {
-        const reviewed = v && v !== 'AI_VERDICT_UNSPECIFIED';
+      fixed: 'right' as const,
+      render: (_: unknown, rec: UnifiedFinding) => {
+        const reviewed = hasConclusion(rec.verdict_direction);
         return (
           <Space size={4} direction="vertical">
             <Tag color={reviewed ? 'green' : 'default'} style={{ marginRight: 0 }}>
@@ -169,18 +177,21 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
                 {dayjs(rec.updated_at).format('MM-DD HH:mm')}
               </Typography.Text>
             )}
-            <Space size={4}>
-              {/* 行内快捷 triage 不用 primary：表格里每行一个主色按钮会稀释真正的主操作
-                  ；与"误报"同级，仅语义文字区分 */}
-              <Button size="small"
-                onClick={() => quickTriage.mutate({ id: rec.finding_id, verdict: 'AI_VERDICT_TRUE_POSITIVE' })}>
-                确认
-              </Button>
-              <Button size="small"
-                onClick={() => quickTriage.mutate({ id: rec.finding_id, verdict: 'AI_VERDICT_FALSE_POSITIVE' })}>
-                误报
-              </Button>
-            </Space>
+            {/* ADR-257: 快捷 triage=写面操作，VIEWER 只读（后端 canBatchVerdict 为最终防线） */}
+            {canWrite && (
+              <Space size={4}>
+                {/* 行内快捷 triage 不用 primary：表格里每行一个主色按钮会稀释真正的主操作
+                    （设计整改 P0）；与"误报"同级，仅语义文字区分 */}
+                <Button size="small"
+                  onClick={() => quickTriage.mutate({ id: rec.finding_id, direction: 'VERDICT_DIRECTION_TRUE' })}>
+                  确认
+                </Button>
+                <Button size="small"
+                  onClick={() => quickTriage.mutate({ id: rec.finding_id, direction: 'VERDICT_DIRECTION_FALSE' })}>
+                  误报
+                </Button>
+              </Space>
+            )}
           </Space>
         );
       },
@@ -190,12 +201,11 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
   // ADR-152: 复核可见性客户端过滤（已判定/未判定分组）+ 具体结论精确匹配
   // （修复：此前 onChange 走 else 分支恒 setVerdictFilter('')——下拉选任何具体结论都被清空，
   // 且 filter 参数形状不契约被网关丢弃，结论筛选整条链路从未生效过）
-  // pages 累积（flatMap 保序拼接）后客户端过滤（结论分组/严重级/路径/来源）
+  // B3-1：pages 累积（flatMap 保序拼接）后客户端过滤（结论分组/严重级/路径/来源）
   const rows = (data?.pages.flatMap((p) => p.findings) ?? []).filter((f) => {
-    const reviewed = f.ai_verdict && f.ai_verdict !== 'AI_VERDICT_UNSPECIFIED';
+    const reviewed = hasConclusion(f.verdict_direction);
     if (localFilter === 'reviewed') return reviewed;
-    if (localFilter === 'unreviewed') return !reviewed;
-    if (verdictFilter) return f.ai_verdict === verdictFilter;
+    if (verdictFilter) return verdictState(f) === verdictFilter; // 五态组合键精确匹配
     return true;
   }).filter((f) => {
     // 2026-09-09 对标竞品: 严重程度下拉 + 文件路径包含匹配（大小写不敏感）
@@ -222,22 +232,19 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
           style={{ width: 200 }}
           allowClear
           placeholder="全部"
-          value={(() => {
-            if (localFilter === 'reviewed') return '__reviewed';
-            if (localFilter === 'unreviewed') return '__unreviewed';
-            return verdictFilter || undefined;
-          })()}
+          value={localFilter === 'reviewed' ? '__reviewed' : (verdictFilter || undefined)}
           onChange={(v) => {
             if (v === '__reviewed') setLocalFilter('reviewed');
-            else if (v === '__unreviewed') setLocalFilter('unreviewed');
             else { setLocalFilter('all'); setVerdictFilter(v ?? ''); } // 具体结论选项此前恒被清空（死控制）
           }}
-          options={[...Object.entries(AI_VERDICT).map(([value, label]) => ({ value, label })),
-            { value: '__reviewed', label: '已判定（全部类型）' },
-            { value: '__unreviewed', label: '未判定' }]}
+          options={[...Object.entries(VERDICT_STATE_LABEL).map(([value, label]) => ({ value, label })),
+            { value: '__reviewed', label: '已判定（全部类型）' }]
+            // 两轴重构（2026-10-09）：原 __unreviewed 组与"未判定"五态恒等
+            //（hasConclusion 谓词相同）——冗余组选项删除 */}
+          }
         />
         <Typography.Text type="secondary">严重程度：</Typography.Text>
-        {/*  筛选选项带色阶点——色觉与列上 Tag 同源（SEVERITY_COLOR） */}
+        {/* 设计整改 P3: 筛选选项带色阶点——色觉与列上 Tag 同源（SEVERITY_COLOR） */}
         <Select
           style={{ width: 130 }}
           allowClear
@@ -299,12 +306,12 @@ export default function FindingsPage({ taskId }: { taskId: string }) {
         size="small"
         scroll={{ x: 820, ...(rows.length > 50 ? { y: 480 } : {}) }}
         virtual={rows.length > 50}
-        rowClassName={(rec) => (rec.ai_verdict && rec.ai_verdict !== 'AI_VERDICT_UNSPECIFIED' ? 'finding-reviewed' : '')}
+        rowClassName={(rec) => (hasConclusion(rec.verdict_direction) ? 'finding-reviewed' : '')}
         expandable={{
           // ADR-150: 行展开=完整审核工作台（代码上下文/当前结论/裁决区），不再跳独立页
           expandedRowRender: (rec: UnifiedFinding) => <FindingDetailBody findingId={rec.finding_id} />,
           rowExpandable: () => true,
-          // fixed 布局下展开列必须显式给宽（缺省会参与剩余宽度分配，挤占"当前结论"）
+          // fixed 布局下展开列必须显式给宽（默认会参与剩余宽度分配，挤占"当前结论"）
           columnWidth: 80,
           // ADR-151: 默认展开箭头过小不易发现——改为明确的"风险详情"按钮
           expandIcon: (props: import('rc-table/es/interface').RenderExpandIconProps<UnifiedFinding>) => (

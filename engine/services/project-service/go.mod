@@ -7,6 +7,7 @@ require (
 	github.com/codeaudit/go-config v0.0.0-00010101000000-000000000000
 	github.com/codeaudit/proto-gen v1.0.0
 	github.com/golang-jwt/jwt/v5 v5.2.1
+	github.com/lib/pq v1.12.3
 	golang.org/x/crypto v0.23.0
 	google.golang.org/grpc v1.65.0
 	google.golang.org/protobuf v1.34.2

@@ -1,4 +1,4 @@
-// axios adapter 层伪造网关——核心（自 fakeGateway.ts 抽出 2026-09-13）：
+// axios adapter 层伪造网关——核心：
 // 测试台（vitest beforeEach/afterEach 挂卸）与 dev:mock 视觉走查入口（demoGateway）
 // 共用同一段路由匹配/回放逻辑。纪律沿用 ADR-203 测试台：
 //   1. 只在 HTTP 传输层造假——api/client 的真实代码（FormData/序列化/401刷新/503重试）全量执行；

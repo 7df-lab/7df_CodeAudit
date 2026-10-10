@@ -1,15 +1,14 @@
 // 审核视图（14号 §3.3 ⑦，旧模式D，已弃用 ADR-182）。
 // 诚实声明（ADR-139 设计缺口）：ReviewSASTResults 的 AuditReviewReport（OverallAssessment+
 // 逐条 opinion）随 RPC 返回但无持久化查询通道（proto 无对应读取 RPC）——本视图展示**已持久化**
-// 的逐条结论（result-service 的 ai_verdict/ai_reasoning），不伪造审核报告。零 LLM 参与的批次，
+// 的逐条结论（result-service 的判定两轴/ai_reasoning），不伪造审核报告。零 LLM 参与的批次，
 // 后端写入 NEEDS_MANUAL+原因，原样可见。
 import { useQuery } from '@tanstack/react-query';
 import { Alert, Button, Card, Table, Tag, Typography } from 'antd';
 import { api } from '../../api/client';
 import FindingDetailBody from '../findings/FindingDetailBody';
 import type { UnifiedFinding } from '../../api/types';
-import { AI_VERDICT, zh } from '../../dict';
-import { VERDICT_COLOR } from '../../dict/tokens';
+import { VERDICT_STATE_COLOR, VERDICT_STATE_LABEL, verdictState } from '../../dict/verdict';
 import { PageLoading, QueryError } from '../../components/states';
 
 export default function ReviewView({ taskId }: { taskId: string }) {
@@ -22,11 +21,11 @@ export default function ReviewView({ taskId }: { taskId: string }) {
       },
   });
 
-  //  补错误分支——此前查询失败永远停在加载文案（与 FusionView 同病）
+  // 设计整改 P1: 补错误分支——此前查询失败永远停在加载文案（与 FusionView 同病）
   if (isLoading) return <PageLoading />;
   if (isError) return <QueryError error={error} onRetry={() => refetch()} />;
   const findings = data?.findings ?? [];
-  // （审计修复）：视图单页拉 100 条截断——has_next=true 时如实提示，不再静默丢剩余
+  // B3-4（审计修复）：视图单页拉 100 条截断——has_next=true 时如实提示，不再静默丢剩余
   const truncated = data?.pagination?.has_next === true;
 
   return (
@@ -72,9 +71,12 @@ export default function ReviewView({ taskId }: { taskId: string }) {
             { title: '发现', dataIndex: 'title', ellipsis: true },
             { title: '来源', dataIndex: 'source_tool', width: 96 },
             {
-              title: '已落盘结论', dataIndex: 'ai_verdict', width: 128,
+              title: '已落盘结论', width: 128,
               // 空值显式归一"未判定"（zh 已无枚举特判，B3-5；展示行为不变）
-              render: (v: string) => <Tag color={VERDICT_COLOR[v]}>{zh(AI_VERDICT, v || 'AI_VERDICT_UNSPECIFIED')}</Tag>,
+              render: (_: unknown, rec: UnifiedFinding) => {
+                const st = verdictState(rec);
+                return <Tag color={VERDICT_STATE_COLOR[st]}>{VERDICT_STATE_LABEL[st]}</Tag>;
+              },
             },
             {
               title: '结论理由（原文）', dataIndex: 'ai_reasoning',

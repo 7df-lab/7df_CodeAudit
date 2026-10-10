@@ -12,17 +12,18 @@ import (
 
 // GoldenFindingInput is a JSON-friendly representation for test input.
 type GoldenFindingInput struct {
-	FindingID    string  `json:"finding_id"`
-	TaskID       string  `json:"task_id"`
-	SourceTool   string  `json:"source_tool"`
-	FilePath     string  `json:"file_path"`
-	StartLine    int32   `json:"start_line"`
-	EndLine      int32   `json:"end_line"`
-	CWEID        string  `json:"cwe_id"`
-	Severity     string  `json:"severity"`
-	Confidence   float32 `json:"confidence"`
-	AIVerdict    string  `json:"ai_verdict"`
-	AIConfidence float32 `json:"ai_confidence"`
+	FindingID        string  `json:"finding_id"`
+	TaskID           string  `json:"task_id"`
+	SourceTool       string  `json:"source_tool"`
+	FilePath         string  `json:"file_path"`
+	StartLine        int32   `json:"start_line"`
+	EndLine          int32   `json:"end_line"`
+	CWEID            string  `json:"cwe_id"`
+	Severity         string  `json:"severity"`
+	Confidence       float32 `json:"confidence"`
+	VerdictDirection string  `json:"verdict_direction"`
+	VerdictTier      string  `json:"verdict_tier"`
+	AIConfidence     float32 `json:"ai_confidence"`
 }
 
 // GoldenTestInput represents the input for golden test.
@@ -79,23 +80,27 @@ func severityFromString(s string) pb.Severity {
 	}
 }
 
-// verdictFromString converts a verdict string to proto enum.
-func verdictFromString(s string) pb.AIVerdict {
+// verdict 两轴 golden 串（direction: TRUE/FALSE/UNSPECIFIED; tier: DEFINITE/LIKELY/UNSPECIFIED）
+// → proto 枚举。未知串回落零值（未判定）。
+func directionFromString(s string) pb.VerdictDirection {
 	switch s {
-	case "AI_VERDICT_TRUE_POSITIVE":
-		return pb.AIVerdict_AI_VERDICT_TRUE_POSITIVE
-	case "AI_VERDICT_FALSE_POSITIVE":
-		return pb.AIVerdict_AI_VERDICT_FALSE_POSITIVE
-	case "AI_VERDICT_LIKELY_TRUE":
-		return pb.AIVerdict_AI_VERDICT_LIKELY_TRUE
-	case "AI_VERDICT_LIKELY_FALSE":
-		return pb.AIVerdict_AI_VERDICT_LIKELY_FALSE
-	case "AI_VERDICT_UNCERTAIN":
-		return pb.AIVerdict_AI_VERDICT_UNCERTAIN
-	case "AI_VERDICT_NEEDS_MANUAL":
-		return pb.AIVerdict_AI_VERDICT_NEEDS_MANUAL
+	case "TRUE":
+		return pb.VerdictDirection_VERDICT_DIRECTION_TRUE
+	case "FALSE":
+		return pb.VerdictDirection_VERDICT_DIRECTION_FALSE
 	default:
-		return pb.AIVerdict_AI_VERDICT_UNSPECIFIED
+		return pb.VerdictDirection_VERDICT_DIRECTION_UNSPECIFIED
+	}
+}
+
+func tierFromString(s string) pb.VerdictTier {
+	switch s {
+	case "DEFINITE":
+		return pb.VerdictTier_VERDICT_TIER_DEFINITE
+	case "LIKELY":
+		return pb.VerdictTier_VERDICT_TIER_LIKELY
+	default:
+		return pb.VerdictTier_VERDICT_TIER_UNSPECIFIED
 	}
 }
 
@@ -110,11 +115,12 @@ func convertFinding(gf GoldenFindingInput) *pb.UnifiedFinding {
 			StartLine: gf.StartLine,
 			EndLine:   gf.EndLine,
 		},
-		CweId:        gf.CWEID,
-		Severity:     severityFromString(gf.Severity),
-		Confidence:   gf.Confidence,
-		AiVerdict:    verdictFromString(gf.AIVerdict),
-		AiConfidence: gf.AIConfidence,
+		CweId:            gf.CWEID,
+		Severity:         severityFromString(gf.Severity),
+		Confidence:       gf.Confidence,
+		VerdictDirection: directionFromString(gf.VerdictDirection),
+		VerdictTier:      tierFromString(gf.VerdictTier),
+		AiConfidence:     gf.AIConfidence,
 	}
 }
 

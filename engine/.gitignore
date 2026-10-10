@@ -70,13 +70,15 @@ coverage/
 # pytest 缓存不入库(ADR-104目录卫生)
 .pytest_cache/
 
-# 会话证据与智能体工作目录（.agent/）只归档本机，不入库（ADR-169 补遗）；
-
-
-
-.agent/
-
+# 会话证据与智能体工作目录：人类决定 2026-09-01 只归档本机不入 gitlab（ADR-169 补遗）；
+# R5 的"归档 .agent/evidence/"仍在本机磁盘执行
+.agent/*
+!.agent/*.sh
 services/**/.agent/
+
+# 工具会话工件（ZCode plan 落盘）不入库——U8/ADR-218 同口径；曾有一个 plan 文件被
+# 9f3cde31 裹挟入库，已于 2026-09-16 ADR-234 批 git rm 清退
+.zcode/
 
 # 运行时数据（ADR-169: 上传包/克隆仓库/AI 交互日志均不入库；目录由服务运行时创建）
 data/uploads/
@@ -87,12 +89,14 @@ data/ai-interaction/
 *.tsbuildinfo
 tests/samples/**/.codeaudit/
 
-# 模式D大型验证语料不入库（ADR-178）：
+# 模式D大型验证语料不入库：
 # package/（132MB 解压树）+ package.zip（40MB）= OpenWrt/MTK 固件 SDK 真实语料，
 # 无任何已提交测试/脚本/CI 依赖；本机保留可复现，恢复方式见 tests/samples/README.md
 tests/samples/package/
 tests/samples/package.zip
 
+# 中文编码文件（系统生成的临时文件）
+**方向变更（人类决策**
 .toolchain/
 
 # sast-adapter 镜像内烘焙的 SAST 工具二进制（ADR-198）：版本/sha256 见同目录 PROVENANCE.md

@@ -135,3 +135,13 @@ describe('AIInteractionLogPanel（AI 交互日志，ADR-168/170/181/188）', () 
     expect(scrollWrites).toBeGreaterThan(0);
   });
 });
+
+// TP20-T2 切换 marker（计划 §3.3）：行首 ── 天然命中 metaLine 归 meta 条目——
+// 新增断言锁示例行（防未来 metaLine 收窄丢行）。
+describe('切换 Agent marker 行归 meta（TP20-T2）', () => {
+  it('── 切换 Agent dsh → maka ── 渲染为时间线条目（meta）', () => {
+    const text = TEXT + '\n── 切换 Agent dsh → maka ──\n✍ [输出]\n接续分析…';
+    renderPanel({ text, totalBytes: text.length, complete: true });
+    expect(screen.getAllByText(/切换 Agent dsh → maka/).length).toBeGreaterThan(0);
+  });
+});

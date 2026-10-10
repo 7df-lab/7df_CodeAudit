@@ -4,10 +4,20 @@ version: '3.8'
 # 包含：PostgreSQL, Redis, MinIO, Kafka（4 中间件，ADR-197 后 Neo4j/Milvus 出栈）+ 7 个应用服务
 # 用法：docker-compose up -d
 
+# 日志轮转：docker json-file 缺省无上限——bridge 线材/任务日志
+# 长运行膨胀吞磁盘。诊断面轮转（max-size 20m×5=每容器至多 100m）；审计真相
+# 不在 docker logs（业务面=.tasklog/ai-interaction 卷+PG+events 档案）。
+x-logging: &default_logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   # PostgreSQL - 主数据库
   # 09 §1: project-service/task-service/result-service 使用
   postgres:
+    logging: *default_logging
     image: postgres:16-alpine
     container_name: codeaudit-postgres
     environment:
@@ -30,6 +40,7 @@ services:
   # Redis - 缓存和会话存储
   # 09 §1: project-service/storage-service 使用
   redis:
+    logging: *default_logging
     image: redis:7-alpine
     container_name: codeaudit-redis
     ports:
@@ -45,6 +56,7 @@ services:
   # MinIO - 对象存储
   # 09 §1: result-service/storage-service 使用
   minio:
+    logging: *default_logging
     image: minio/minio:latest
     container_name: codeaudit-minio
     command: server /data --console-address ":9001"
@@ -66,6 +78,7 @@ services:
   # 09 §1: task-service/result-service/storage-service 使用
   # 01 §4.3: 5个topic（task.created/task.stage.completed/task.completed/finding.created/finding.verdict.updated）
   kafka:
+    logging: *default_logging
     image: bitnami/kafka:3.7
     container_name: codeaudit-kafka
     environment:
@@ -73,7 +86,7 @@ services:
       KAFKA_CFG_PROCESS_ROLES: 'broker,controller'
       KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
       KAFKA_CFG_LISTENERS: 'PLAINTEXT://:9092,CONTROLLER://:9093'
-      KAFKA_CFG_ADVERTISED_LISTENERS: 'PLAINTEXT://${CODEAUDIT_KAFKA_ADVERTISED:-gateway.internal}:9092'  # ADR-199: 广播 LXC IP（容器内/宿主机双可达；localhost 广播宿主机不可达）
+      KAFKA_CFG_ADVERTISED_LISTENERS: 'PLAINTEXT://${CODEAUDIT_KAFKA_ADVERTISED:-192.0.2.122}:9092'  # ADR-199: 广播 LXC IP（容器内/宿主机双可达；localhost 广播宿主机不可达）
       KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: 'PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT'
       KAFKA_CFG_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
       KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: 'true'
@@ -94,23 +107,31 @@ services:
   # gateway-service — API网关、JWT认证、路由、限流
   # 01 §4.1 #1 / 03 §1.1 / 07 §7
   gateway:
+    logging: *default_logging
+    # 镜像身份与 compose 项目名解耦（ADR-233）：codeaudit-<svc>:<tag> 三层环境同名同源，
+    # tag 由部署入口钉 ENGINE_IMAGE_TAG（sim.sh/production-deploy.sh 按 engine 树 sha），
+    # 缺省 latest=本地开发档。命名沿 ADR-198 已有 codeaudit-sast-adapter 口径。
+    image: codeaudit-gateway:${ENGINE_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: services/gateway-service/Dockerfile
-    container_name: codeaudit-gateway
+      # GOPROXY 透传（旋钮 6；公开树经 release-sanitize 值换 proxy.golang.org，
+      # 无 golang.org 出口的宿主由 production-deploy 探测注入，与 web NPM_REGISTRY 同构）
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     ports:
       - "${CODEAUDIT_HOST_GATEWAY:-8080}:8080"
     environment:
       CODEAUDIT_CONFIG: "/etc/codeaudit/codeaudit.yaml"
-      CODEAUDIT_JWT_SECRET: "${CODEAUDIT_JWT_SECRET:-changeme}"
+      CODEAUDIT_JWT_SECRET: "${CODEAUDIT_JWT_SECRET:?set CODEAUDIT_JWT_SECRET}"
       CODEAUDIT_PROJECT_SERVICE_ADDR: "project:50052"
       CODEAUDIT_TASK_SERVICE_ADDR: "task:50054"      # ADR-113
       CODEAUDIT_RESULT_SERVICE_ADDR: "result:50058"  # ADR-117
       CODEAUDIT_STORAGE_SERVICE_ADDR: "storage:50055"
-      # 容器化口径补齐（2026-09-05 交叉核对）：gateway 侧 sast/dsh 直连面同样
+      # 容器化口径补齐：gateway 侧 sast/dsh 直连面同样
       # 不能回落 localhost（ai-log / 工具透传类 RPC 的可达性）
       CODEAUDIT_SAST_ADAPTER_ADDR: "sast-adapter:50051"
-      CODEAUDIT_DSH_RUNTIME_ADDR: "dsh-runtime:50057"
+      CODEAUDIT_RUNTIME_ADDR: "runtime:50057"
     depends_on:
       project:
         condition: service_started
@@ -126,39 +147,41 @@ services:
     volumes:
       - ./configs/codeaudit.yaml:/etc/codeaudit/codeaudit.yaml:ro
       # 任务源共享卷（ADR-195 source-file 回查）：task 解包/clone 的 repos 目录
-      # 须对 gateway(源码查看)/sast-adapter(扫描)/dsh-runtime(沙箱上传) 可见——
+      # 须对 gateway(源码查看)/sast-adapter(扫描)/runtime(沙箱上传) 可见——
       # 容器化前各服务同 CWD 相对路径成立，容器化后 CWD 各异，必须显式同卷。
-      # 运行时 CWD：gateway/task/dsh-runtime=/，sast-adapter=/app（挂载点据此）
+      # 运行时 CWD：gateway/task/runtime=/，sast-adapter=/app（挂载点据此）
       - agent_repos:/data/repos
 
   # project-service — ProjectService + UserService (gRPC)
   # 01 §4.1 #2 / 09 §1
   project:
+    logging: *default_logging
+    image: codeaudit-project:${ENGINE_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: services/project-service/Dockerfile
-    container_name: codeaudit-project
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     ports:
       - "${CODEAUDIT_HOST_PROJECT:-50052}:50052"
     environment:
       CODEAUDIT_CONFIG: "/etc/codeaudit/codeaudit.yaml"
-      CODEAUDIT_JWT_SECRET: "${CODEAUDIT_JWT_SECRET:-changeme}"
-      CODEAUDIT_DB_HOST: "postgres"
-      CODEAUDIT_DB_PORT: "5432"
-      CODEAUDIT_DB_USER: "postgres"
-      CODEAUDIT_DB_PASSWORD: "postgres"
-      CODEAUDIT_DB_NAME: "codeaudit_project"
-      CODEAUDIT_REDIS_ADDR: "redis:6379"
+      CODEAUDIT_JWT_SECRET: "${CODEAUDIT_JWT_SECRET:?set CODEAUDIT_JWT_SECRET}"
+      # HA P1-a（ADR-250）：PG 档（写穿+读回落+幂等外置）；空=内存档（旧 CODEAUDIT_DB_*
+      # 五件从未被代码消费，死配置清除；库 codeaudit_project 由 init-db.sql 预建）。
+      CODEAUDIT_PROJECT_PG_DSN: ${CODEAUDIT_PROJECT_PG_DSN:-postgres://postgres:postgres@postgres:5432/codeaudit_project?sslmode=disable}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # 真实探针（ADR-233 自 sim overlay 上提——占位 true 使生产栈健康状态失真；
+    # alpine 运行时=busybox nc，探 TCP 即 gRPC listener 在听）
     healthcheck:
-      test: ["CMD-SHELL", "true"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 50052"]
       interval: 5s
-      timeout: 5s
-      retries: 5
+      timeout: 3s
+      retries: 12
 
   # storage-service — StorageService + NotificationService (gRPC)
   # 01 §4.1 #9 / 09 §1
@@ -166,10 +189,13 @@ services:
       - ./configs/codeaudit.yaml:/etc/codeaudit/codeaudit.yaml:ro
 
   storage:
+    logging: *default_logging
+    image: codeaudit-storage:${ENGINE_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: services/storage-service/Dockerfile
-    container_name: codeaudit-storage
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     ports:
       - "${CODEAUDIT_HOST_STORAGE:-50055}:50055"
     environment:
@@ -187,10 +213,10 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "true"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 50055"]
       interval: 5s
-      timeout: 5s
-      retries: 5
+      timeout: 3s
+      retries: 12
 
   # ============================================================
   # TP05 编排核心（task-service）
@@ -202,43 +228,49 @@ services:
       - ./configs/codeaudit.yaml:/etc/codeaudit/codeaudit.yaml:ro
 
   task:
+    logging: *default_logging
+    image: codeaudit-task:${ENGINE_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: services/task-service/Dockerfile
-    container_name: codeaudit-task
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     ports:
       - "${CODEAUDIT_HOST_TASK:-50054}:50054"
     environment:
       CODEAUDIT_CONFIG: "/etc/codeaudit/codeaudit.yaml"
       CODEAUDIT_SAST_ADAPTER_ADDR: "sast-adapter:50051"
-      CODEAUDIT_DSH_RUNTIME_ADDR: "dsh-runtime:50057"
+      CODEAUDIT_RUNTIME_ADDR: "runtime:50057"
       CODEAUDIT_RESULT_ADDR: "result:50058"
-      # 容器化口径补齐（2026-09-05 GUI 实测：项目级 upload 兜底链 409 根因）——
+      # 容器化口径补齐——
       # task 读项目 config（ADR-203 兜底）与从 storage 拉上传件（ADR-200）都必须
       # 拨服务名；缺省回落 yaml 的 localhost:* 即拨自身，RPC 失败被降级吞掉
       CODEAUDIT_PROJECT_ADDR: "project:50052"
       CODEAUDIT_STORAGE_ADDR: "storage:50055"
       CODEAUDIT_TASK_PG_DSN: postgres://postgres:postgres@postgres:5432/codeaudit_task?sslmode=disable # R-31: 任务实体落库
-      # ADR-196 对账探针：AI 交互日志目录须与 dsh-runtime 同指共享卷——相对路径在
-      # 各容器 CWD 下互不可见，探针恒 miss → 长审计任务被误判 TIMEOUT（实证）
+      # ADR-196 对账探针：AI 交互日志目录须与 runtime 同指共享卷——相对路径在
+      # 各容器 CWD 下互不可见，探针恒 miss → 长审计任务被误判 TIMEOUT（gw-d331089f 实证）
       CODEAUDIT_INTERACTION_DIR: /data/repos/ai-interaction
     # 本服务原缺失此挂载（仓库内 volumes 块缩进错位挂到了上一服务），
     # 无配置即 panic（ADR-137 fail-loud）。2026-08-31 补齐。
     volumes:
       - ./configs/codeaudit.yaml:/etc/codeaudit/codeaudit.yaml:ro
+      # 切片2（ADR-245）生产接线（移交注记收口）：configs/packs→约定键回落位——
+      # task-service 零 env 装载注册表（配置文件同目录 packs/，sim overlay 同款）
+      - ./configs/packs:/etc/codeaudit/packs:ro
       - agent_repos:/data/repos   # 任务源共享卷：解包/clone 目录，CWD=/ 故挂 /data/repos
     depends_on:
       result:
         condition: service_started
-      dsh-runtime:
+      runtime:
         condition: service_started
       sast-adapter:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "true"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 50054"]
       interval: 5s
-      timeout: 5s
-      retries: 5
+      timeout: 3s
+      retries: 12
 
   # ============================================================
   # TP06/TP09 SAST适配与融合（sast-adapter-service）
@@ -247,10 +279,14 @@ services:
   # sast-adapter-service — SASTAdapterService + SASTFusionService (gRPC)
   # 01 §4.1 #8 / 09 §2 行 sast-adapter→result / ADR-114(端口沿用50051)
   sast-adapter:
+    logging: *default_logging
+    image: codeaudit-sast-adapter:${ENGINE_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: services/sast-adapter-service/Dockerfile
-    container_name: codeaudit-sast-adapter
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
     ports:
       - "${CODEAUDIT_HOST_SAST_ADAPTER:-50051}:50051"
     environment:
@@ -259,11 +295,12 @@ services:
     depends_on:
       result:
         condition: service_started
+    # 运行时为 python:3.12-slim（debian，无 busybox nc）→ python 探针（sim 同款）
     healthcheck:
-      test: ["CMD-SHELL", "true"]
+      test: ["CMD-SHELL", "python3 -c \"import socket;s=socket.socket();s.settimeout(2);s.connect(('127.0.0.1',50051))\""]
       interval: 5s
-      timeout: 5s
-      retries: 5
+      timeout: 3s
+      retries: 12
 
   # ============================================================
   # TP08 结果与报告服务（result-service）
@@ -276,10 +313,13 @@ services:
       - agent_repos:/app/data/repos   # 任务源共享卷：本服务运行时 CWD=/app（ADR-195 口径）
 
   result:
+    logging: *default_logging
+    image: codeaudit-result:${ENGINE_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: services/result-service/Dockerfile
-    container_name: codeaudit-result
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     ports:
       - "${CODEAUDIT_HOST_RESULT:-50058}:50058"
     environment:
@@ -292,30 +332,33 @@ services:
       kafka:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "true"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 50058"]
       interval: 5s
-      timeout: 5s
-      retries: 5
+      timeout: 3s
+      retries: 12
 
   # ============================================================
-  # TP07 AI 推理链路（dsh-runtime；ai-inference 已删 ADR-175）
+  # TP07 AI 推理链路（runtime；ai-inference 已删 ADR-175）
   # ============================================================
 
-  # dsh-runtime-service — DSHRuntimeService (gRPC)
+  # runtime-service — RuntimeService (gRPC)
   # 01 §4.1 #5 / 05 §4 / 07 §8.1 / ADR-114
     volumes:
       - ./configs/codeaudit.yaml:/etc/codeaudit/codeaudit.yaml:ro
 
-  dsh-runtime:
+  runtime:
+    logging: *default_logging
+    image: codeaudit-runtime:${ENGINE_IMAGE_TAG:-latest}
     build:
       context: .
-      dockerfile: services/dsh-runtime-service/Dockerfile
-    container_name: codeaudit-dsh-runtime
+      dockerfile: services/runtime-service/Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     ports:
-      - "${CODEAUDIT_HOST_DSH:-50057}:50057"
+      - "${CODEAUDIT_HOST_RUNTIME:-50057}:50057"
     environment:
       CODEAUDIT_CONFIG: "/etc/codeaudit/codeaudit.yaml"
-      # 容器化口径补齐（2026-09-05 交叉核对）：沙箱发现回写 result（ADR-137）
+      # 容器化口径补齐：沙箱发现回写 result（ADR-137）
       # 与执行日志上报 task（ADR-168）都必须拨服务名，缺省 localhost 即拨自身
       CODEAUDIT_RESULT_ADDR: "result:50058"
       CODEAUDIT_TASK_ADDR: "task:50054"
@@ -323,16 +366,25 @@ services:
       CODEAUDIT_INTERACTION_DIR: /data/repos/ai-interaction
     volumes:
       - ./configs/codeaudit.yaml:/etc/codeaudit/codeaudit.yaml:ro
+      # 切片 7：agent provider descriptor 注册表（LoadDescriptor 消费；缺失=合成
+      # 缺省 dsh 条目——maka 等非缺省条目需真文件）
+      - ./configs/agent_providers.yaml:/etc/codeaudit/agent_providers.yaml:ro
+      # ADR-248 切片4后半：targeted 组合模板（ro；restricted 缺省档不消费该文件）。
+      # 消费方=本服务（sandbox_analysis.go policyTmpl 缺省路径 /etc/codeaudit/
+      # policy/targeted.yaml）。R108：此挂载曾在 72ce0b93 错放
+      # gateway 块——sim 链靠 overlay 桥接挂对而 e2e 全绿，dev/生产链本服务无模板、
+      # targeted 组合 fail-closed 失败；test_compose_mount_placement 守卫归属。
+      - ./configs/policy/targeted.yaml:/etc/codeaudit/policy/targeted.yaml:ro
       - agent_repos:/data/repos   # 任务源共享卷：沙箱上传前读取解包目录（CWD=/）
     healthcheck:
-      test: ["CMD-SHELL", "true"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 50057"]
       interval: 5s
-      timeout: 5s
-      retries: 5
+      timeout: 3s
+      retries: 12
 
 volumes:
   postgres_data:
   redis_data:
   minio_data:
   kafka_data:
-  agent_repos:   # 任务源共享卷（gateway/task/sast-adapter/dsh-runtime 四方同卷，见各 volumes 注）
+  agent_repos:   # 任务源共享卷（gateway/task/sast-adapter/runtime 四方同卷，见各 volumes 注）

@@ -71,15 +71,14 @@ func loadToolCommands() map[string]toolCommand {
 type SASTAdapterHandler struct {
 	pb.UnimplementedSASTAdapterServiceServer
 
-	mu           sync.RWMutex // ADR-212: findingsOf 读路径与 scanOneTool 写路径并发（此前无锁读=并发 map 读写 fatal）
-	store        map[string]*pb.UnifiedFinding // taskID-scoped finding id → entity
-	byTask       map[string]map[string]bool    // taskID → toolID → 已执行过扫描（进度按 task+tool 口径, ADR-133）
-	byTaskOrder  []string                       // R69: byTask 插入序（FIFO 容量驱逐）
-	idemCount    atomic.Int64                   // R69: 幂等缓存计数（容量护栏）；R81: 改 atomic（原裸 int++ 并行扫描下为数据竞争）
-	idempotency  sync.Map                      // request_id → cached response
-	resultAddr   string                        // result-service 地址（落盘用；09 §2 行）
-	scanTimeout  time.Duration                 // 单工具扫描超时（07 §8 正式口径 20m 的本地映射；值在全局配置 sast_adapter.scan_timeout_s）
-	toolCommands map[string]toolCommand        // 工具执行映射（ADR-137：来自全局配置）
+	mu           sync.RWMutex               // byTask 读路径（GetScanProgress）与 scanOneTool 写路径并发（ADR-212 纪律）
+	byTask       map[string]map[string]bool // taskID → toolID → 已执行过扫描（进度按 task+tool 口径, ADR-133）
+	byTaskOrder  []string                   // R69: byTask 插入序（FIFO 容量驱逐）
+	idemCount    atomic.Int64               // R69: 幂等缓存计数（容量护栏）；R81: 改 atomic（原裸 int++ 并行扫描下为数据竞争）
+	idempotency  sync.Map                   // request_id → cached response
+	resultAddr   string                     // result-service 地址（落盘用；09 §2 行）
+	scanTimeout  time.Duration              // 单工具扫描超时（07 §8 正式口径 20m 的本地映射；值在全局配置 sast_adapter.scan_timeout_s）
+	toolCommands map[string]toolCommand     // 工具执行映射（ADR-137：来自全局配置）
 }
 
 // NewSASTAdapterHandler creates the adapter service handler.
@@ -94,25 +93,11 @@ func NewSASTAdapterHandler(resultAddr string) *SASTAdapterHandler {
 		panic(fmt.Sprintf("sast-adapter config: %v (ADR-137)", err))
 	}
 	return &SASTAdapterHandler{
-		store:        map[string]*pb.UnifiedFinding{},
 		byTask:       map[string]map[string]bool{},
 		resultAddr:   resultAddr,
 		scanTimeout:  time.Duration(scanT) * time.Second,
 		toolCommands: loadToolCommands(),
 	}
-}
-
-// findingsOf returns stored entities for ids (fusion 同进程直取复用).
-func (h *SASTAdapterHandler) findingsOf(ids []string) []*pb.UnifiedFinding {
-	h.mu.RLock() // ADR-212: 与 scanOneTool 的加锁写并发，无锁读=进程级 fatal
-	defer h.mu.RUnlock()
-	out := make([]*pb.UnifiedFinding, 0, len(ids))
-	for _, id := range ids {
-		if f, ok := h.store[id]; ok {
-			out = append(out, f)
-		}
-	}
-	return out
 }
 
 // ---- 真实工具执行（exec.Command）----
@@ -184,7 +169,7 @@ func ensureCommand(out []string) ([]string, error) {
 	return out, nil
 }
 
-func (h *SASTAdapterHandler) runTool(projectPath string, tool string, changedFiles []string) ([]byte, error) {
+func (h *SASTAdapterHandler) runTool(ctx context.Context, projectPath string, tool string, changedFiles []string) ([]byte, error) {
 	tc, ok := h.toolCommands[tool]
 	if !ok {
 		return nil, status.Errorf(codes.InvalidArgument, "no executor mapping for tool %s (ADR-121)", tool)
@@ -197,7 +182,7 @@ func (h *SASTAdapterHandler) runTool(projectPath string, tool string, changedFil
 	// 未配置/清单超限 → 诚实降级全目录（WARN 留痕，不静默装作增量）
 	if len(changedFiles) > 0 {
 		if len(tc.filesArgv) > 0 && len(changedFiles) <= maxIncrementalFiles {
-			return h.runFilesMode(abs, tool, tc, changedFiles)
+			return h.runFilesMode(ctx, abs, tool, tc, changedFiles)
 		}
 		reason := "未配置 files_argv"
 		if len(changedFiles) > maxIncrementalFiles {
@@ -209,9 +194,13 @@ func (h *SASTAdapterHandler) runTool(projectPath string, tool string, changedFil
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "%v (04 §6 工具失败→跳过继续)", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), h.scanTimeout)
+	// R138（第四轮审计 P2-2）：RPC ctx 为父——任务取消链（CancelScanTask→orchCtx→
+	// gRPC ctx）在此前断掉，取消后每个工具仍完整跑到 scanTimeout 白耗 CPU/IO（R67
+	// 传播链死端）。持久化面 persistToResult 仍用 Background（产出已成的 findings
+	// 落库不受取消打断，R78 完成已启动作的同类语义）。
+	tctx, cancel := context.WithTimeout(ctx, h.scanTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := exec.CommandContext(tctx, argv[0], argv[1:]...)
 	// python -m 兜底需要配置的 pythonpath 可导入（ADR-137）
 	if argv[0] == "python3" && tc.pythonPath != "" {
 		cmd.Env = append(os.Environ(), "PYTHONPATH="+tc.pythonPath)
@@ -221,8 +210,11 @@ func (h *SASTAdapterHandler) runTool(projectPath string, tool string, changedFil
 	log.Printf("[sast-adapter] executed %s bytes=%d took=%s err=%v",
 		tool, len(out), time.Since(start).Round(time.Millisecond), err)
 
-	if ctx.Err() == context.DeadlineExceeded {
+	if tctx.Err() == context.DeadlineExceeded {
 		return nil, status.Error(codes.DeadlineExceeded, "tool timeout (07 §8)")
+	}
+	if tctx.Err() == context.Canceled {
+		return nil, status.Error(codes.Canceled, "scan cancelled (task cancel propagated)")
 	}
 	if err != nil {
 		// bandit 发现问题时 exit 1 但仍输出 JSON——区分处理
@@ -235,13 +227,13 @@ func (h *SASTAdapterHandler) runTool(projectPath string, tool string, changedFil
 }
 
 // scanOneTool 执行单工具并解析为 proto UnifiedFinding 列表。
-func (h *SASTAdapterHandler) scanOneTool(taskID, projectID, projectPath, tool string, changedFiles []string) (*pb.ToolScanResult, []*pb.UnifiedFinding, error) {
+func (h *SASTAdapterHandler) scanOneTool(ctx context.Context, taskID, projectID, projectPath, tool string, changedFiles []string) (*pb.ToolScanResult, []*pb.UnifiedFinding, error) {
 	parser, err := adapters.GetParser(tool)
 	if err != nil {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	start := time.Now()
-	raw, rerr := h.runTool(projectPath, tool, changedFiles)
+	raw, rerr := h.runTool(ctx, projectPath, tool, changedFiles)
 
 	if rerr != nil {
 		// 04 §6: SAST 工具失败→跳过继续（记录状态 FAILED，不中断任务）
@@ -273,7 +265,7 @@ func (h *SASTAdapterHandler) scanOneTool(taskID, projectID, projectPath, tool st
 		log.Printf("[sast-adapter][%s] zero scanned paths (git enumeration), file-level fallback", tool)
 		absPath, aerr := filepath.Abs(projectPath) // 回退用绝对路径（进程 CWD 不保证在仓库根）
 		if aerr == nil {
-			if raw2, ferr := h.semgrepFilesFallback(absPath, tool); ferr == nil {
+			if raw2, ferr := h.semgrepFilesFallback(ctx, absPath, tool); ferr == nil {
 				if parsed2, perr := parser.Parse(taskID, projectID, raw2); perr == nil && len(parsed2.Findings) > 0 {
 					parsed = parsed2
 				}
@@ -317,10 +309,10 @@ func (h *SASTAdapterHandler) scanOneTool(taskID, projectID, projectPath, tool st
 			// ADR-141: 代码上下文随 finding 走（proto L67 source_raw="原始输出（JSON序列化）"
 			// 的既有字段语义——人工复核与 LLM 审核都需要代码行，此前在此处被丢弃）
 			SourceRaw: f.SourceRaw,
-			Status:    pb.FindingStatus_FINDING_STATUS_PENDING,
+			// 原 Status: FINDING_STATUS_PENDING——FindingStatus 整轴死代码随 2026-10-09
+			// 判定两轴重构删除（全链零读者；处置终态需求出现时另立 RemediationStatus）
 		}
 		h.mu.Lock()
-		h.store[f.FindingID] = finding
 		if h.byTask[taskID] == nil {
 			h.byTask[taskID] = map[string]bool{}
 			h.byTaskOrder = append(h.byTaskOrder, taskID) // R69: FIFO 序（容量驱逐用）
@@ -380,7 +372,7 @@ func (h *SASTAdapterHandler) RunSASTScan(ctx context.Context, req *pb.RunSASTSca
 		return nil, status.Error(codes.InvalidArgument, "task_id is required")
 	}
 
-	tsr, protoFindings, err := h.scanOneTool(req.GetTaskId(), "", projectPath, req.GetToolId(), req.GetChangedFiles())
+	tsr, protoFindings, err := h.scanOneTool(ctx, req.GetTaskId(), "", projectPath, req.GetToolId(), req.GetChangedFiles())
 	if err != nil {
 		// 已产出 FAILED ToolScanResult 时正常返回（04 §6），只有系统性错误才返回错误码
 		if tsr == nil {
@@ -460,7 +452,7 @@ func (h *SASTAdapterHandler) RunMultipleScans(ctx context.Context, req *pb.RunMu
 		wg.Add(1)
 		go func(i int, tool string) {
 			defer wg.Done()
-			tsr, protoFindings, err := h.scanOneTool(req.GetTaskId(), "", projectPath, tool, req.GetChangedFiles())
+			tsr, protoFindings, err := h.scanOneTool(ctx, req.GetTaskId(), "", projectPath, tool, req.GetChangedFiles())
 			outs[i] = toolOut{tsr: tsr, findings: protoFindings, err: err}
 		}(i, tool)
 	}
@@ -560,7 +552,7 @@ func (h *SASTAdapterHandler) ValidateToolConfig(ctx context.Context, req *pb.Val
 	return resp, nil
 }
 
-// GetScanProgress — proto L1030。诚实语义(2026-08-27 编造审计):
+// GetScanProgress — proto L1030。诚实语义:
 // 扫描为同步执行——有本任务落盘记录=已完成(100%); 无记录=未执行(0%, SCAN_STATUS_PENDING),
 // 不冒充"已完成"。
 func (h *SASTAdapterHandler) GetScanProgress(ctx context.Context, req *pb.GetScanProgressRequest) (*pb.ScanProgress, error) {
@@ -612,6 +604,13 @@ func persistToResult(resultAddr, taskID, requestID string, findings []*pb.Unifie
 	if err != nil {
 		return 0, fmt.Errorf("BatchCreateFindings: %w", err)
 	}
+	// 第四轮审计 P1：部分落库失败（FailedCount>0）视同 persistErr——result 侧逐条
+	// Create 失败只计数不上错误，原先 nil error 让上层把响应对入幂等缓存（R81 的
+	// "落盘失败不进缓存"被部分失败路径绕过），丢失的那批 findings 永不重试。
+	if resp.GetFailedCount() > 0 {
+		return 0, fmt.Errorf("BatchCreateFindings: %d/%d findings failed to persist (failed_count>0)",
+			resp.GetFailedCount(), len(findings))
+	}
 	return len(resp.GetFindingIds()), nil
 }
 
@@ -654,7 +653,7 @@ func walkCodeFiles(root string, maxFiles int) []string {
 
 // semgrepFilesFallback — 目录被 git 枚举吞掉时（本仓环境实测：scanned=[]），
 // 改为对枚举出的代码文件分批扫描并合并 results（ADR-144）。
-func (h *SASTAdapterHandler) semgrepFilesFallback(projectPath string, tool string) ([]byte, error) {
+func (h *SASTAdapterHandler) semgrepFilesFallback(ctx context.Context, projectPath string, tool string) ([]byte, error) {
 	tc := h.toolCommands[tool]
 	if tc.rawFormat == "" {
 		return nil, fmt.Errorf("no executor mapping for %s", tool)
@@ -684,8 +683,8 @@ func (h *SASTAdapterHandler) semgrepFilesFallback(projectPath string, tool strin
 			argv = append(argv, strings.ReplaceAll(a, "{rules}", rulesDir))
 		}
 		argv = append(argv, files[s:e]...)
-		ctx, cancel := context.WithTimeout(context.Background(), h.scanTimeout)
-		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		tctx, cancel := context.WithTimeout(ctx, h.scanTimeout) // R138：RPC ctx 为父（取消传播，同 runTool）
+		cmd := exec.CommandContext(tctx, argv[0], argv[1:]...)
 		if argv[0] == "python3" && tc.pythonPath != "" {
 			cmd.Env = append(os.Environ(), "PYTHONPATH="+tc.pythonPath)
 		}
@@ -705,10 +704,4 @@ func (h *SASTAdapterHandler) semgrepFilesFallback(projectPath string, tool strin
 		}
 	}
 	return json.Marshal(merged)
-}
-
-// ShareStore — 把 adapter 实体存储桥接进 fusion handler（同部署单元内共享，01 §4.2）。
-// ADR-121: FuseResults 的 ID 引用在本地 store 未命中时由 adapterStore 补全。
-func ShareStore(target *SASTFusionHandler, source *SASTAdapterHandler) {
-	target.externalResolver = source.findingsOf
 }

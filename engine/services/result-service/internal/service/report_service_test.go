@@ -19,7 +19,7 @@ type MockReportRepository struct {
 	CreateReportFn         func(report *model.Report) error
 	GetReportByIDFn        func(id string) (*model.Report, error)
 	GetReportByRequestIDFn func(requestID string) (*model.Report, error)
-	ListReportsFn          func(lastID string, limit int, taskID string) ([]*model.Report, string, error)
+	ListReportsFn          func(repository.ListReportsQuery) ([]*model.Report, int, error)
 	ListTemplatesFn        func(limit int) ([]*model.ReportTemplate, error)
 	GetTemplateByIDFn      func(id string) (*model.ReportTemplate, error)
 	UpdateReportFn         func(report *model.Report) error
@@ -62,11 +62,11 @@ func (m *MockReportRepository) GetReportByRequestID(requestID string) (*model.Re
 	return nil, repository.ErrNotFound
 }
 
-func (m *MockReportRepository) ListReports(lastID string, limit int, taskID string) ([]*model.Report, string, error) {
+func (m *MockReportRepository) ListReports(q repository.ListReportsQuery) ([]*model.Report, int, error) {
 	if m.ListReportsFn != nil {
-		return m.ListReportsFn(lastID, limit, taskID)
+		return m.ListReportsFn(q)
 	}
-	return nil, "", nil
+	return nil, 0, nil
 }
 
 func (m *MockReportRepository) ListTemplates(limit int) ([]*model.ReportTemplate, error) {
@@ -193,11 +193,11 @@ func TestGetReport(t *testing.T) {
 // TestListReportsWithCursor - 依据: 03 §5 cursor 分页
 func TestListReportsWithCursor(t *testing.T) {
 	mockRepo := &MockReportRepository{
-		ListReportsFn: func(lastID string, limit int, taskID string) ([]*model.Report, string, error) {
+		ListReportsFn: func(q repository.ListReportsQuery) ([]*model.Report, int, error) {
 			return []*model.Report{
 				{ID: "report-1", TaskID: "task-1", CreatedAt: time.Now(), UpdatedAt: time.Now()},
 				{ID: "report-2", TaskID: "task-1", CreatedAt: time.Now(), UpdatedAt: time.Now()},
-			}, "report-2", nil
+			}, 2, nil
 		},
 	}
 	service := NewReportServiceImpl(mockRepo)
@@ -223,8 +223,12 @@ func TestListReportsWithCursor(t *testing.T) {
 	if resp.Pagination == nil {
 		t.Error("Expected pagination, got nil")
 	}
-	if resp.Pagination.NextCursor == "" {
-		t.Error("Expected next cursor, got empty")
+	// ADR-256 新契约：offset+total——total=2 单页装满即无下一页（旧 lastID 断言退役）
+	if resp.Pagination.Total != 2 {
+		t.Errorf("Expected total 2, got %d", resp.Pagination.GetTotal())
+	}
+	if resp.Pagination.HasNext {
+		t.Error("Expected no next page (2 items fit one page)")
 	}
 }
 
@@ -355,7 +359,7 @@ func TestHandleTaskCompleted_Redelivery_Idempotent(t *testing.T) {
 	}
 }
 
-// R42（2026-09-11 修复批次）: 代码片段列必须逐字段 htmlEsc——finding 的 code
+// R42: 代码片段列必须逐字段 htmlEsc——finding 的 code
 // 字段来自被扫源码（攻击者可控），未转义直写 <pre> 即存储型 XSS（web 报告窗口渲染）。
 func TestRenderHTMLReport_SnippetEscaped(t *testing.T) {
 	items := []map[string]interface{}{{
@@ -376,7 +380,7 @@ func TestRenderHTMLReport_SnippetEscaped(t *testing.T) {
 	}
 }
 
-// R44（2026-09-11 修复批次）: 已归档报告的读路径必须返回真实归档 Url——
+// R44: 已归档报告的读路径必须返回真实归档 Url——
 // 恒造 report:// 伪协议令客户端拿到不可取回的地址（归档信息被丢弃）。
 func TestGetReport_ReturnsArchivedUrl(t *testing.T) {
 	mockRepo := &MockReportRepository{
@@ -398,7 +402,7 @@ func TestGetReport_ReturnsArchivedUrl(t *testing.T) {
 	}
 }
 
-// R66（2026-09-12 待办收尾）：内容生成失败必须如实报错（FailedPrecondition）——
+// R66：内容生成失败必须如实报错（FailedPrecondition）——
 // 此前 success 返回令编排发 done:report 阶段绿勾（FAILED 报告伪装成功）。
 func TestGenerateReport_ContentFailureHonest(t *testing.T) {
 	repo := &MockReportRepository{
@@ -432,6 +436,60 @@ func TestGenerateReport_ContentFailureHonest(t *testing.T) {
 // failingFindingsRepo — List 恒错（注入内容聚合失败）。
 type failingFindingsRepo struct{ repository.FindingRepository }
 
-func (f *failingFindingsRepo) List(cursor string, limit int, taskID, q string) ([]*model.Finding, string, error) {
+func (f *failingFindingsRepo) List(cursor string, limit int, taskID, direction, tier string) ([]*model.Finding, string, error) {
 	return nil, "", fmt.Errorf("injected aggregate failure")
+}
+
+// TestListReports_OffsetSortFilter — ADR-256 服务端排序/筛选+offset+total 语义。
+func TestListReports_OffsetSortFilter(t *testing.T) {
+	var gotQ repository.ListReportsQuery
+	mock := &MockReportRepository{ListReportsFn: func(q repository.ListReportsQuery) ([]*model.Report, int, error) {
+		gotQ = q
+		return []*model.Report{{ID: "r-21", CreatedAt: time.Now()}}, 45, nil
+	}}
+	svc := NewReportServiceImpl(mock)
+	resp, err := svc.ListReports(context.Background(), &pb.ListReportsRequest{
+		Pagination: &pb.PaginationRequest{PageSize: 20, Cursor: "20"},
+		Filter: &pb.FilterRequest{Conditions: []*pb.FilterCondition{{
+			Field: "format", Operator: pb.FilterOperator_FILTER_OPERATOR_EQ, Value: "REPORT_FORMAT_JSON",
+		}}},
+		Sort: &pb.SortRequest{Field: "generated_at", Order: pb.SortOrder_SORT_ORDER_ASC},
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if gotQ.Offset != 20 || gotQ.Format != "REPORT_FORMAT_JSON" || gotQ.SortBy != "generated_at" || gotQ.SortDesc {
+		t.Fatalf("query 形状: %+v", gotQ)
+	}
+	if resp.Pagination.GetTotal() != 45 || !resp.Pagination.GetHasNext() || resp.Pagination.GetNextCursor() != "40" {
+		t.Fatalf("分页: %+v", resp.Pagination)
+	}
+}
+
+// TestListReports_SortWhitelistFailLoud — 排序键直通 SQL 列名，未知键必须拒（注入面防线）。
+func TestListReports_SortWhitelistFailLoud(t *testing.T) {
+	svc := NewReportServiceImpl(&MockReportRepository{})
+	_, err := svc.ListReports(context.Background(), &pb.ListReportsRequest{
+		Pagination: &pb.PaginationRequest{PageSize: 20},
+		Sort:       &pb.SortRequest{Field: "id; DROP TABLE reports"},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("未知排序键: got %v, want InvalidArgument", err)
+	}
+	_, err = svc.ListReports(context.Background(), &pb.ListReportsRequest{
+		Pagination: &pb.PaginationRequest{PageSize: 20, Cursor: "not-offset"},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("非数字游标: got %v, want InvalidArgument", err)
+	}
+	_, err = svc.ListReports(context.Background(), &pb.ListReportsRequest{
+		Pagination: &pb.PaginationRequest{PageSize: 20},
+		Filter: &pb.FilterRequest{
+			Operator:   pb.LogicalOperator_LOGICAL_OPERATOR_OR,
+			Conditions: []*pb.FilterCondition{{Field: "format", Operator: pb.FilterOperator_FILTER_OPERATOR_EQ, Value: "x"}},
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("OR 筛选: got %v, want InvalidArgument", err)
+	}
 }

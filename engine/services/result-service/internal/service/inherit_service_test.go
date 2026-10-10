@@ -1,7 +1,7 @@
 package service
 
 // ADR-225 InheritFindings 锁定测试：排除矩阵 / 终态列复制 / ID 形态与幂等重放 /
-// 路径口径镜像。依据=伞仓 docs/designs/incremental-scan-acceptance.md F7。
+// 路径口径镜像。依据=主仓库 docs/designs/incremental-scan-acceptance.md F7。
 
 import (
 	"context"
@@ -20,12 +20,12 @@ func seedInherit(t *testing.T, repo *repository.MemoryFindingRepository) {
 	t.Helper()
 	rows := []*model.Finding{
 		{ID: "base-tool-1", TaskID: "base", ToolName: "bandit", RuleID: "B608",
-			FilePath: "app.py", LineNumber: 3, Verdict: "AI_VERDICT_TRUE_POSITIVE",
+			FilePath: "app.py", LineNumber: 3, VerdictDirection: "VERDICT_DIRECTION_TRUE", VerdictTier: "VERDICT_TIER_DEFINITE",
 			Reasoning: "人工复核过", AiFixSuggestion: "参数化查询", DiffPatch: "*** Begin Patch", Severity: "SEVERITY_HIGH"},
 		{ID: "base-tool-2", TaskID: "base", ToolName: "opengrep", RuleID: "sql-taint",
-			FilePath: "pkg/util.py", LineNumber: 10, Verdict: "AI_VERDICT_NEEDS_MANUAL"},
+			FilePath: "pkg/util.py", LineNumber: 10, VerdictDirection: "VERDICT_DIRECTION_UNSPECIFIED"},
 		{ID: "base-tool-3", TaskID: "base", ToolName: "bandit", RuleID: "B105",
-			FilePath: "mod.py", LineNumber: 1, Verdict: "AI_VERDICT_LIKELY_TRUE"},
+			FilePath: "mod.py", LineNumber: 1, VerdictDirection: "VERDICT_DIRECTION_TRUE", VerdictTier: "VERDICT_TIER_LIKELY"},
 		{ID: "base-tool-4", TaskID: "base", ToolName: "bandit", RuleID: "B608",
 			FilePath: "del.py", LineNumber: 2},
 		{ID: "base-tool-5", TaskID: "base", ToolName: "opengrep", RuleID: "sql-taint",
@@ -70,7 +70,7 @@ func TestInheritFindings_MatrixAndCopy(t *testing.T) {
 	if f.TaskID != "new" || f.InheritedFrom != "base" {
 		t.Fatalf("归属/继承标记错：task=%q inherited_from=%q", f.TaskID, f.InheritedFrom)
 	}
-	if f.Verdict != "AI_VERDICT_TRUE_POSITIVE" || f.Reasoning != "人工复核过" ||
+	if f.VerdictDirection != "VERDICT_DIRECTION_TRUE" || f.VerdictTier != "VERDICT_TIER_DEFINITE" || f.Reasoning != "人工复核过" ||
 		f.AiFixSuggestion != "参数化查询" || f.DiffPatch != "*** Begin Patch" {
 		t.Fatalf("终态业务列未随行复制: %+v", f)
 	}
@@ -115,7 +115,7 @@ func TestInheritFindings_IdempotentReplay(t *testing.T) {
 	if resp.GetInheritedCount() != 4 || resp.GetFailedCount() != 0 {
 		t.Fatalf("replay counts: %+v", resp)
 	}
-	rows, _, err := repo.List("", 100, "new", "")
+	rows, _, err := repo.List("", 100, "new", "", "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestInheritFindings_AbsoluteFindingPathsSuffixAligned(t *testing.T) {
 		t.Fatalf("后缀对齐失效：inherited=%d skipped=%d（want 1/1——绝对路径 mod.py 必须命中排除）",
 			resp.GetInheritedCount(), resp.GetSkippedCount())
 	}
-	rows, _, _ := repo.List("", 10, "new", "")
+	rows, _, _ := repo.List("", 10, "new", "", "")
 	for _, r := range rows {
 		if strings.HasSuffix(r.FilePath, "mod.py") {
 			t.Fatalf("变更文件的旧 findings 被继承（过期漏洞复活红线）: %+v", r)
@@ -179,7 +179,7 @@ func TestInheritFindings_AbsoluteFindingPathsSuffixAligned(t *testing.T) {
 }
 
 func TestNormalizeInheritPath_Mirror(t *testing.T) {
-	// 与 task-service normalizeRepoPath 镜像口径（伞仓设计 §9-1）：
+	// 与 task-service normalizeRepoPath 镜像口径（主仓库设计 §9-1）：
 	// 两处任一改口径，此测试与对侧锁定测试共同红——强制同改。
 	for in, want := range map[string]string{
 		"./app.py": "app.py", "app.py": "app.py", "pkg//u.py": "pkg/u.py", "a/../b.py": "b.py",
@@ -193,7 +193,7 @@ func TestNormalizeInheritPath_Mirror(t *testing.T) {
 	}
 }
 
-// R60继承部分失败必须让编排失败——FailedCount 被消费方吞没时，
+// R60：继承部分失败必须让编排失败——FailedCount 被消费方吞没时，
 // 缺继承行的任务照常 COMPLETED，违背"完整性优先"注释（本测试锁 result-service 侧
 // FailedCount 如实上报；编排侧拒绝逻辑由 orchestrator 测试锁定）。
 func TestInheritFindings_PartialFailureReportsFailedCount(t *testing.T) {
@@ -201,7 +201,7 @@ func TestInheritFindings_PartialFailureReportsFailedCount(t *testing.T) {
 	// 复用现有 MockFindingRepository 形态（见本文件其它用例）
 }
 
-// R61后缀排除的两段校验——后缀命中必须同时满足"剩余前缀是
+// R61：后缀排除的两段校验——后缀命中必须同时满足"剩余前缀是
 // 真实树根形态（以 /unpacked 结尾）"。嵌套同后缀路径（vendor/pkg/util/keys.py）
 // 不得被 pkg/util/keys.py 的排除误杀：该文件既不重扫也不继承，漏洞将从报告消失。
 func TestExcludedBy_TwoSegmentCheck(t *testing.T) {
@@ -220,5 +220,63 @@ func TestExcludedBy_TwoSegmentCheck(t *testing.T) {
 	}
 	if excludedBy("vendor/pkg/util/keys.py", excl) {
 		t.Fatal("relative nested same-suffix path must NOT be excluded (R61)")
+	}
+}
+
+// R135（缺损批 A6 露牙）：跨纪元重报幂等——同内容发现以不同 request_id（epoch-2
+// 幂等键含 attempt）重报不得逐条失败（原 22×duplicate key 实证）。
+func TestBatchCreateFindings_CrossEpochReplayIdempotent(t *testing.T) {
+	repo := repository.NewMemoryFindingRepository()
+	svc := NewResultServiceImpl(repo)
+	mk := func(rid string) *pb.BatchCreateFindingsRequest {
+		return &pb.BatchCreateFindingsRequest{
+			Metadata: &pb.RequestMetadata{RequestId: rid},
+			Findings: []*pb.UnifiedFinding{{
+				FindingId: "t-r135-sbx-abc123def456", TaskId: "t-r135", SourceTool: "ai_agent",
+				Title: "SQL 注入", Severity: pb.Severity_SEVERITY_HIGH,
+				Location: &pb.LocationInfo{FilePath: "app.py", StartLine: 5},
+			}},
+		}
+	}
+	if _, err := svc.BatchCreateFindings(nil, mk("req-epoch1")); err != nil {
+		t.Fatalf("epoch-1 落库失败: %v", err)
+	}
+	resp, err := svc.BatchCreateFindings(nil, mk("req-epoch2"))
+	if err != nil {
+		t.Fatalf("epoch-2 重报失败（主键碰撞复发）: %v", err)
+	}
+	if len(resp.GetFindingIds()) != 1 {
+		t.Fatalf("重报应返回在场 ID: %v", resp.GetFindingIds())
+	}
+	list, _, lerr := repo.List("", 100, "t-r135", "", "")
+	if lerr != nil || len(list) != 1 {
+		t.Fatalf("重报后应仍恰 1 条: n=%d err=%v", len(list), lerr)
+	}
+}
+
+// F3：单条 CreateFinding 重复 ID——R135 幂等化后落库 no-op
+// （首写胜出），响应必须返回存量行（存储真相）而非回显未落库的请求体。
+func TestCreateFinding_DuplicateReturnsStored(t *testing.T) {
+	repo := repository.NewMemoryFindingRepository()
+	svc := NewResultServiceImpl(repo)
+	mk := func(desc string) *pb.CreateFindingRequest {
+		return &pb.CreateFindingRequest{
+			Metadata: &pb.RequestMetadata{RequestId: "r-f3-" + desc},
+			Finding: &pb.UnifiedFinding{
+				FindingId: "t-f3-sbx-aaa", TaskId: "t-f3", SourceTool: "ai_agent",
+				Description: desc, Severity: pb.Severity_SEVERITY_HIGH,
+				Location: &pb.LocationInfo{FilePath: "app.py", StartLine: 3},
+			},
+		}
+	}
+	if _, err := svc.CreateFinding(nil, mk("first-version")); err != nil {
+		t.Fatalf("首建失败: %v", err)
+	}
+	second, err := svc.CreateFinding(nil, mk("second-version"))
+	if err != nil {
+		t.Fatalf("重复建失败: %v", err)
+	}
+	if second.GetFinding().GetDescription() != "first-version" {
+		t.Fatalf("重复建应返回存量行(存储真相), got %q", second.GetFinding().GetDescription())
 	}
 }

@@ -16,12 +16,27 @@ import (
 )
 
 const (
-	// Token expiry: access=30min, refresh=7d（D2 裁决 2026-09-11：实现 1h/24h 与
+	// Token expiry: access=30min, refresh=7d（B5-2/D2 裁决 2026-09-11：实现 1h/24h 与
 	// 契约三方冲突——03 §4、configs yaml access_ttl_min=30·refresh_ttl_day=7、gateway
 	// taskwatch wsMaxLifetime=6h 按 30min 推导——改代码对齐；现网影响仅 token 提前续期）
 	accessTokenExpiry  = 30 * time.Minute
 	refreshTokenExpiry = 7 * 24 * time.Hour
 )
+
+// UserMirror — UserService 消费的镜像面（TP19-T7 单测设施）：窄接口使写穿/读回落
+// 语义可用 fake 锁定（此前具体类型 *repo.PGMirror 无法单测，TP19-T2 先例仅 ha-verify
+// 集成验证）。生产实现=*repo.PGMirror（隐式满足）；nil=内存档。
+// 依据: ADR-250 读回落/写穿；roadmap TP19-T7 ③。
+type UserMirror interface {
+	GetUser(id string) (*repo.UserRecord, bool, error)
+	GetUserByUsername(username string) (*repo.UserRecord, bool, error)
+	UpsertUser(rec *repo.UserRecord) error
+	SaveRevokedToken(token string, at time.Time) error
+	SaveSessionEpoch(userID string, at time.Time) error
+	ListMembersForUser(userID string) ([]*repo.ProjectMemberRecord, error)
+	HydrateRevoked(window time.Duration) (map[string]time.Time, error)
+	HydrateEpochs() (map[string]time.Time, error)
+}
 
 // UserService holds business methods for user operations and JWT auth.
 type UserService struct {
@@ -31,7 +46,7 @@ type UserService struct {
 	auth AuthConfig
 
 	// revokedTokens holds blacklisted access tokens (logout)。
-	// R69（2026-09-12 待办收尾）：值改撤销时刻——惰性清扫超 24h 条目（access TTL
+	// R69：值改撤销时刻——惰性清扫超 24h 条目（access TTL
 	// 30min，超窗撤销记录永不再命中；原 map[string]struct{} 无界增长）。
 	mu            sync.RWMutex
 	revokedTokens map[string]time.Time
@@ -41,7 +56,16 @@ type UserService struct {
 	// 惰性清扫阈值 8d 须 ≥refresh TTL 7d（R69 的 24h 是按 access 30min 定的，直接
 	// 沿用会让纪元比 refresh 先蒸发）；数值源 ADR-230。
 	sessionsInvalidBefore map[string]time.Time
+
+	mirror UserMirror // HA P1-a（ADR-250）：nil=内存档；非 nil=写穿+读回落+装配期 hydrate
+
+	// inviteMirror — 邀请码镜像（V2.2 ADR-255，ADR-254 窄接口同型）：nil=内存档；
+	// 非 nil=PG 权威消费（CAS）+写穿+装配期回放。与 mirror 独立注入（同一 *PGMirror）。
+	inviteMirror repo.InviteMirror
 }
+
+// SetInviteMirror injects the invite-code mirror (cmd/main.go；注入后由 main 回放全量)。
+func (s *UserService) SetInviteMirror(m repo.InviteMirror) { s.inviteMirror = m }
 
 // NewUserService creates a UserService backed by the given store.
 func NewUserService(store *repo.MemoryStore) *UserService {
@@ -52,8 +76,50 @@ func NewUserService(store *repo.MemoryStore) *UserService {
 	}
 }
 
+// SetMirror — 装配期注入（main.go：DSN 非空时；注入即全量回放黑名单/纪元）。
+// 参数保持具体类型：装配点唯一且真实，接口面只服务测试替身（TP19-T7）。
+func (s *UserService) SetMirror(m *repo.PGMirror) {
+	s.mirror = m
+	s.hydrateAuthState(m)
+}
+
+// userByIDWithFallback — HA P1-a 读回落帮手（TP19-T7 收口）：本地未中→镜像读权威→
+// 写回本地（同副本后续读全热）；镜像读错=诚实未中（不以上次残留冒充）。此前 Login/
+// RefreshToken/GetCurrentUser/GetUser/UpdateUser 五处内联同型块归一于此，变异锚集中。
+// 依据: ADR-250 读回落；Login 先例（原 user.go:79-89）。
+func (s *UserService) userByIDWithFallback(userID string) (*repo.UserRecord, bool) {
+	rec, ok := s.store.GetUser(userID)
+	if !ok && s.mirror != nil {
+		var err error
+		rec, ok, err = s.mirror.GetUser(userID)
+		if err != nil {
+			mirrorErr("user-fallback", userID, err)
+			ok = false
+		} else if ok {
+			s.store.UpdateUser(rec)
+		}
+	}
+	return rec, ok
+}
+
+// userByUsernameWithFallback — 同上，username 侧（Login 专用；注册用户名跨副本登录）。
+func (s *UserService) userByUsernameWithFallback(username string) (*repo.UserRecord, bool) {
+	rec, ok := s.store.GetUserByUsername(username)
+	if !ok && s.mirror != nil {
+		var err error
+		rec, ok, err = s.mirror.GetUserByUsername(username)
+		if err != nil {
+			mirrorErr("user-fallback", username, err)
+			ok = false
+		} else if ok {
+			s.store.UpdateUser(rec)
+		}
+	}
+	return rec, ok
+}
+
 // jwtSecret reads the secret from CODEAUDIT_JWT_SECRET env var (03 §4).
-// R65（2026-09-12 待办收尾）：未配置即 panic（fail-fast，对齐 gateway 同键位口径）——
+// R65：未配置即 panic（fail-fast，对齐 gateway 同键位口径）——
 // 原 fail-open 落开发缺省密钥：签发/校验两侧密钥不一致时表现为全量登录失败难归因，
 // 且缺省密钥已知=伪造令牌面。compose/env 模板均已要求该键。
 func jwtSecret() []byte {
@@ -66,15 +132,21 @@ func jwtSecret() []byte {
 
 // Login authenticates a user and returns JWT tokens (HS256, 03 §4).
 // V2.1 (ADR-205): 密码比对改 bcrypt（偿还 POC 明文债）；token 携带 role claim
-//（网关管理路由门禁依赖；旧令牌无 role，重新登录即获得）。
+// （网关管理路由门禁依赖；旧令牌无 role，重新登录即获得）。
 func (s *UserService) Login(username, password string) (*v1.LoginResponse, error) {
-	rec, ok := s.store.GetUserByUsername(username)
+	rec, ok := s.userByUsernameWithFallback(username) // HA P1-a 读回落（跨副本注册的用户可登录）
 	if !ok {
 		// R65：失败文案合一（防用户名枚举——网关 401 原文透传）
 		return nil, fmt.Errorf("invalid username or password")
 	}
 	if bcrypt.CompareHashAndPassword([]byte(rec.Password), []byte(password)) != nil {
 		return nil, fmt.Errorf("invalid username or password")
+	}
+	// 第四轮审计 P1：密码正确 ≠ 账号可用——不校验 state 则停用用户（R87 推进纪元
+	// "停用即踢"后）直接重登即拿全新 token 对（新 iat 晚于纪元，刷新守卫也放行），
+	// 停用语义整体落空。密码已验证=用户身份已知，专用文案不算枚举面。
+	if rec.User.GetState() != v1.User_USER_STATE_ACTIVE {
+		return nil, fmt.Errorf("user account is not active (state=%s)", rec.User.GetState().String())
 	}
 
 	now := time.Now()
@@ -127,8 +199,18 @@ func (s *UserService) Logout(accessToken string) {
 			delete(s.revokedTokens, tok)
 		}
 	}
+	if s.mirror != nil { // HA P1-a 写穿（黑名单——跨副本登出撤销面）
+		if err := s.mirror.SaveRevokedToken(accessToken, now); err != nil {
+			mirrorErr("revoked-token", "logout", err)
+		}
+	}
 	if uid, err := s.extractUserID(accessToken); err == nil { // 解析失败=无效令牌，纪元无从谈起
 		s.sessionsInvalidBefore[uid] = now
+		if s.mirror != nil {
+			if err := s.mirror.SaveSessionEpoch(uid, now); err != nil {
+				mirrorErr("session-epoch", uid, err)
+			}
+		}
 		for u, at := range s.sessionsInvalidBefore { // R87: 惰性清扫（≥refresh TTL 7d，8d 足裕）
 			if now.Sub(at) > 8*24*time.Hour {
 				delete(s.sessionsInvalidBefore, u)
@@ -139,9 +221,15 @@ func (s *UserService) Logout(accessToken string) {
 
 // invalidateSessions — R87: 推进用户会话纪元（改密/重置/停用通道；登出走 Logout 内联）。
 func (s *UserService) invalidateSessions(userID string) {
+	now := time.Now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sessionsInvalidBefore[userID] = time.Now()
+	s.sessionsInvalidBefore[userID] = now
+	s.mu.Unlock()
+	if s.mirror != nil { // HA P1-a 写穿（改密/重置/停用的跨副本踢出面）
+		if err := s.mirror.SaveSessionEpoch(userID, now); err != nil {
+			mirrorErr("session-epoch", userID, err)
+		}
+	}
 }
 
 // sessionInvalidated — R87: 该用户纪元是否已推进到 iat 之后（refresh 准入判定）。
@@ -183,7 +271,7 @@ func (s *UserService) RefreshToken(refreshTokenStr string) (*v1.RefreshTokenResp
 	}
 
 	sub, _ := claims["sub"].(string)
-	rec, exists := s.store.GetUser(sub)
+	rec, exists := s.userByIDWithFallback(sub) // HA P1-a 读回落
 	if !exists {
 		return nil, fmt.Errorf("user not found: %s", sub)
 	}
@@ -209,7 +297,7 @@ func (s *UserService) GetCurrentUser(accessToken string) (*v1.User, error) {
 	if err != nil {
 		return nil, err
 	}
-	rec, ok := s.store.GetUser(userID)
+	rec, ok := s.userByIDWithFallback(userID) // HA P1-a 读回落
 	if !ok {
 		return nil, fmt.Errorf("user not found: %s", userID)
 	}
@@ -218,7 +306,7 @@ func (s *UserService) GetCurrentUser(accessToken string) (*v1.User, error) {
 
 // GetUser returns a user by ID.
 func (s *UserService) GetUser(userID string) (*v1.User, bool) {
-	rec, ok := s.store.GetUser(userID)
+	rec, ok := s.userByIDWithFallback(userID) // HA P1-a 读回落
 	if !ok {
 		return nil, false
 	}
@@ -227,7 +315,7 @@ func (s *UserService) GetUser(userID string) (*v1.User, bool) {
 
 // UpdateUser updates user fields.
 func (s *UserService) UpdateUser(u *v1.User) (*v1.User, bool) {
-	rec, ok := s.store.GetUser(u.GetUserId())
+	rec, ok := s.userByIDWithFallback(u.GetUserId()) // HA P1-a 读回落（跨副本用户管理面）
 	if !ok {
 		return nil, false
 	}
@@ -255,6 +343,11 @@ func (s *UserService) UpdateUser(u *v1.User) (*v1.User, bool) {
 	u.MustChangePassword = rec.User.GetMustChangePassword()
 	rec.User = u
 	s.store.UpdateUser(rec)
+	if s.mirror != nil {
+		if err := s.mirror.UpsertUser(rec); err != nil {
+			mirrorErr("user", u.GetUserId(), err)
+		}
+	}
 	// R87: 停用即踢——有效 state 离开 ACTIVE（管理员停用/锁定）推进会话纪元，已发
 	// refresh 即刻失效（state 不变更不触发；非 ACTIVE→ACTIVE 的恢复不踢旧会话）。
 	// 此处 u.State 已经过上文 UNSPECIFIED 保全，即为生效 state。
@@ -265,7 +358,22 @@ func (s *UserService) UpdateUser(u *v1.User) (*v1.User, bool) {
 }
 
 // ValidatePermission checks if a user has the specified action on a resource.
+func (s *UserService) syncMembersForPermissions(userID string) { // HA P1-a：权限读前成员表权威同步
+	if s.mirror == nil {
+		return
+	}
+	// 成员键=projectID:userID——按 user 侧拉需全表；量级小（成员表百级），全量合流
+	recs, err := s.mirror.ListMembersForUser(userID)
+	if err != nil {
+		mirrorErr("members-for-user", userID, err)
+	}
+	for _, rec := range recs {
+		s.store.AddMember(rec)
+	}
+}
+
 func (s *UserService) ValidatePermission(userID, resourceType, resourceID, action string) (bool, string) {
+	s.syncMembersForPermissions(userID)
 	perms := s.store.GetUserPermissionList(userID)
 	needed := resourceType + ":" + action
 	for _, p := range perms {
@@ -278,6 +386,7 @@ func (s *UserService) ValidatePermission(userID, resourceType, resourceID, actio
 
 // GetUserPermissions returns the permission list for a user.
 func (s *UserService) GetUserPermissions(userID string) []string {
+	s.syncMembersForPermissions(userID)
 	return s.store.GetUserPermissionList(userID)
 }
 

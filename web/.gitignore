@@ -3,6 +3,5 @@ dist/
 tsconfig.tsbuildinfo
 *.local
 
-# .agent/ 会话工作区不入库
 .agent/
 test-results/

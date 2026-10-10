@@ -16,7 +16,7 @@ const sessionState = vi.hoisted(() => ({
     refreshUser: vi.fn(),
   },
 }));
-vi.mock('../auth/session', () => ({ useSession: () => sessionState.value }));
+vi.mock('../auth/session', () => ({ useCanWrite: () => true, useSession: () => sessionState.value }));
 
 function renderPage() {
   const qc = new QueryClient();
@@ -59,5 +59,33 @@ describe('LoginPage（E-01 消费端）', () => {
     await waitFor(() =>
       expect(screen.getByText('登录失败：用户名或密码错误，或服务不可用')).toBeTruthy(),
     );
+  });
+});
+
+// ---- V2.2 (ADR-255, Q10 审查批补半边)：注册互链档位自适应（E-62 消费端；原 E-57 撞号改号 2026-10-04）----
+import { useFakeGateway } from '../testsupport/fakeGateway';
+
+const gwRoutes: Record<string, unknown> = {};
+const gateway = useFakeGateway(gwRoutes);
+
+describe('LoginPage 注册互链档位自适应', () => {
+  it('invitation 档：『注册（需邀请码）』文案', async () => {
+    gwRoutes['GET /v1/auth/registration-policy'] = { mode: 'invitation' };
+    renderPage();
+    expect(await screen.findByText('注册（需邀请码）')).toBeInTheDocument();
+  });
+
+  it('open 档：文案免码且仍是链接', async () => {
+    gwRoutes['GET /v1/auth/registration-policy'] = { mode: 'open' };
+    renderPage();
+    const link = await screen.findByRole('link', { name: '注册' });
+    expect(link.getAttribute('href')).toBe('/register');
+  });
+
+  it('disabled 档：置灰非链接+说明', async () => {
+    gwRoutes['GET /v1/auth/registration-policy'] = { mode: 'disabled' };
+    renderPage();
+    expect(await screen.findByText('注册（未开放）')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /注册/ })).not.toBeInTheDocument();
   });
 });

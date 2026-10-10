@@ -69,11 +69,11 @@ func main() {
 
 	// 对账任务接线（ADR-131）：04 §1 "超时对账每天 02:00 全量扫描长时间 RUNNING 任务转 TIMEOUT"；
 	// 存储适配器 = TaskServiceImpl（GetRunningTasks/UpdateTaskStatus）。
-	// ADR-196: 活跃度探针——AI 交互日志（interaction_dir，与 dsh-runtime-service 同宿主同 CWD 部署）
+	// ADR-196: 活跃度探针——AI 交互日志（interaction_dir，与 runtime-service 同宿主同 CWD 部署）
 	// 任一 .ai.log/.sse.log 有更新 mtime 即视为任务活跃，updated_at 陈旧不判死。
-	// 容器化部署两服务 CWD 相对路径不落同一卷（实证：探针恒 miss →
+	// 容器化部署两服务 CWD 相对路径不落同一卷（gw-d331089f 实证：探针恒 miss →
 	// 长审计任务被误判 TIMEOUT），compose 注入 CODEAUDIT_INTERACTION_DIR 指向共享卷。
-	interactionDir, err := cfg.Str("dsh_runtime.sandbox.interaction_dir", "CODEAUDIT_INTERACTION_DIR")
+	interactionDir, err := cfg.Str("runtime.sandbox.interaction_dir", "CODEAUDIT_INTERACTION_DIR")
 	if err != nil {
 		log.Fatalf("load interaction_dir: %v", err)
 	}
@@ -111,7 +111,12 @@ func main() {
 func latestInteractionLogMtime(dir, taskID string) (time.Time, bool) {
 	var latest time.Time
 	found := false
-	for _, suffix := range []string{".ai.log", ".sse.log"} {
+	// D6：.graph.log 入第三源——图任务 executor 排队等待
+	// 期（dispatch 串行化后）主面 .ai.log/.sse.log 静默，但前序节点事件持续写
+	// graph.log（同目录同卷，ADR-249）＝任务真活跃；不纳入则 30m 对账误杀排队
+	// 节点（生产 gw-5ec1376：n001/n002 已 completed，n003 被 context cancel）。
+	// 死循环兜底不经对账：节点 max_attempts_per_node+图 max_planner_replans 双封顶。
+	for _, suffix := range []string{".ai.log", ".sse.log", ".graph.log"} {
 		fi, err := os.Stat(filepath.Join(dir, taskID+suffix))
 		if err != nil {
 			continue

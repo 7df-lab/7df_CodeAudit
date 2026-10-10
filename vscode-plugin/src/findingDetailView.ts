@@ -16,18 +16,32 @@ export interface FindingDetailData {
   fixed: boolean;
 }
 
-// AI 结论标签：键集 = proto AIVerdict 七枚举（伞仓 parity 闸门 check-wiring A8 全等），
-// 文案照抄 web/src/dict/index.ts 的 AI_VERDICT 表（web 为文案权威）。
+// 判定五态组合：
+// direction×tier 组合出五态，文案照抄 web/src/dict/verdict.ts（web 为文案权威）。
 // golden 键集锁见 test/findingDetailView.test.ts（防未来漂移静默）。
-export const VERDICT_LABEL: Record<string, string> = {
-  AI_VERDICT_UNSPECIFIED: '未判定',
-  AI_VERDICT_TRUE_POSITIVE: '确认为真',
-  AI_VERDICT_FALSE_POSITIVE: '误报',
-  AI_VERDICT_LIKELY_TRUE: '可能为真',
-  AI_VERDICT_LIKELY_FALSE: '可能误报',
-  AI_VERDICT_UNCERTAIN: '不确定',
-  AI_VERDICT_NEEDS_MANUAL: '需人工复核',
+export type VerdictState = 'TRUE_DEFINITE' | 'FALSE_DEFINITE' | 'TRUE_LIKELY' | 'FALSE_LIKELY' | 'UNDETERMINED';
+
+export const VERDICT_LABEL: Record<VerdictState, string> = {
+  TRUE_DEFINITE: '确认为真',
+  FALSE_DEFINITE: '误报',
+  TRUE_LIKELY: '可能为真',
+  FALSE_LIKELY: '可能误报',
+  UNDETERMINED: '未判定',
 };
+
+/** 两轴 → 五态（读侧防御：方向未判定一律 UNDETERMINED，脏档位不外显） */
+export function verdictStateOf(f: Pick<UnifiedFinding, 'verdict_direction' | 'verdict_tier'>): VerdictState {
+  const d = f.verdict_direction || 'VERDICT_DIRECTION_UNSPECIFIED';
+  // 档位防御性归一（完整镜像 web dict/verdict.ts normalizeTier / engine NormalizeTier）：
+  // 方向未判定时档位无意义；脏档位串（非两合法值）归 UNSPECIFIED，不外显
+  const t = (d === 'VERDICT_DIRECTION_TRUE' || d === 'VERDICT_DIRECTION_FALSE')
+    ? ((f.verdict_tier === 'VERDICT_TIER_DEFINITE' || f.verdict_tier === 'VERDICT_TIER_LIKELY')
+        ? f.verdict_tier! : 'VERDICT_TIER_UNSPECIFIED')
+    : 'VERDICT_TIER_UNSPECIFIED';
+  if (d === 'VERDICT_DIRECTION_TRUE') return (t === 'VERDICT_TIER_DEFINITE') ? 'TRUE_DEFINITE' : 'TRUE_LIKELY';
+  if (d === 'VERDICT_DIRECTION_FALSE') return (t === 'VERDICT_TIER_DEFINITE') ? 'FALSE_DEFINITE' : 'FALSE_LIKELY';
+  return 'UNDETERMINED';
+}
 
 function metaRow(label: string, value: string): string {
   if (!value) return '';
@@ -54,7 +68,7 @@ export function renderFindingDetailHtml(data: FindingDetailData): string {
     ? `<div class="empty">在「扫描结果」中点击任意漏洞，此处显示该漏洞的完整详情。</div>`
     : (() => {
         const sev = SEVERITY_LABEL[f.severity] ?? f.severity;
-        const verdict = VERDICT_LABEL[f.ai_verdict] ?? '';
+        const verdict = VERDICT_LABEL[verdictStateOf(f)];
         const conf = f.ai_confidence > 0 ? `（置信度 ${(f.ai_confidence * 100).toFixed(0)}%）` : '';
         const loc = f.location;
         const actionBtn = data.fixed

@@ -1,17 +1,24 @@
-# openshell-manager 镜像 —— Python 服务 + 供应商 OpenShell SDK（python 子树）。
-# 服务 HTTP 层自 ADR-174（2026-09-01）起为 FastAPI/uvicorn；SDK 依赖
-# grpc/protobuf/httpx/cloudpickle（服务仓库 libs/OpenShell 整树 7.2G，几乎全是
-# Rust target/ 构建产物 —— 镜像只取 libs/OpenShell/python）。配置不打进镜像，
+# openshell-manager 镜像 —— Python 服务 + openshell SDK（服务根顶层包）。
+# 服务 HTTP 层自 ADR-174起为 FastAPI/uvicorn；SDK 依赖
+# grpc/protobuf/httpx/cloudpickle。2026-09-15 解绑（R31）：SDK 自
+# libs/OpenShell/python/openshell 并入仓根，按普通包 COPY——历史头注的
+# "整树 7.2G" 是上游含 Rust target/ 的口径，vendored python 子树实为 <1M。
+# 配置不打进镜像敏感部分：config.json 仅承载 url/bind/port 等非密键，
 # 运行态经 compose environment 覆盖。
 FROM python:3.12-slim
 
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 
-RUN pip install --no-cache-dir fastapi uvicorn grpcio grpcio-status protobuf httpx cloudpickle
+COPY requirements.txt ./
+# pip 源旋钮：缺省阿里云镜像，国际宿主经
+# PIP_INDEX_URL build-arg/compose ${PIP_INDEX_URL} 覆写回 pypi.org（pip 原生读此 env）
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY openshell_manager/ ./openshell_manager/
-COPY libs/OpenShell/python/ ./libs/OpenShell/python/
+COPY openshell/ ./openshell/
 COPY config.json ./
 
 # 只读运行：token 走环境变量，不写 tokenFile；非 root 无特权。

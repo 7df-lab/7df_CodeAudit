@@ -1,5 +1,5 @@
 // 全局错误边界（ADR-143 附带）：渲染期异常显示可读错误而非白屏（白屏=不可诊断的静默失败）。
-// （2026-09-13）：裸 h2/pre/button + 自造黄色系 → antd Result 归队全站语言；
+// 设计整改 P1：裸 h2/pre/button + 自造黄色系 → antd Result 归队全站语言；
 // 错误详情保留等宽渲染（机器产物=证据嗓音）。
 import { Button, Result, Typography } from 'antd';
 import { Component, type ReactNode } from 'react';

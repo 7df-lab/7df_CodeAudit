@@ -87,7 +87,7 @@ export function appendAiChunk(
   // 衔接：只取 cursor 之后新增的字节（按 utf-8 边界切）。步进按完整 code point
   // 计算（String.fromCodePoint 的字节长）：代理对（emoji 等 4 字节字符）占 2 个
   // UTF-16 code unit，按单 code unit 取 Buffer.byteLength 会把孤立代理项算成 3 字节
-  // （CESU-8），skip 落在代理对中间时会劈开字符、往渲染文本里塞进孤立代理项
+  // （CESU-8），skip 落在代理对中间时会劈开字符、往渲染文本里塞进孤立代理项（B2-8）
   const skip = cursor - chunkStart;
   let off = 0;
   let rest = chunkText;
@@ -202,7 +202,7 @@ export interface ProgressNode {
   /** markdown 折叠无必要：扁平列表，无子节点 */
 }
 
-// 阶段类型标签：键集 = proto StageType 七枚举（parity 闸门 A8 全等），文案对齐 web STAGE_TYPE。
+// 阶段类型标签：键集 = proto StageType 全枚举（parity 闸门 A8 全等），文案对齐 web STAGE_TYPE。
 export const STAGE_LABELS: Record<string, string> = {
   STAGE_TYPE_UNSPECIFIED: '未指定',
   STAGE_TYPE_CODE_ANALYSIS: '代码分析',
@@ -211,6 +211,7 @@ export const STAGE_LABELS: Record<string, string> = {
   STAGE_TYPE_RESULT_FUSION: '结果融合',
   STAGE_TYPE_REPORT_GENERATION: '报告生成',
   STAGE_TYPE_AI_REVIEW: 'AI 审核（旧模式D）',
+  STAGE_TYPE_GRAPH: '图执行',
 };
 
 const STAGE_ICONS: Record<string, string> = {
@@ -232,7 +233,7 @@ const STAGE_STATUS_LABELS: Record<string, string> = {
   STAGE_STATUS_UNSPECIFIED: '—',
 };
 
-// 任务状态标签：键集 = proto TaskStatus 十一枚举（伞仓 parity 闸门 check-wiring A8
+// 任务状态标签：键集 = proto TaskStatus 十一枚举（主仓库 parity 闸门 check-wiring A8
 // 全等），文案对齐 web/src/dict/index.ts 的 TASK_STATUS 表（web 为文案权威）。
 // golden 键集锁见 test/progressModel.test.ts（防未来漂移静默）。
 export const STATUS_LABELS: Record<string, string> = {

@@ -17,13 +17,13 @@ function setDefaultFindings() {
   findingsPayload = { findings: [{
     finding_id: 'f-1', task_id: 't1', source_tool: 'bandit', source_rule_id: 'B105',
     cwe_id: 'CWE-798', title: 'hardcoded password', severity: 'SEVERITY_HIGH',
-    confidence: 0.9, ai_verdict: 'AI_VERDICT_NEEDS_MANUAL', ai_confidence: 0,
+    confidence: 0.9, verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED', ai_confidence: 0,
     location: { file_path: 'app.py', start_line: 12 },
   }, {
     // 沙箱 DSH 发现（ADR-167 补遗）：AI 结论须在当前结论列可见并标明 AI 输出
     finding_id: 'f-2', task_id: 't1', source_tool: 'ai_agent', source_rule_id: 'dsh-headless',
     cwe_id: 'CWE-89', title: 'SQL 注入：user_id 直接拼接', severity: 'SEVERITY_CRITICAL',
-    confidence: 0.98, ai_verdict: 'AI_VERDICT_LIKELY_TRUE', ai_confidence: 0.98,
+    confidence: 0.98, verdict_direction: 'VERDICT_DIRECTION_TRUE', verdict_tier: 'VERDICT_TIER_LIKELY', ai_confidence: 0.98,
     ai_reasoning: '[DSH-sandbox] get_user() 将参数 user_id 未做任何参数化或校验，直接用字符串拼接构造 SQL 后交给 cursor.execute() 执行。',
     location: { file_path: 'app.py', start_line: 16 },
   }], pagination: { next_cursor: '', has_next: false, total: 2 } };
@@ -46,7 +46,7 @@ describe('FindingsPage（T3 triage 闭环 UI 侧）', () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('hardcoded password')).toBeTruthy());
     expect(screen.getByText('高危')).toBeTruthy();
-    expect(screen.getByText('需人工复核')).toBeTruthy();
+    expect(screen.getAllByText('未判定').length).toBeGreaterThan(0); // 原 NEEDS_MANUAL 归未判定（两轴 2026-10-09；结论列+复核列两处）
     expect(screen.getByText('app.py:12')).toBeTruthy();
   });
   it('沙箱发现的 AI 结论在当前结论列可见并标明 AI 输出（ADR-167 补遗）', async () => {
@@ -66,7 +66,7 @@ describe('FindingsPage（T3 triage 闭环 UI 侧）', () => {
       return r!;
     });
     expect(put.url).toBe('/v1/findings/f-1/verdict');
-    expect(put.body).toEqual({ verdict: 'AI_VERDICT_TRUE_POSITIVE', reasoning: 'console quick triage' });
+    expect(put.body).toEqual({ direction: 'VERDICT_DIRECTION_TRUE', reasoning: 'console quick triage' });
   });
 });
 
@@ -84,27 +84,27 @@ describe('FindingsPage 展开交互', () => {
 // 且 filter 参数形状 {ai_verdict} 不契约（proto FilterRequest 只认 conditions）被网关
 // DiscardUnknown 丢弃，服务端亦未接线 → 选任何具体结论都等于没选。现为纯客户端精确过滤。
 describe('FindingsPage 结论筛选（客户端过滤）', () => {
-  it('选择具体结论（需人工复核）→ 只剩匹配行，且请求不再携带死 filter 参数', async () => {
+  it('选择具体结论（可能为真）→ 只剩匹配行，且请求不再携带死 filter 参数', async () => {
     setDefaultFindings();
     renderPage();
     await waitFor(() => expect(screen.getByText('hardcoded password')).toBeTruthy());
     await waitFor(() => expect(screen.getByText('SQL 注入：user_id 直接拼接')).toBeTruthy());
-    // f-1=NEEDS_MANUAL、f-2=LIKELY_TRUE：选"需人工复核"后 f-2 应被过滤掉
+    // f-1=未判定、f-2=(TRUE,LIKELY)：选"可能为真"后 f-1 应被过滤掉
     fireEvent.mouseDown(screen.getAllByRole('combobox')[0]); // [0]=结论筛选（新增严重度下拉在后）
     const opt = await waitFor(() =>
-      document.body.querySelector<HTMLElement>('.ant-select-item-option[title="需人工复核"]'),
+      document.body.querySelector<HTMLElement>('.ant-select-item-option[title="可能为真"]'),
     );
     expect(opt).toBeTruthy();
     fireEvent.click(opt!);
-    await waitFor(() => expect(screen.queryByText('SQL 注入：user_id 直接拼接')).toBeNull());
-    expect(screen.getByText('hardcoded password')).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText('hardcoded password')).toBeNull());
+    expect(screen.getByText('SQL 注入：user_id 直接拼接')).toBeTruthy();
     // 结论筛选是纯客户端行为：任何 GET /v1/findings 都不应出现 filter 参数
     const gets = gateway.requests.filter((r) => r.method === 'GET' && r.url === '/v1/findings');
     expect(gets.length).toBeGreaterThan(0);
     expect(gets.every((r) => !r.query.includes('filter='))).toBe(true);
   });
 
-  it('未判定分组：结论筛选切到"未判定"→ 已判定的行全部隐藏', async () => {
+  it('筛选"未判定"（五态）→ 有结论的行全部隐藏（两轴重构后与原 __unreviewed 组恒等，组选项已删）', async () => {
     setDefaultFindings();
     renderPage();
     await waitFor(() => expect(screen.getByText('hardcoded password')).toBeTruthy());
@@ -113,9 +113,9 @@ describe('FindingsPage 结论筛选（客户端过滤）', () => {
       document.body.querySelector<HTMLElement>('.ant-select-item-option[title="未判定"]'),
     );
     fireEvent.click(opt!);
-    await waitFor(() => expect(screen.queryByText('hardcoded password')).toBeNull());
-    expect(screen.queryByText('SQL 注入：user_id 直接拼接')).toBeNull();
-    expect(screen.getByText('暂无发现（任务完成或无命中）')).toBeTruthy();
+    // f-1=未判定留、f-2=(TRUE,LIKELY) 隐
+    await waitFor(() => expect(screen.queryByText('SQL 注入：user_id 直接拼接')).toBeNull());
+    expect(screen.getByText('hardcoded password')).toBeTruthy();
   });
 });
 
@@ -129,7 +129,7 @@ it('携带 dataflow_trace 的行显示污点链路徽标', async () => {
     finding_id: 'f-og', task_id: 't1', source_tool: 'opengrep',
     source_rule_id: 'codeaudit-sql-taint-user-param',
     cwe_id: 'CWE-89', title: 'SQL 注入', severity: 'SEVERITY_HIGH',
-    confidence: 0.9, ai_verdict: 'AI_VERDICT_UNSPECIFIED', ai_confidence: 0,
+    confidence: 0.9, verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED', ai_confidence: 0,
     location: { file_path: 'app.py', start_line: 7 },
     source_raw: btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(trace)))),
   }], pagination: { next_cursor: '', has_next: false, total: 1 } };
@@ -143,12 +143,12 @@ describe('FindingsPage 来源筛选（ADR-225 双视图）', () => {
     findingsPayload = { findings: [{
       finding_id: 't2-bandit-1', task_id: 't2', source_tool: 'bandit', source_rule_id: 'B608',
       cwe_id: 'CWE-89', title: '新发现-硬编码', severity: 'SEVERITY_HIGH',
-      confidence: 0.9, ai_verdict: 'AI_VERDICT_NEEDS_MANUAL', ai_confidence: 0,
+      confidence: 0.9, verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED', ai_confidence: 0,
       location: { file_path: 'app.py', start_line: 3 },
     }, {
       finding_id: 't2-inh-1', task_id: 't2', source_tool: 'bandit', source_rule_id: 'B105',
       cwe_id: 'CWE-259', title: '继承-旧密码', severity: 'SEVERITY_MEDIUM',
-      confidence: 0.7, ai_verdict: 'AI_VERDICT_TRUE_POSITIVE', ai_confidence: 0.7,
+      confidence: 0.7, verdict_direction: 'VERDICT_DIRECTION_TRUE', verdict_tier: 'VERDICT_TIER_DEFINITE', ai_confidence: 0.7,
       inherited_from_task_id: 't1',
       location: { file_path: 'old.py', start_line: 8 },
     }], pagination: { next_cursor: '', has_next: false, total: 2 } };
@@ -176,19 +176,19 @@ describe('FindingsPage 来源筛选（ADR-225 双视图）', () => {
   });
 });
 
-// ===== （审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询 =====
+// ===== B3-1（审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询 =====
 // 锁三点：翻页后前页保留 / has_next=false 停止 / 客户端筛选跨累计页生效且不重发请求。
-describe('FindingsPage 无限查询分页', () => {
+describe('FindingsPage 无限查询分页（B3-1）', () => {
   const f1 = {
     finding_id: 'f-p1', task_id: 't1', source_tool: 'bandit', source_rule_id: 'B105',
     cwe_id: 'CWE-798', title: '第一页发现', severity: 'SEVERITY_HIGH',
-    confidence: 0.9, ai_verdict: 'AI_VERDICT_NEEDS_MANUAL', ai_confidence: 0,
+    confidence: 0.9, verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED', ai_confidence: 0,
     location: { file_path: 'a.py', start_line: 1 },
   };
   const f2 = {
     finding_id: 'f-p2', task_id: 't1', source_tool: 'bandit', source_rule_id: 'B608',
     cwe_id: 'CWE-89', title: '第二页发现', severity: 'SEVERITY_MEDIUM',
-    confidence: 0.8, ai_verdict: 'AI_VERDICT_UNSPECIFIED', ai_confidence: 0,
+    confidence: 0.8, verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED', ai_confidence: 0,
     location: { file_path: 'b.py', start_line: 2 },
   };
   const twoPageRoute = () => {
@@ -240,8 +240,8 @@ describe('FindingsPage 无限查询分页', () => {
   });
 });
 
-// （审计修复）：快捷 triage 此前失败静默——message.error 必须携带状态码
-describe('FindingsPage 快捷 triage 失败反馈', () => {
+// B3-3（审计修复）：快捷 triage 此前失败静默——message.error 必须携带状态码
+describe('FindingsPage 快捷 triage 失败反馈（B3-3）', () => {
   it('PUT verdict 409 → message.error 含 HTTP 409', async () => {
     routes['PUT /v1/findings/:findingId/verdict'] = () => httpError(409, { error: 'conflict' });
     renderPage();
@@ -251,11 +251,11 @@ describe('FindingsPage 快捷 triage 失败反馈', () => {
   });
 });
 
-// （审计修复）：快捷 triage 成功联动失效融合/审核视图缓存——两者读 ai_verdict
+// B4-3（审计修复）：快捷 triage 成功联动失效融合/审核视图缓存——两者读 ai_verdict
 // （FusionView 去重分区列 / ReviewView 结论列），不联动则任务详情内切 Tab 停留旧结论。
 // 探针：与真实视图相同的 queryKey（['fusion-findings', taskId] / ['review-findings', taskId]），
 // queryFn 计数（不打 HTTP——观测的是失效重拉行为本身）。
-describe('FindingsPage 快捷 triage 缓存联动', () => {
+describe('FindingsPage 快捷 triage 缓存联动（B4-3）', () => {
   it('裁决成功 → fusion-findings / review-findings 前缀失效并重拉', async () => {
     // 自愈路由（前序用例会改写 GET 处理器——游标路由/载荷轮换——不恢复到默认形态）
     setDefaultFindings();

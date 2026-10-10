@@ -60,6 +60,8 @@ type MemoryStore struct {
 	projectMembers map[string]*ProjectMemberRecord
 	// Users: user_id → UserRecord
 	users map[string]*UserRecord
+	// InviteCodes: code → InviteCode（V2.2 ADR-255；code 为消费主键，id 线性扫）
+	invites map[string]*v1.InviteCode
 }
 
 // NewMemoryStore creates a MemoryStore; seedAdmin=false 时不预置任何账号
@@ -72,6 +74,7 @@ func NewMemoryStore(seedAdmin bool) *MemoryStore {
 		projectStats:   make(map[string]*ProjectStatsRecord),
 		projectMembers: make(map[string]*ProjectMemberRecord),
 		users:          make(map[string]*UserRecord),
+		invites:        make(map[string]*v1.InviteCode),
 	}
 	// Seed a default admin user for login testing.
 	// V2.1 (ADR-205): 密码一律 bcrypt 存储（含种子账号，Login 侧 CompareHashAndPassword）；
@@ -237,8 +240,16 @@ func (m *MemoryStore) UpdateUser(rec *UserRecord) {
 	m.users[rec.User.GetUserId()] = rec
 }
 
+// DeleteUser — 按 ID 删除（TP19-T7：镜像侧唯一冲突时回滚本地插入的专用面；
+// 常规用户生命周期无删除语义——停用走 state 迁移，不物理删）。
+func (m *MemoryStore) DeleteUser(userID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.users, userID)
+}
+
 // CreateUser inserts a new user（V2.1 ADR-205）。username/email 任一已存在返回 false
-//（唯一性契约，03 §3 ALREADY_EXISTS）。
+// （唯一性契约，03 §3 ALREADY_EXISTS）。
 func (m *MemoryStore) CreateUser(rec *UserRecord) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()

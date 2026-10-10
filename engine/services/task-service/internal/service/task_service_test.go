@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -22,8 +23,18 @@ func newSvc(t *testing.T) *TaskServiceImpl {
 	t.Helper()
 	// 下游端口不监听：编排快速失败，用于驱动重试/终态路径
 	t.Setenv("CODEAUDIT_SAST_ADAPTER_ADDR", "localhost:59990")
-	t.Setenv("CODEAUDIT_DSH_RUNTIME_ADDR", "localhost:59991")
+	// R138/P3-7 配套：dshControl 地址改为构造时定格（配置装载，ADR-137 零缺省）——
+	// 假 runtime 服务用例须先设 env 再构造，钉口改条件式（PROJECT_ADDR 同型）。
+	if os.Getenv("CODEAUDIT_RUNTIME_ADDR") == "" {
+		t.Setenv("CODEAUDIT_RUNTIME_ADDR", "localhost:59991")
+	}
 	t.Setenv("CODEAUDIT_RESULT_ADDR", "localhost:59992")
+	// ADR-247 二轮复审 P3-3：project 面同样钉闭口——本机跑过 engine 栈（project
+	// 发布 50052）时 fetchProjectTeam 会打真实服务，team 命中即测试环境相关误红。
+	// 仅未显式设置时钉（upload_priority 等自带 fake project 的测试优先）。
+	if os.Getenv("CODEAUDIT_PROJECT_ADDR") == "" {
+		t.Setenv("CODEAUDIT_PROJECT_ADDR", "localhost:59993")
+	}
 	return NewTaskService()
 }
 
@@ -344,6 +355,47 @@ func TestListScanTasks_StableOrderAndPagination(t *testing.T) {
 	}
 }
 
+// TestListScanTasks_NewestFirst — 排序方向行为级锁定（R110，io-audit A-4）。
+// 依据: ADR-149「最新活动优先」（decisions.md）+ R68（排序键 updated_at→created_at，
+// 改键未改方向）+ 03 §5 稳定序。两份契约文档曾误写"升序"：若有人按旧文档"修"代码
+// 反转方向，vscode 插件"取列表首个 COMPLETED=最近完成"的增量基线探测会选中最旧
+// 任务（其文档 §1.6 倒序依赖是对的）——本测试即红。方向断言与稳定性断言
+// （TestListScanTasks_StableOrderAndPagination）互补：后者对方向不敏感。
+func TestListScanTasks_NewestFirst(t *testing.T) {
+	s := newSvc(t)
+	ctx := context.Background()
+	// 创建顺序刻意与时间序不同（防 map 迭代序/时钟巧合喂绿）。
+	for _, id := range []string{"t-mid", "t-old", "t-mid-b", "t-new"} {
+		createTask(t, s, id, pb.ScanMode_SCAN_MODE_AI_ONLY)
+	}
+	base := time.Unix(1700000000, 0)
+	setCreatedAt := func(id string, ts time.Time) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.tasks[id].CreatedAt = timestamppb.New(ts)
+	}
+	setCreatedAt("t-old", base)
+	setCreatedAt("t-mid", base.Add(time.Hour))
+	setCreatedAt("t-mid-b", base.Add(time.Hour)) // 与 t-mid 同刻 → 锁 task_id 升序决胜
+	setCreatedAt("t-new", base.Add(2*time.Hour))
+
+	resp, err := s.ListScanTasks(ctx, &pb.ListScanTasksRequest{
+		Pagination: &pb.PaginationRequest{PageSize: 100}})
+	if err != nil {
+		t.Fatalf("ListScanTasks: %v", err)
+	}
+	var got []string
+	for _, tk := range resp.GetTasks() {
+		got = append(got, tk.GetTaskId())
+	}
+	// 期望 newest-first：t-new（最新）> 同刻 t-mid,t-mid-b（task_id 升序决胜）> t-old。
+	want := "t-new,t-mid,t-mid-b,t-old"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("ListScanTasks 方向破坏（want created_at 降序+task_id 升序决胜）: got %v want %v",
+			strings.Join(got, ","), want)
+	}
+}
+
 // ---- ADR-149b 回归锁：阶段重置与终态语义 ----
 
 // TestResetStagesLocked: （重）启动前阶段看板归零——清除 FAILED 残留与错误信息。
@@ -480,7 +532,7 @@ func TestGetTaskLogs_AfterCursorAndOrder(t *testing.T) {
 		if _, err := s.AppendTaskLog(ctx, &pb.AppendTaskLogRequest{
 			Metadata: &pb.RequestMetadata{RequestId: fmt.Sprintf("log-2-r%d", i)},
 			TaskId:   "log-2", Level: pb.TaskLogLevel_TASK_LOG_LEVEL_INFO,
-			Source: "dsh-runtime", Message: fmt.Sprintf("step %d", i),
+			Source: "runtime", Message: fmt.Sprintf("step %d", i),
 		}); err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
@@ -532,7 +584,7 @@ func TestTaskLog_RingCapAndTransitionHistory(t *testing.T) {
 		_, _ = s.AppendTaskLog(ctx, &pb.AppendTaskLogRequest{
 			Metadata: &pb.RequestMetadata{RequestId: fmt.Sprintf("log-3-flood-%d", i)},
 			TaskId:   "log-3", Level: pb.TaskLogLevel_TASK_LOG_LEVEL_INFO,
-			Source: "dsh-runtime", Message: fmt.Sprintf("flood %d", i),
+			Source: "runtime", Message: fmt.Sprintf("flood %d", i),
 		})
 	}
 	capped, err := s.GetTaskLogs(ctx, &pb.GetTaskLogsRequest{TaskId: "log-3"})
@@ -563,7 +615,7 @@ func TestAppendTaskLog_Validation(t *testing.T) {
 
 // TestStageRecorder_LiveRunningAndDone — ADR-181 回归锁：阶段事件实时流转——
 // 首事件置 RUNNING（含时间戳），done:<id> 事件即时置 COMPLETED，未启动阶段不被
-// 误动；这是"时间线中间态"（人类反馈 2026-09-02）的服务端权威行为。
+// 误动；这是"时间线中间态"的服务端权威行为。
 func TestStageRecorder_LiveRunningAndDone(t *testing.T) {
 	s := newSvc(t)
 	createTask(t, s, "req-stage-live", pb.ScanMode_SCAN_MODE_TRADITIONAL_FIRST)
@@ -667,7 +719,7 @@ func TestReportStageComplete_OutputRefsOnRegisteredStage(t *testing.T) {
 	}
 }
 
-// R50（2026-09-11 修复批次）: 幂等键在而原条目已被环形丢弃——回空壳回执（原 log_id），
+// R50: 幂等键在而原条目已被环形丢弃——回空壳回执（原 log_id），
 // 不再回落追加新条目（同 request_id 二次入账破坏幂等语义）。
 func TestAppendTaskLog_ReplayAfterRingEviction_NoRefill(t *testing.T) {
 	s := newSvc(t)
@@ -694,7 +746,7 @@ func TestAppendTaskLog_ReplayAfterRingEviction_NoRefill(t *testing.T) {
 	}
 }
 
-// R57（2026-09-11 报障修复）: 阶段事件 msg 必须落 TaskStage.metadata——此前 msg 参数
+// R57: 阶段事件 msg 必须落 TaskStage.metadata——此前 msg 参数
 // 被整体丢弃，降级信息（"[降级]" 前缀）与进度行只进日志不进看板，前端无从渲染。
 func TestStageRecorder_MsgAndDegradedLandInMetadata(t *testing.T) {
 	s := newSvc(t)
@@ -741,7 +793,7 @@ func TestStageRecorder_MsgAndDegradedLandInMetadata(t *testing.T) {
 	}
 }
 
-// R64/D5finding.created 事件构造纯函数锁定——载荷字段对齐
+// R64/D5：finding.created 事件构造纯函数锁定——载荷字段对齐
 // storage eventPayload 消费映射（task_id/finding_id/severity/created_by），高危过滤口径
 // 与消费端 HIGH/CRITICAL 阈值一致。
 func TestBuildFindingCreatedEvent_Shape(t *testing.T) {
@@ -772,7 +824,7 @@ func TestBuildFindingCreatedEvent_Shape(t *testing.T) {
 	}
 }
 
-// R67（2026-09-12 待办收尾·取消传播）：CancelScanTask 必须取消在途编排——
+// R67：CancelScanTask 必须取消在途编排——
 // 原实现只改状态不通知编排协程：不可达下游的重试循环继续跑（阻塞 RPC 逐次超时），
 // 且被取消任务可能被下一次自动重试拉回 RUNNING（状态覆盖守卫之外的窗口）。
 // blockingExecutor — R75: 可阻塞编排桩——Execute 挂起直到 ctx 被取消，模拟
@@ -831,7 +883,7 @@ func TestCancelTask_PropagatesToOrchestration(t *testing.T) {
 	}
 }
 
-// R68（2026-09-12 待办收尾）：idem 表重启遗忘后同键重放不得重置既有任务——
+// R68：idem 表重启遗忘后同键重放不得重置既有任务——
 // task_id=request_id + 指纹随任务落库（_idem_fp），重放返回原任务；异体返回 AlreadyExists。
 func TestCreateScanTask_PostRestartReplayNoReset(t *testing.T) {
 	s := newSvc(t)

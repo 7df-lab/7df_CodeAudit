@@ -6,7 +6,7 @@ function finding(over: Partial<UnifiedFinding> = {}): UnifiedFinding {
   return {
     finding_id: 'f1', task_id: 't', project_id: 'p', source_tool: 'ai_agent', source_rule_id: 'R1',
     cwe_id: 'CWE-89', title: 'SQL 注入<script>', description: '拼接 <SQL>', severity: 'SEVERITY_HIGH',
-    confidence: 0.9, ai_verdict: 'AI_VERDICT_LIKELY_TRUE', ai_confidence: 0.8, ai_reasoning: '推理',
+    confidence: 0.9, verdict_direction: 'VERDICT_DIRECTION_TRUE', verdict_tier: 'VERDICT_TIER_LIKELY', ai_confidence: 0.8, ai_reasoning: '推理',
     ai_fix_suggestion: '参数化', diff_patch: '*** Begin Patch\n*** Update File: a.py\n@@\n-bad\n+good',
     location: { file_path: 'a.py', start_line: 7, end_line: 9 }, dedup_group: '', is_unique: true,
     ...over,
@@ -63,23 +63,19 @@ describe('findingDetailView', () => {
     assert.notStrictEqual(nonce, nonce2, '两次渲染 nonce 必须不同');
   });
 
-  it('VERDICT_LABEL 键集 golden：与 proto AIVerdict 七枚举全等（漂移即红，B2-4；伞仓 parity 闸门同口径）', () => {
+  it('VERDICT_LABEL 键集 golden：五态组合（两轴 2026-10-09；文案权威=web dict/verdict，漂移即红）', () => {
     assert.deepStrictEqual(Object.keys(VERDICT_LABEL), [
-      'AI_VERDICT_UNSPECIFIED',
-      'AI_VERDICT_TRUE_POSITIVE',
-      'AI_VERDICT_FALSE_POSITIVE',
-      'AI_VERDICT_LIKELY_TRUE',
-      'AI_VERDICT_LIKELY_FALSE',
-      'AI_VERDICT_UNCERTAIN',
-      'AI_VERDICT_NEEDS_MANUAL',
+      'TRUE_DEFINITE',
+      'FALSE_DEFINITE',
+      'TRUE_LIKELY',
+      'FALSE_LIKELY',
+      'UNDETERMINED',
     ]);
     // 文案照抄 web/src/dict/index.ts AI_VERDICT（web 为文案权威）；死键 AI_VERDICT_TRUE/FALSE 已删
-    assert.strictEqual(VERDICT_LABEL.AI_VERDICT_UNSPECIFIED, '未判定');
-    assert.strictEqual(VERDICT_LABEL.AI_VERDICT_TRUE_POSITIVE, '确认为真');
-    assert.strictEqual(VERDICT_LABEL.AI_VERDICT_FALSE_POSITIVE, '误报');
-    assert.strictEqual(VERDICT_LABEL.AI_VERDICT_LIKELY_TRUE, '可能为真');
-    assert.strictEqual(VERDICT_LABEL.AI_VERDICT_LIKELY_FALSE, '可能误报');
-    assert.strictEqual(VERDICT_LABEL.AI_VERDICT_UNCERTAIN, '不确定');
-    assert.strictEqual(VERDICT_LABEL.AI_VERDICT_NEEDS_MANUAL, '需人工复核');
+    assert.strictEqual(VERDICT_LABEL.UNDETERMINED, '未判定');
+    assert.strictEqual(VERDICT_LABEL.TRUE_DEFINITE, '确认为真');
+    assert.strictEqual(VERDICT_LABEL.FALSE_DEFINITE, '误报');
+    assert.strictEqual(VERDICT_LABEL.TRUE_LIKELY, '可能为真');
+    assert.strictEqual(VERDICT_LABEL.FALSE_LIKELY, '可能误报');
   });
 });

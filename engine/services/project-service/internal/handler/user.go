@@ -21,11 +21,11 @@ import (
 type UserHandler struct {
 	v1.UnimplementedUserServiceServer
 	svc *service.UserService
-	idm *idempotency.Store // V2.1 (ADR-205)：写 RPC 幂等
+	idm idempotency.Store // V2.1 (ADR-205)：写 RPC 幂等
 }
 
 // NewUserHandler creates a UserHandler.
-func NewUserHandler(svc *service.UserService, idm *idempotency.Store) *UserHandler {
+func NewUserHandler(svc *service.UserService, idm idempotency.Store) *UserHandler {
 	return &UserHandler{svc: svc, idm: idm}
 }
 
@@ -118,7 +118,7 @@ func (h *UserHandler) GetUserPermissions(ctx context.Context, req *v1.GetUserPer
 
 // withIdempotency — 幂等泛型封装：metadata 必带（03 §2）；同 request_id+body 命中缓存
 // 直接回放首次响应（RegisterUser/ResetPassword 的令牌与临时密码重放不变，R4/R6）。
-func withIdempotency[T any](idm *idempotency.Store, req *v1.RequestMetadata, body interface{}, exec func() (*T, error)) (*T, error) {
+func withIdempotency[T any](idm idempotency.Store, req *v1.RequestMetadata, body interface{}, exec func() (*T, error)) (*T, error) {
 	if req == nil || req.GetRequestId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "metadata.request_id is required (03 §2)")
 	}
@@ -236,4 +236,81 @@ func (h *UserHandler) ResetPassword(ctx context.Context, req *v1.ResetPasswordRe
 		}
 		return &v1.ResetPasswordResponse{TemporaryPassword: temp, MustChangePassword: true}, nil
 	})
+}
+
+// ---- V2.2 邀请码管理 (ADR-255)。写 RPC 幂等沿 withIdempotency；分页沿 ListUsers 口径 ----
+
+// CreateInviteCode — admin 生成（幂等；同 request_id 重放回放同一枚码）。
+func (h *UserHandler) CreateInviteCode(ctx context.Context, req *v1.CreateInviteCodeRequest) (*v1.InviteCode, error) {
+	return withIdempotency(h.idm, req.GetMetadata(), map[string]interface{}{
+		"max_uses": req.GetMaxUses(), "has_max_uses": req.MaxUses != nil,
+		"expires_at": req.GetExpiresAt().String(), "never_expires": req.GetNeverExpires(), "note": req.GetNote(),
+		"created_by": req.GetCreatedBy(), "role": req.GetRole().String(),
+	}, func() (*v1.InviteCode, error) {
+		createdBy := req.GetCreatedBy() // 网关注入 JWT sub（多管理员归属）；直连空=兜底 "admin"
+		if createdBy == "" {
+			createdBy = "admin"
+		}
+		return h.svc.CreateInviteCode(req.GetMaxUses(), req.MaxUses != nil, req.GetExpiresAt(),
+			req.GetNeverExpires(), req.GetNote(), createdBy, req.GetRole())
+	})
+}
+
+// ListInviteCodes — 管理端列表（分页 offset 游标同 ListUsers；config 注入码只读随行）。
+func (h *UserHandler) ListInviteCodes(ctx context.Context, req *v1.ListInviteCodesRequest) (*v1.ListInviteCodesResponse, error) {
+	recs, configCodes := h.svc.ListInviteCodes(req.GetIncludeTerminal())
+
+	offset := 0
+	if req.GetPagination() != nil && req.GetPagination().GetCursor() != "" {
+		if _, err := fmt.Sscanf(req.GetPagination().GetCursor(), "%d", &offset); err != nil || offset < 0 {
+			return nil, status.Error(codes.InvalidArgument, "invalid cursor (03 §5)")
+		}
+	}
+	pageSize := 20
+	if req.GetPagination() != nil && req.GetPagination().GetPageSize() > 0 {
+		pageSize = int(req.GetPagination().GetPageSize())
+		if pageSize > 100 {
+			pageSize = 100
+		}
+	}
+	if offset > len(recs) { // R43 同型：游标超界钳制
+		offset = len(recs)
+	}
+	end := offset + pageSize
+	if end > len(recs) {
+		end = len(recs)
+	}
+	resp := &v1.ListInviteCodesResponse{Codes: recs[offset:end], ConfigCodes: configCodes}
+	if end < len(recs) {
+		resp.Pagination = &v1.PaginationResponse{NextCursor: fmt.Sprintf("%d", end), HasNext: true, Total: int32(len(recs))}
+	} else {
+		resp.Pagination = &v1.PaginationResponse{Total: int32(len(recs))}
+	}
+	return resp, nil
+}
+
+// RevokeInviteCode — 状态翻转（幂等；重复吊销回放原码）。
+func (h *UserHandler) RevokeInviteCode(ctx context.Context, req *v1.RevokeInviteCodeRequest) (*v1.InviteCode, error) {
+	return withIdempotency(h.idm, req.GetMetadata(), map[string]string{
+		"id": req.GetId(),
+	}, func() (*v1.InviteCode, error) {
+		return h.svc.RevokeInviteCode(req.GetId())
+	})
+}
+
+// DeleteInviteCode — 终态码硬删（幂等缓存重放；护栏 Q14 在 service 层）。
+func (h *UserHandler) DeleteInviteCode(ctx context.Context, req *v1.DeleteInviteCodeRequest) (*emptypb.Empty, error) {
+	return withIdempotency(h.idm, req.GetMetadata(), map[string]string{
+		"id": req.GetId(),
+	}, func() (*emptypb.Empty, error) {
+		if err := h.svc.DeleteInviteCode(req.GetId()); err != nil {
+			return nil, err
+		}
+		return &emptypb.Empty{}, nil
+	})
+}
+
+// GetRegistrationPolicy — 策略只读（无副作用无幂等键需求；网关 /v1/auth 公开面）。
+func (h *UserHandler) GetRegistrationPolicy(ctx context.Context, req *v1.GetRegistrationPolicyRequest) (*v1.GetRegistrationPolicyResponse, error) {
+	return &v1.GetRegistrationPolicyResponse{Mode: h.svc.GetRegistrationPolicy()}, nil
 }

@@ -1,0 +1,4 @@
+# 素材库字节钉死（设计档案 docs/designs/sandbox-materials-umbrella-cache.md I-bytes）：
+# tar.gz 本身是二进制 blob 天然免疫 eol 处理，此规则为第二防御层（MANIFEST.md 等文本
+# 件一并钉 LF——sbom 钉的是 Linux 字节，autocrlf smudge 即 sha 全灭，supply.ps1 经验④）
+assets/sandbox/** -text

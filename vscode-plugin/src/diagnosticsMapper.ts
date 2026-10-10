@@ -1,6 +1,7 @@
 // 纯逻辑：UnifiedFinding → VS Code Diagnostic 描述（不 import vscode，便于单测）。
 // 依据: proto LocationInfo（file_path/start_line/end_line）与 Severity 枚举 L119-126。
 import type { UnifiedFinding } from './types';
+import { verdictSuffix } from './verdictSuffix';
 
 // 诊断严重级：proto Severity 枚举名 → 0-3 标度（Error/Warning/Information 的语义级）
 export const SEVERITY_RANK: Record<string, number> = {
@@ -57,7 +58,7 @@ export function mapFinding(f: UnifiedFinding, lineOverride?: number): MappedDiag
     line: start,
     endLine: end,
     severityRank: severityRank(f.severity),
-    message: `${parts.join(' | ')}（${label}${f.ai_verdict ? ` · AI:${f.ai_verdict}` : ''}）`,
+    message: `${parts.join(' | ')}（${label}${verdictSuffix(f)}）`,
     code: f.cwe_id || f.source_rule_id || f.finding_id,
     source: 'CodeAudit',
   };

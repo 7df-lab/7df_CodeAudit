@@ -52,7 +52,7 @@ def delete_user(user_id):
 `;
 
 async function main() {
-  const base = process.argv[2] || 'http://pve.internal:8080';
+  const base = process.argv[2] || 'http://192.0.2.200:8080';
   const c = new CodeAuditClient(base, store);
   const step = (m) => console.log(`[e2e] ${new Date().toISOString().slice(11, 19)} ${m}`);
   const assert = (cond, msg) => { if (!cond) throw new Error(`断言失败：${msg}`); };

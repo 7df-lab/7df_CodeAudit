@@ -157,11 +157,11 @@ PROJECT_SERVICE_URL=${PROJECT_SERVICE_URL}
 TASK_SERVICE_URL=${TASK_SERVICE_URL}
 RESULT_SERVICE_URL=${RESULT_SERVICE_URL}
 STORAGE_SERVICE_URL=${STORAGE_SERVICE_URL}
-JWT_SECRET=${JWT_SECRET:-ci-test-secret}
+JWT_SECRET=${JWT_SECRET:-ci-secret}
 EOF
     
     # 运行 pytest
-    python3 -m pytest tests/smoke/test_smk6_mode_b_e2e.py -v --tb=short 2>&1 | tee build/evidence/SMK6_smoke_output.txt
+    python3 -m pytest tests/smoke/test_smk6_mode_b_e2e.py -v --tb=short 2>&1 | tee .agent/evidence/SMK6_smoke_output.txt
     
     local exit_code=$?
     

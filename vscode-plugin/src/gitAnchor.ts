@@ -1,6 +1,6 @@
 // gitAnchor.ts — 增量扫描的 git 集成（ADR-225 D5：B 混合路线）。
 //
-// 职责（伞仓 docs/designs/incremental-scan.md §5.1，验收 F16-F18）：
+// 职责（主仓库 docs/designs/incremental-scan.md §5.1，验收 F16-F18）：
 //   F16 锚点采集：vscode.git 内置扩展 API（git 随 VS Code 捆绑，不引新依赖）；
 //        非 git/未激活工作区 → null（不报错不阻塞，扫描退化为纯内容 diff 入口）；
 //        多根工作区取第一个根的仓库（README 钉死口径）；untracked 计入 dirty。

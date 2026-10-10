@@ -39,7 +39,7 @@ type BackendAddrs struct {
 	StorageAddr     string
 	SastAdapterAddr string
 	KnowledgeAddr   string
-	DSHRuntimeAddr    string // DSHRuntimeService（ADR-168 /v1/tasks/{id}/ai-log）
+	RuntimeAddr     string // RuntimeService（ADR-168 /v1/tasks/{id}/ai-log）
 	// CallTimeoutS — 网关→服务调用上界（秒），ADR-137：值在全局配置 gateway.grpc_call_timeout_s
 	CallTimeoutS int
 }
@@ -51,7 +51,7 @@ type Transcoder struct {
 	resultConn  *grpc.ClientConn
 	storageConn *grpc.ClientConn // NotificationService（TP12-T0 路由扩展）
 	adapterConn *grpc.ClientConn // SASTAdapterService（/v1/tools）
-	dshConn     *grpc.ClientConn // DSHRuntimeService（ADR-168）
+	dshConn     *grpc.ClientConn // RuntimeService（ADR-168）
 	callTimeout time.Duration
 }
 
@@ -63,7 +63,7 @@ func NewTranscoder(addrs BackendAddrs) *Transcoder {
 		resultConn:  dial(addrs.ResultAddr),
 		storageConn: dial(addrs.StorageAddr),
 		adapterConn: dial(addrs.SastAdapterAddr),
-		dshConn:     dial(addrs.DSHRuntimeAddr),
+		dshConn:     dial(addrs.RuntimeAddr),
 		callTimeout: time.Duration(addrs.CallTimeoutS) * time.Second, // ADR-137
 	}
 }
@@ -215,8 +215,14 @@ func (t *Transcoder) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch domain {
 	case "auth":
+		// V2.2 (ADR-255): GET /v1/auth/registration-policy — 策略只读公开面（Q10），
+		// 仅 mode 枚举值；与 POST 族并列同段。
+		if r.Method == http.MethodGet && len(rest) == 1 && rest[0] == "registration-policy" {
+			t.registrationPolicy(w, r)
+			return
+		}
 		if r.Method != http.MethodPost || len(rest) != 1 {
-			writeError(w, http.StatusMethodNotAllowed, "auth endpoints are POST /v1/auth/{login|refresh|logout}")
+			writeError(w, http.StatusMethodNotAllowed, "auth endpoints are POST /v1/auth/{login|register|refresh|logout}; GET /v1/auth/registration-policy")
 			return
 		}
 		switch rest[0] {
@@ -238,6 +244,12 @@ func (t *Transcoder) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		t.projects(w, r, rest)
 	case "tasks":
 		t.tasks(w, r, rest)
+	case "agents":
+		// TP20-T2 切换 Agent 收口：清单端点 GET /v1/agents——登录可读（/v1 保护链
+		// 已含 JWT，非 admin 专属——创建页与切换 Modal 同源，计划 §0 权限裁决）
+		t.agents(w, r, rest)
+	case "orchestrations":
+		t.orchestrations(w, r, rest)
 	case "findings":
 		if len(rest) == 1 && rest[0] == "verdict:batch" && r.Method == http.MethodPost {
 			t.verdictBatch(w, r)
@@ -256,6 +268,18 @@ func (t *Transcoder) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		t.inference(w, r, rest)
+	case "workspaces":
+		// 切片3b: workspace 清单（team 上车；admin 面——与 inference 同门禁）
+		if !requireAdmin(w, r) {
+			return
+		}
+		t.workspaces(w, r, rest)
+	case "invites":
+		// V2.2 (ADR-255): 邀请码管理面——生成/吊销/删除/列表全 admin 门禁
+		if !requireAdmin(w, r) {
+			return
+		}
+		t.invites(w, r, rest)
 	default:
 		writeError(w, http.StatusNotImplemented,
 			"route /v1/"+domain+" is not mapped to internal gRPC by gateway (03 §1.1); use gRPC directly")
@@ -288,6 +312,16 @@ func (t *Transcoder) registerUser(w http.ResponseWriter, r *http.Request) {
 	client := pb.NewUserServiceClient(t.projectConn)
 	t.call(w, t.projectConn, "UserService/RegisterUser", func(ctx context.Context) (proto.Message, error) {
 		return client.RegisterUser(ctx, req)
+	})
+}
+
+// registrationPolicy — GET /v1/auth/registration-policy → UserService/GetRegistrationPolicy
+// （V2.2 ADR-255，Q10）。/v1/auth/* 链天然免 JWT：注册页据此自适应（open 隐藏邀请码栏/
+// disabled 入口置灰），根治前端静态文案与实况漂移。仅回 mode 枚举值，无码表无计数。
+func (t *Transcoder) registrationPolicy(w http.ResponseWriter, r *http.Request) {
+	client := pb.NewUserServiceClient(t.projectConn)
+	t.call(w, t.projectConn, "UserService/GetRegistrationPolicy", func(ctx context.Context) (proto.Message, error) {
+		return client.GetRegistrationPolicy(ctx, &pb.GetRegistrationPolicyRequest{})
 	})
 }
 
@@ -332,7 +366,11 @@ func (t *Transcoder) projects(w http.ResponseWriter, r *http.Request, rest []str
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
+	req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
+	// ADR-257: 项目创建=操作面（DEVELOPER+；VIEWER 只读）。
+		if !requireOperator(w, r, "projects (create)") {
+			return
+		}
 		// R91: 创建者自动登记为项目成员（成员制授权的准入面；无身份则无从登记）。
 		// 成员登记失败不回滚创建（幂等键已消耗），留日志 admin 可补。
 		resp, cerr := t.invoke(w, t.projectConn, "ProjectService/CreateProject", func(ctx context.Context) (proto.Message, error) {
@@ -359,13 +397,10 @@ func (t *Transcoder) projects(w http.ResponseWriter, r *http.Request, rest []str
 		}
 		writeJSON(w, http.StatusOK, b)
 	case len(rest) == 0 && r.Method == http.MethodGet:
-		// R91: 无 ID 全量列表=管理面（owner 经成员制访问；服务端 owner 过滤立项后可放宽）
-		if !isAdmin(r) {
-			denyAuthz(w, r, "projects (unscoped list)")
-			return
-		}
+		// ADR-257: 裸列表=审计数据面，认证即读（R91 一期 admin 收紧自此反转）。
 		req := &pb.ListProjectsRequest{}
-		if err := decodeQuery(r, req, "pagination", "filter"); err != nil {
+		// ADR-256: sort 接线（filter 此前已在白名单但后端未实现，本批落地）
+		if err := decodeQuery(r, req, "pagination", "filter", "sort"); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -373,17 +408,14 @@ func (t *Transcoder) projects(w http.ResponseWriter, r *http.Request, rest []str
 			return client.ListProjects(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodGet:
-		// R91: 项目读取=成员或 admin
-		if !t.canAccessProject(w, r, rest[0], false) {
-			return
-		}
+		// ADR-257: 项目读取=认证即读
 		req := &pb.GetProjectRequest{ProjectId: rest[0]}
 		t.call(w, t.projectConn, "ProjectService/GetProject", func(ctx context.Context) (proto.Message, error) {
 			return client.GetProject(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodPut:
-		// R91: 项目写面=管理面（此前任意认证用户可改/删任意项目）
-		if !t.canAccessProject(w, r, rest[0], true) {
+		// ADR-257: 项目更新=操作面 DEVELOPER+（R91 一期 admin-only 放宽；删除仍 admin）
+		if !requireOperator(w, r, "project/"+rest[0]+" (update)") {
 			return
 		}
 		req := &pb.UpdateProjectRequest{}
@@ -400,8 +432,8 @@ func (t *Transcoder) projects(w http.ResponseWriter, r *http.Request, rest []str
 			return client.UpdateProject(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodDelete:
-		// R91: 写面=管理面
-		if !t.canAccessProject(w, r, rest[0], true) {
+		// ADR-257: 删除=管理面（admin only）
+		if !requireAdmin(w, r) {
 			return
 		}
 		req := &pb.DeleteProjectRequest{ProjectId: rest[0]}
@@ -409,17 +441,14 @@ func (t *Transcoder) projects(w http.ResponseWriter, r *http.Request, rest []str
 			return client.DeleteProject(ctx, req)
 		})
 	case len(rest) == 2 && rest[1] == "config" && r.Method == http.MethodGet:
-		// R91: 项目读取=成员或 admin
-		if !t.canAccessProject(w, r, rest[0], false) {
-			return
-		}
+		// ADR-257: 项目配置读取=认证即读
 		req := &pb.GetProjectConfigRequest{ProjectId: rest[0]}
 		t.call(w, t.projectConn, "ProjectService/GetProjectConfig", func(ctx context.Context) (proto.Message, error) {
 			return client.GetProjectConfig(ctx, req)
 		})
 	case len(rest) == 2 && rest[1] == "config" && r.Method == http.MethodPut:
-		// R91: 写面=管理面
-		if !t.canAccessProject(w, r, rest[0], true) {
+		// ADR-257: 配置更新=操作面 DEVELOPER+
+		if !requireOperator(w, r, "project/"+rest[0]+" (config update)") {
 			return
 		}
 		req := &pb.UpdateProjectConfigRequest{}
@@ -437,7 +466,8 @@ func (t *Transcoder) projects(w http.ResponseWriter, r *http.Request, rest []str
 
 // decodeQuery — 把查询串按 protojson 解入消息字段。
 // 标量值（task_id=t-77）自动加引号成 JSON 字符串；对象/数组/字面量按原样透传
-// （如 pagination={"page_size":20}）。非 JSON 标量直传是调用方高频误区（TP12-T3 回归）。
+// （如 pagination={"page_size":20}——示例值，非本服务常量；分页口径依据: 03 §5）。
+// 非 JSON 标量直传是调用方高频误区（TP12-T3 回归）。
 func decodeQuery(r *http.Request, msg proto.Message, fields ...string) error {
 	q := map[string]interface{}{}
 	for _, f := range fields {
@@ -499,26 +529,19 @@ func (t *Transcoder) tasks(w http.ResponseWriter, r *http.Request, rest []string
 			return client.ListScanTasks(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodGet:
-		if !t.canAccessTask(w, r, rest[0]) {
-			return
-		}
+		// ADR-257: 任务读取=认证即读
 		req := &pb.GetScanTaskRequest{TaskId: rest[0]}
 		t.call(w, t.taskConn, "TaskService/GetScanTask", func(ctx context.Context) (proto.Message, error) {
 			return client.GetScanTask(ctx, req)
 		})
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "progress":
-		if !t.canAccessTask(w, r, rest[0]) {
-			return
-		}
+		// ADR-257: 认证即读
 		req := &pb.GetTaskProgressRequest{TaskId: rest[0]}
 		t.call(w, t.taskConn, "TaskService/GetTaskProgress", func(ctx context.Context) (proto.Message, error) {
 			return client.GetTaskProgress(ctx, req)
 		})
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "logs":
-		// ADR-167: 执行日志（增量游标 after_log_id + limit 经 query 透传）
-		if !t.canAccessTask(w, r, rest[0]) {
-			return
-		}
+		// ADR-167: 执行日志（增量游标 after_log_id + limit 经 query 透传）；ADR-257 认证即读
 		req := &pb.GetTaskLogsRequest{TaskId: rest[0]}
 		if v := r.URL.Query().Get("after_log_id"); v != "" {
 			req.AfterLogId = v
@@ -531,25 +554,96 @@ func (t *Transcoder) tasks(w http.ResponseWriter, r *http.Request, rest []string
 		t.call(w, t.taskConn, "TaskService/GetTaskLogs", func(ctx context.Context) (proto.Message, error) {
 			return client.GetTaskLogs(ctx, req)
 		})
+	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "usage":
+		// ADR-247（切片3后半）：任务 usage 计量聚合（task_usage 表，baton
+		// usage.recorded 终态归集投影）；totals+分模型明细；ADR-257 认证即读
+		req := &pb.GetTaskUsageRequest{TaskId: rest[0]}
+		t.call(w, t.taskConn, "TaskService/GetTaskUsage", func(ctx context.Context) (proto.Message, error) {
+			return client.GetTaskUsage(ctx, req)
+		})
+	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "stats":
+		// v0.1.2（2026-10-10 GUI 遍历判例）：任务详情概况实时统计。此前概况计数
+		// 吃报告 JSON 快照（生成时点冻结），人工裁决回写后永不动——实时/快照两种
+		// 口径各归其位：本路由=实时档（findings 表两轴桶），报告页维持快照口径。
+		// GetTaskResultStats 在 result-service，不 经 task-service 中转。ADR-257 认证即读。
+		req := &pb.GetTaskResultStatsRequest{TaskId: rest[0]}
+		t.call(w, t.resultConn, "ResultService/GetTaskResultStats", func(ctx context.Context) (proto.Message, error) {
+			return pb.NewResultServiceClient(t.resultConn).GetTaskResultStats(ctx, req)
+		})
+	case len(rest) == 5 && rest[1] == "graph" && rest[2] == "nodes" && r.Method == http.MethodPost && rest[4] == "message":
+		// v0.5 人机共编辑（graph-engine-v0.5-blackboard-hoc.md §4）：向沙箱内
+		// Agent 追加 user 消息（回合边界生效）；操作面 DEVELOPER+（ADR-257）。NodeId=rest[3]。
+		if !requireOperator(w, r, "task/"+rest[0]+" (graph message)") {
+			return
+		}
+		req := &pb.InjectGraphNodeMessageRequest{}
+		if err := decodeBody(r, req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.TaskId, req.NodeId = rest[0], rest[3]                     // 路径权威（decodeBody 的 protojson 会重置预填字段——TP12-T3 同款）
+		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()} // R4：幂等键网关注入
+		t.call(w, t.dshConn, "RuntimeService/InjectGraphNodeMessage", func(ctx context.Context) (proto.Message, error) {
+			return pb.NewRuntimeServiceClient(t.dshConn).InjectGraphNodeMessage(ctx, req)
+		})
+	case len(rest) == 5 && rest[1] == "graph" && rest[2] == "nodes" && r.Method == http.MethodPost && rest[4] == "reopen":
+		// v0.5 终态节点重开（§2.1）；操作面 DEVELOPER+（ADR-257）。NodeId=rest[3]。
+		if !requireOperator(w, r, "task/"+rest[0]+" (graph reopen)") {
+			return
+		}
+		req := &pb.ReopenGraphNodeRequest{}
+		if err := decodeBody(r, req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.TaskId, req.NodeId = rest[0], rest[3]
+		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
+		t.call(w, t.dshConn, "RuntimeService/ReopenGraphNode", func(ctx context.Context) (proto.Message, error) {
+			return pb.NewRuntimeServiceClient(t.dshConn).ReopenGraphNode(ctx, req)
+		})
+	case len(rest) == 5 && rest[1] == "graph" && rest[2] == "nodes" && r.Method == http.MethodPost && rest[4] == "claim":
+		// v0.5 认领层（§2.1/§5.1 Claim 按钮）：human 占住节点；操作面 DEVELOPER+（ADR-257）。
+		if !requireOperator(w, r, "task/"+rest[0]+" (graph claim)") {
+			return
+		}
+		req := &pb.ClaimGraphNodeRequest{}
+		if err := decodeBody(r, req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.TaskId, req.NodeId = rest[0], rest[3]
+		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
+		t.call(w, t.dshConn, "RuntimeService/ClaimGraphNode", func(ctx context.Context) (proto.Message, error) {
+			return pb.NewRuntimeServiceClient(t.dshConn).ClaimGraphNode(ctx, req)
+		})
+
+	case len(rest) == 5 && rest[1] == "graph" && rest[2] == "nodes" && r.Method == http.MethodDelete && rest[4] == "claim":
+		// v0.5 释放（human release→调度恢复）；操作面 DEVELOPER+（ADR-257）。
+		if !requireOperator(w, r, "task/"+rest[0]+" (graph release)") {
+			return
+		}
+		req := &pb.ReleaseGraphNodeRequest{TaskId: rest[0], NodeId: rest[3],
+			Metadata: &pb.RequestMetadata{RequestId: newRequestID()}}
+		t.call(w, t.dshConn, "RuntimeService/ReleaseGraphNode", func(ctx context.Context) (proto.Message, error) {
+			return pb.NewRuntimeServiceClient(t.dshConn).ReleaseGraphNode(ctx, req)
+		})
+	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "graph":
+		// 切片5+6 暴露批 P1a（2026-09-20）：图执行视图投影（graph.log 回放；
+		// 设计=伞仓 docs/designs/platform-graph-web-exposure.md §1）；非图任务=空态；ADR-257 认证即读
+		req := &pb.GetTaskGraphRequest{TaskId: rest[0]}
+		t.call(w, t.taskConn, "TaskService/GetTaskGraph", func(ctx context.Context) (proto.Message, error) {
+			return client.GetTaskGraph(ctx, req)
+		})
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "snapshot":
 		// ADR-170: 详情页聚合快照——task+progress+logs+ai-log 单口轮询（3s=20/min），
-		// 替代此前 4 个独立轮询器 ~90/min，会吃满 07 §7 单用户限流预算（429 页面冻结）
-		if !t.canAccessTask(w, r, rest[0]) {
-			return
-		}
+		// 替代此前 4 个独立轮询器 ~90/min，会吃满 07 §7 单用户限流预算（429 页面冻结）；ADR-257 认证即读
 		t.taskSnapshot(w, r, rest[0])
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "ws":
-		// ADR-172: WebSocket 秒级推送——升级后服务端 1s 聚合推帧，
-		// 帧结构与 snapshot 同构；前端断线自动回退 snapshot 轮询
-		if !t.canAccessTask(w, r, rest[0]) {
-			return
-		}
+		// ADR-172: WebSocket 秒级推送（人类指令 2026-09-01）——升级后服务端 1s 聚合推帧，
+		// 帧结构与 snapshot 同构；前端断线自动回退 snapshot 轮询；ADR-257 认证即读
 		t.taskWatch(w, r, rest[0])
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "ai-log":
-		// ADR-168: AI 交互日志（沙箱 bridge SSE 原始帧；字节游标增量，任务终态后即最终日志）
-		if !t.canAccessTask(w, r, rest[0]) {
-			return
-		}
+		// ADR-168: AI 交互日志（沙箱 bridge SSE 原始帧；字节游标增量，任务终态后即最终日志）；ADR-257 认证即读
 		req := &pb.GetAIInteractionLogRequest{TaskId: rest[0]}
 		if v := r.URL.Query().Get("cursor"); v != "" {
 			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
@@ -561,46 +655,34 @@ func (t *Transcoder) tasks(w http.ResponseWriter, r *http.Request, rest []string
 				req.MaxBytes = int32(n)
 			}
 		}
-		t.call(w, t.dshConn, "DSHRuntimeService/GetAIInteractionLog", func(ctx context.Context) (proto.Message, error) {
-			client := pb.NewDSHRuntimeServiceClient(t.dshConn)
+		t.call(w, t.dshConn, "RuntimeService/GetAIInteractionLog", func(ctx context.Context) (proto.Message, error) {
+			client := pb.NewRuntimeServiceClient(t.dshConn)
 			return client.GetAIInteractionLog(ctx, req)
 		})
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "source-file":
-		// ADR-195: 任务源码全文读取（发现详情代码上下文全文复核；gateway 本地源树）
-		if !t.canAccessTask(w, r, rest[0]) {
-			return
-		}
+		// ADR-195: 任务源码全文读取（发现详情代码上下文全文复核；gateway 本地源树）；ADR-257 认证即读
 		t.sourceFile(w, r, rest[0])
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "context":
-		// 14号 §7: GetTaskContext（融合/审核视图数据源）
-		if !t.canAccessTask(w, r, rest[0]) {
-			return
-		}
+		// 14号 §7: GetTaskContext（融合/审核视图数据源）；ADR-257 认证即读
 		req := &pb.GetTaskContextRequest{TaskId: rest[0]}
 		t.call(w, t.taskConn, "TaskService/GetTaskContext", func(ctx context.Context) (proto.Message, error) {
 			return client.GetTaskContext(ctx, req)
 		})
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "metrics":
-		// 14号 §7: CalculateMetrics（对比视图；task 维度聚合，ADR-133 口径）
-		if !t.canAccessTask(w, r, rest[0]) {
-			return
-		}
+		// 14号 §7: CalculateMetrics（对比视图；task 维度聚合，ADR-133 口径）；ADR-257 认证即读
 		fclient := pb.NewSASTFusionServiceClient(t.adapterConn)
 		t.call(w, t.adapterConn, "SASTFusionService/CalculateMetrics", func(ctx context.Context) (proto.Message, error) {
 			return fclient.CalculateMetrics(ctx, &pb.CalculateMetricsRequest{TaskId: rest[0]})
 		})
 	case len(rest) == 2 && r.Method == http.MethodGet && rest[1] == "comparison-report":
-		// 14号 §7: GenerateComparisonReport（模式C 对比报告）
-		if !t.canAccessTask(w, r, rest[0]) {
-			return
-		}
+		// 14号 §7: GenerateComparisonReport（模式C 对比报告）；ADR-257 认证即读
 		fclient := pb.NewSASTFusionServiceClient(t.adapterConn)
 		t.call(w, t.adapterConn, "SASTFusionService/GenerateComparisonReport", func(ctx context.Context) (proto.Message, error) {
 			return fclient.GenerateComparisonReport(ctx, &pb.GenerateComparisonReportRequest{TaskId: rest[0]})
 		})
 	case len(rest) == 2 && r.Method == http.MethodPost && rest[1] == "report":
-		// 14号 §7: GenerateReport（10 §3.2 口径）；幂等键网关生成
-		if !t.canAccessTask(w, r, rest[0]) {
+		// 14号 §7: GenerateReport（10 §3.2 口径）；幂等键网关生成；操作面 DEVELOPER+（ADR-257）
+		if !requireOperator(w, r, "task/"+rest[0]+" (report generate)") {
 			return
 		}
 		rclient := pb.NewReportServiceClient(t.resultConn)
@@ -633,10 +715,24 @@ func (t *Transcoder) tasks(w http.ResponseWriter, r *http.Request, rest []string
 			},
 			// ADR-200: 暂停/恢复（AI 交互会话回合闸门；前端按钮互切）
 			"pause": func(ctx context.Context) (proto.Message, error) {
-				return client.PauseTask(ctx, &pb.PauseTaskRequest{TaskId: id})
+				// D2 S2 换手：?agent=<id>（可选）=pause 同时换笔（PAUSED 态限定语义在
+				// engine 侧 transition 成立后执行）
+				return client.PauseTask(ctx, &pb.PauseTaskRequest{
+					TaskId: id, Agent: r.URL.Query().Get("agent"),
+				})
 			},
 			"resume": func(ctx context.Context) (proto.Message, error) {
 				return client.ResumeTask(ctx, &pb.ResumeTaskRequest{TaskId: id})
+			},
+			// TP20-T2 切换 Agent（PAUSED|QUEUED 态）：body {"agent": id}；归属门禁
+			// 与 pause 同面 1:1（操作面门禁在下方统一执行，§0 权限裁决→ADR-257）。
+			"agent": func(ctx context.Context) (proto.Message, error) {
+				req := &pb.SetTaskAgentRequest{TaskId: id}
+				if err := decodeBody(r, req); err != nil {
+					return nil, status.Error(codes.InvalidArgument, err.Error())
+				}
+				req.TaskId = id // R89: 路径身份权威——body task_id 不采信
+				return client.SetTaskAgent(ctx, req)
 			},
 			"complete": func(ctx context.Context) (proto.Message, error) {
 				return client.CompleteTask(ctx, &pb.CompleteTaskRequest{TaskId: id})
@@ -647,8 +743,8 @@ func (t *Transcoder) tasks(w http.ResponseWriter, r *http.Request, rest []string
 			writeError(w, http.StatusNotFound, "unknown task action "+rest[1])
 			return
 		}
-		// R89: 动作归属门禁（路由合法性先行，授权在后——未知动作保持 404 语义）
-		if !t.canAccessTask(w, r, rest[0]) {
+		// ADR-257: 生命周期动作=操作面 DEVELOPER+（路由合法性先行，授权在后——未知动作保持 404 语义）
+		if !requireOperator(w, r, "task/"+rest[0]+" action "+rest[1]) {
 			return
 		}
 		t.call(w, t.taskConn, "TaskService/"+rest[1], fn)
@@ -716,14 +812,15 @@ func (t *Transcoder) taskSnapshot(w http.ResponseWriter, r *http.Request, taskID
 			aiCursor = n
 		}
 	}
+	nodeCursors := parseNodeCursors(r.URL.Query()["node_cursor"]) // 批2：图任务逐节点游标
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		if t.dshConn == nil {
 			return
 		}
-		req := &pb.GetAIInteractionLogRequest{TaskId: taskID, Cursor: aiCursor}
-		if resp, err := pb.NewDSHRuntimeServiceClient(t.dshConn).GetAIInteractionLog(ctx, req); err == nil {
+		req := &pb.GetAIInteractionLogRequest{TaskId: taskID, Cursor: aiCursor, NodeCursors: nodeCursors}
+		if resp, err := pb.NewRuntimeServiceClient(t.dshConn).GetAIInteractionLog(ctx, req); err == nil {
 			aiJSON = marshal(resp)
 		}
 	}()
@@ -756,36 +853,31 @@ func (t *Transcoder) findings(w http.ResponseWriter, r *http.Request, rest []str
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		// R90: 带 task_id → 任务归属；裸列表（无 ID 全量枚举）→ admin
-		if !t.gateTaskScopedList(w, r, req.GetTaskId()) {
-			return
-		}
+		// ADR-257: 发现列表=审计数据面，认证即读（R90 一期收紧自此反转）
 		t.call(w, t.resultConn, "ResultService/ListFindings", func(ctx context.Context) (proto.Message, error) {
 			return client.ListFindings(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodGet:
-		// R90: finding 按 ID → 解析 task → 任务归属
-		if !t.canAccessTaskViaFinding(w, r, rest[0]) {
-			return
-		}
+		// ADR-257: 发现读取=认证即读
 		req := &pb.GetFindingRequest{FindingId: rest[0]}
 		t.call(w, t.resultConn, "ResultService/GetFinding", func(ctx context.Context) (proto.Message, error) {
 			return client.GetFinding(ctx, req)
 		})
 	case len(rest) == 2 && rest[1] == "verdict" && r.Method == http.MethodPut:
 		// 14号 §7 / 10 §3.2: 人工 triage 回写（proto L1240 UpdateVerdict）
-		// R90: verdict 回写=写面，finding → task 归属先行
+		// ADR-257: verdict 回写=写面，维持 owner/admin（R90 判定面不随读面反转）
 		if !t.canAccessTaskViaFinding(w, r, rest[0]) {
 			return
 		}
-		req := &pb.UpdateVerdictRequest{FindingId: rest[0]}
+		req := &pb.UpdateVerdictRequest{}
 		if err := decodeBody(r, req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if req.GetFindingId() == "" {
-			req.FindingId = rest[0]
-		}
+		// 第四轮审计 P1（越权）：decode 后无条件钉死路径身份（R89/R73 纪律，report
+		// 生成/agent 动作等同型路由同款）——protojson.Unmarshal 会 Reset 预填值，
+		// body 携带 finding_id 即可越权改写他人 finding（原"仅空时回填"是旁路）。
+		req.FindingId = rest[0]
 		t.call(w, t.resultConn, "ResultService/UpdateVerdict", func(ctx context.Context) (proto.Message, error) {
 			return client.UpdateVerdict(ctx, req)
 		})
@@ -967,32 +1059,23 @@ func (t *Transcoder) reports(w http.ResponseWriter, r *http.Request, rest []stri
 	switch {
 	case len(rest) == 0 && r.Method == http.MethodGet:
 		req := &pb.ListReportsRequest{}
-		// task_id 为 proto L1264 顶层字段（任务↔报告双向导航）
-		if err := decodeQuery(r, req, "task_id", "pagination"); err != nil {
+		// task_id 为 proto L1264 顶层字段（任务↔报告双向导航）；ADR-256: filter/sort 接线
+		if err := decodeQuery(r, req, "task_id", "pagination", "filter", "sort"); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		// R90: 带 task_id → 任务归属；裸列表 → admin
-		if !t.gateTaskScopedList(w, r, req.GetTaskId()) {
-			return
-		}
+		// ADR-257: 报告列表=审计数据面，认证即读（R90 一期收紧自此反转）
 		t.call(w, t.resultConn, "ReportService/ListReports", func(ctx context.Context) (proto.Message, error) {
 			return client.ListReports(ctx, req)
 		})
 	case len(rest) == 1 && r.Method == http.MethodGet:
-		// R90: 报告按 ID → 解析 task → 任务归属
-		if !t.canAccessTaskViaReport(w, r, rest[0]) {
-			return
-		}
+		// ADR-257: 报告读取=认证即读
 		req := &pb.GetReportRequest{ReportId: rest[0]}
 		t.call(w, t.resultConn, "ReportService/GetReport", func(ctx context.Context) (proto.Message, error) {
 			return client.GetReport(ctx, req)
 		})
 	case len(rest) == 2 && rest[1] == "download" && r.Method == http.MethodGet:
-		// R90: 下载同报告归属
-		if !t.canAccessTaskViaReport(w, r, rest[0]) {
-			return
-		}
+		// ADR-257: 下载=读面，认证即读
 		// 14号 §7 / §3.4: 下载=网关聚合 DownloadReport 服务端流（proto L1270-L1271）
 		t.downloadReport(w, rest[0])
 	default:
@@ -1069,15 +1152,19 @@ func (t *Transcoder) tools(w http.ResponseWriter, r *http.Request, rest []string
 }
 
 // inference — /v1/inference/*（推理 provider/路由管理面，ADR-217）。全路由 admin
-// 门禁（serveHTTP 分发处统一 requireAdmin）。透传 DSHRuntimeService → manager →
-// OpenShell 网关；workspace 不对外暴露（dsh-runtime 从全局配置注入）；credentials
-// 只进不出（任何响应不回显凭据）。写操作幂等键由网关生成注入（R4）。
+// 门禁（serveHTTP 分发处统一 requireAdmin）。透传 RuntimeService → manager →
+// OpenShell 网关；workspace 请求级可选（ADR-247 切片3后半：per-team 命名空间
+// 配置入口——GET/DELETE 经 ?workspace= query，PUT/POST 经 body 字段；缺省=
+// runtime 全局配置注入）；credentials 只进不出（任何响应不回显凭据）。
+// 写操作幂等键由网关生成注入（R4）。
 func (t *Transcoder) inference(w http.ResponseWriter, r *http.Request, rest []string) {
-	client := pb.NewDSHRuntimeServiceClient(t.dshConn)
+	client := pb.NewRuntimeServiceClient(t.dshConn)
+	ws := r.URL.Query().Get("workspace") // ADR-247: 空=全局缺省（与 body 字段二选一，query 优先）
 	switch {
 	case len(rest) == 1 && rest[0] == "providers" && r.Method == http.MethodGet:
-		t.call(w, t.dshConn, "DSHRuntimeService/ListInferenceProviders", func(ctx context.Context) (proto.Message, error) {
-			return client.ListInferenceProviders(ctx, &pb.ListInferenceProvidersRequest{})
+		req := &pb.ListInferenceProvidersRequest{Workspace: ws}
+		t.call(w, t.dshConn, "RuntimeService/ListInferenceProviders", func(ctx context.Context) (proto.Message, error) {
+			return client.ListInferenceProviders(ctx, req)
 		})
 	case len(rest) == 1 && rest[0] == "providers" && r.Method == http.MethodPost:
 		req := &pb.UpsertInferenceProviderRequest{}
@@ -1085,13 +1172,16 @@ func (t *Transcoder) inference(w http.ResponseWriter, r *http.Request, rest []st
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if ws != "" {
+			req.Workspace = ws // query 覆盖 body（与路径名权威同型）
+		}
 		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
-		t.call(w, t.dshConn, "DSHRuntimeService/UpsertInferenceProvider", func(ctx context.Context) (proto.Message, error) {
+		t.call(w, t.dshConn, "RuntimeService/UpsertInferenceProvider", func(ctx context.Context) (proto.Message, error) {
 			return client.UpsertInferenceProvider(ctx, req)
 		})
 	case len(rest) == 2 && rest[0] == "providers" && r.Method == http.MethodGet:
-		req := &pb.GetInferenceProviderRequest{Name: rest[1]}
-		t.call(w, t.dshConn, "DSHRuntimeService/GetInferenceProvider", func(ctx context.Context) (proto.Message, error) {
+		req := &pb.GetInferenceProviderRequest{Name: rest[1], Workspace: ws}
+		t.call(w, t.dshConn, "RuntimeService/GetInferenceProvider", func(ctx context.Context) (proto.Message, error) {
 			return client.GetInferenceProvider(ctx, req)
 		})
 	case len(rest) == 2 && rest[0] == "providers" && r.Method == http.MethodPut:
@@ -1101,21 +1191,26 @@ func (t *Transcoder) inference(w http.ResponseWriter, r *http.Request, rest []st
 			return
 		}
 		req.Name = rest[1] // 路径名权威：覆盖 body 同名字段
+		if ws != "" {
+			req.Workspace = ws // ADR-247
+		}
 		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
-		t.call(w, t.dshConn, "DSHRuntimeService/UpsertInferenceProvider", func(ctx context.Context) (proto.Message, error) {
+		t.call(w, t.dshConn, "RuntimeService/UpsertInferenceProvider", func(ctx context.Context) (proto.Message, error) {
 			return client.UpsertInferenceProvider(ctx, req)
 		})
 	case len(rest) == 2 && rest[0] == "providers" && r.Method == http.MethodDelete:
 		req := &pb.DeleteInferenceProviderRequest{
-			Name:     rest[1],
-			Metadata: &pb.RequestMetadata{RequestId: newRequestID()},
+			Name:      rest[1],
+			Workspace: ws, // ADR-247
+			Metadata:  &pb.RequestMetadata{RequestId: newRequestID()},
 		}
-		t.call(w, t.dshConn, "DSHRuntimeService/DeleteInferenceProvider", func(ctx context.Context) (proto.Message, error) {
+		t.call(w, t.dshConn, "RuntimeService/DeleteInferenceProvider", func(ctx context.Context) (proto.Message, error) {
 			return client.DeleteInferenceProvider(ctx, req)
 		})
 	case len(rest) == 1 && rest[0] == "route" && r.Method == http.MethodGet:
-		t.call(w, t.dshConn, "DSHRuntimeService/GetInferenceRoute", func(ctx context.Context) (proto.Message, error) {
-			return client.GetInferenceRoute(ctx, &pb.GetInferenceRouteRequest{})
+		req := &pb.GetInferenceRouteRequest{Workspace: ws}
+		t.call(w, t.dshConn, "RuntimeService/GetInferenceRoute", func(ctx context.Context) (proto.Message, error) {
+			return client.GetInferenceRoute(ctx, req)
 		})
 	case len(rest) == 1 && rest[0] == "route" && r.Method == http.MethodPut:
 		req := &pb.SetInferenceRouteRequest{}
@@ -1123,13 +1218,79 @@ func (t *Transcoder) inference(w http.ResponseWriter, r *http.Request, rest []st
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if ws != "" {
+			req.Workspace = ws // query 覆盖 body（与路径名权威同型）
+		}
 		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
-		t.call(w, t.dshConn, "DSHRuntimeService/SetInferenceRoute", func(ctx context.Context) (proto.Message, error) {
+		t.call(w, t.dshConn, "RuntimeService/SetInferenceRoute", func(ctx context.Context) (proto.Message, error) {
 			return client.SetInferenceRoute(ctx, req)
 		})
 	default:
 		writeError(w, http.StatusNotFound,
 			"use GET|POST /v1/inference/providers, GET|PUT|DELETE /v1/inference/providers/{name}, GET|PUT /v1/inference/route")
+	}
+}
+
+// agents — GET /v1/agents（TP20-T2 切换 Agent 收口）：runtime ListAgents 只读
+// 转发（descriptor 注册表投影；读 RPC 无幂等键，03 §2）。清单=静态注册表，无
+// 可用性探测（运行期装配校验兜底，Modal 文案如实——计划 §6 不做清单）。
+func (t *Transcoder) agents(w http.ResponseWriter, r *http.Request, rest []string) {
+	if r.Method == http.MethodGet && len(rest) == 0 {
+		client := pb.NewRuntimeServiceClient(t.dshConn)
+		t.call(w, t.dshConn, "RuntimeService/ListAgents", func(ctx context.Context) (proto.Message, error) {
+			return client.ListAgents(ctx, &pb.ListAgentsRequest{})
+		})
+		return
+	}
+	writeError(w, http.StatusNotFound, "use GET /v1/agents")
+}
+
+// workspaces — /v1/workspaces（切片3b：team 上车；扩面含建/删区写通道）。
+func (t *Transcoder) workspaces(w http.ResponseWriter, r *http.Request, rest []string) {
+	client := pb.NewRuntimeServiceClient(t.dshConn)
+	switch {
+	case len(rest) == 0 && r.Method == http.MethodPost:
+		req := &pb.CreateWorkspaceRequest{}
+		if err := decodeBody(r, req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
+		t.call(w, t.dshConn, "RuntimeService/CreateWorkspace", func(ctx context.Context) (proto.Message, error) {
+			return client.CreateWorkspace(ctx, req)
+		})
+	case len(rest) == 1 && r.Method == http.MethodDelete:
+		req := &pb.DeleteWorkspaceRequest{
+			Name:     rest[0], // 路径名权威
+			Metadata: &pb.RequestMetadata{RequestId: newRequestID()},
+		}
+		t.call(w, t.dshConn, "RuntimeService/DeleteWorkspace", func(ctx context.Context) (proto.Message, error) {
+			return client.DeleteWorkspace(ctx, req)
+		})
+	case len(rest) == 0 && r.Method == http.MethodGet:
+		limit, offset := 0, 0
+		if v := r.URL.Query().Get("limit"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				writeError(w, http.StatusBadRequest, "query 'limit' must be a non-negative integer")
+				return
+			}
+			limit = n
+		}
+		if v := r.URL.Query().Get("offset"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				writeError(w, http.StatusBadRequest, "query 'offset' must be a non-negative integer")
+				return
+			}
+			offset = n
+		}
+		req := &pb.ListWorkspacesRequest{Limit: int32(limit), Offset: int32(offset)}
+		t.call(w, t.dshConn, "RuntimeService/ListWorkspaces", func(ctx context.Context) (proto.Message, error) {
+			return client.ListWorkspaces(ctx, req)
+		})
+	default:
+		writeError(w, http.StatusNotFound, "use GET/POST /v1/workspaces, DELETE /v1/workspaces/{name}")
 	}
 }
 
@@ -1182,14 +1343,19 @@ func (t *Transcoder) notifications(w http.ResponseWriter, r *http.Request, rest 
 		// List 本人未读（user_id 强制 JWT，归属天然安全）→ 逐条 MarkNotificationRead。
 		// 单条失败不整批失败：计数如实返回，残留未读由前端失效重查自然呈现。
 		userID, _ := r.Context().Value(middleware.UserIDKey).(string)
-		owned, lerr := client.ListNotifications(r.Context(), &pb.ListNotificationsRequest{UserId: userID, UnreadOnly: true})
+		// 第四轮审计 P2：组合操作超时上界（单条 /read 的 ADR-212⑩/R63 同型）——
+		// List+N 次串行 Mark 裸用请求 ctx，后端慢时长期悬挂；http.Server 未设
+		// WriteTimeout，无任何兜底。
+		ctx, cancel := context.WithTimeout(r.Context(), t.callTimeout)
+		defer cancel()
+		owned, lerr := client.ListNotifications(ctx, &pb.ListNotificationsRequest{UserId: userID, UnreadOnly: true})
 		if lerr != nil {
 			writeError(w, http.StatusBadGateway, "list unread failed: "+lerr.Error())
 			return
 		}
 		marked := 0
 		for _, n := range owned.GetNotifications() {
-			if _, err := client.MarkNotificationRead(r.Context(), &pb.MarkNotificationReadRequest{NotificationId: n.GetNotificationId()}); err == nil {
+			if _, err := client.MarkNotificationRead(ctx, &pb.MarkNotificationReadRequest{NotificationId: n.GetNotificationId()}); err == nil {
 				marked++
 			}
 		}
@@ -1198,5 +1364,51 @@ func (t *Transcoder) notifications(w http.ResponseWriter, r *http.Request, rest 
 	default:
 		writeError(w, http.StatusNotFound,
 			"use GET /v1/notifications, POST /v1/notifications/read-all, POST /v1/notifications/{id}/read")
+	}
+}
+
+// ---- invites（V2.2 ADR-255；admin 门禁在域路由入口 requireAdmin） ----
+
+// invites — /v1/invites 面四路由：
+//
+//	GET    /v1/invites?include_terminal=  → List（缺省仅有效码；config 注入码只读随行）
+//	POST   /v1/invites                    → Create（幂等键网关生成）
+//	POST   /v1/invites/{id}/revoke        → Revoke（幂等键网关生成）
+//	DELETE /v1/invites/{id}               → Delete（终态护栏在 service 层；幂等键网关生成）
+func (t *Transcoder) invites(w http.ResponseWriter, r *http.Request, rest []string) {
+	client := pb.NewUserServiceClient(t.projectConn)
+	switch {
+	case len(rest) == 0 && r.Method == http.MethodGet:
+		req := &pb.ListInviteCodesRequest{}
+		if err := decodeQuery(r, req, "pagination", "include_terminal"); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		t.call(w, t.projectConn, "UserService/ListInviteCodes", func(ctx context.Context) (proto.Message, error) {
+			return client.ListInviteCodes(ctx, req)
+		})
+	case len(rest) == 0 && r.Method == http.MethodPost:
+		req := &pb.CreateInviteCodeRequest{}
+		if err := decodeBody(r, req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.Metadata = &pb.RequestMetadata{RequestId: newRequestID()}
+		req.CreatedBy = callerID(r) // JWT sub（审查批：多管理员归属，替代服务端恒 "admin"）
+		t.call(w, t.projectConn, "UserService/CreateInviteCode", func(ctx context.Context) (proto.Message, error) {
+			return client.CreateInviteCode(ctx, req)
+		})
+	case len(rest) == 2 && rest[1] == "revoke" && r.Method == http.MethodPost:
+		req := &pb.RevokeInviteCodeRequest{Id: rest[0], Metadata: &pb.RequestMetadata{RequestId: newRequestID()}}
+		t.call(w, t.projectConn, "UserService/RevokeInviteCode", func(ctx context.Context) (proto.Message, error) {
+			return client.RevokeInviteCode(ctx, req)
+		})
+	case len(rest) == 1 && r.Method == http.MethodDelete:
+		req := &pb.DeleteInviteCodeRequest{Id: rest[0], Metadata: &pb.RequestMetadata{RequestId: newRequestID()}}
+		t.call(w, t.projectConn, "UserService/DeleteInviteCode", func(ctx context.Context) (proto.Message, error) {
+			return client.DeleteInviteCode(ctx, req)
+		})
+	default:
+		writeError(w, http.StatusNotFound, "invites: GET /v1/invites | POST /v1/invites | POST /v1/invites/{id}/revoke | DELETE /v1/invites/{id}")
 	}
 }

@@ -26,7 +26,7 @@ const gateway = useFakeGateway(routes);
 const session = vi.hoisted(() => ({
   user: { user_id: 'u-1', username: 'admin', email: '', role: 'ROLE_ADMIN', must_change_password: false },
 }));
-vi.mock('../auth/session', () => ({
+vi.mock('../auth/session', () => ({ useCanWrite: () => true,
   useSession: () => ({ user: session.user }),
 }));
 
@@ -65,7 +65,7 @@ describe('UsersPage（V2.1 列表）', () => {
     });
   });
 
-  it('停用即 PUT 全量 user（USER_STATE_INACTIVE）——经 Popconfirm 二次确认', async () => {
+  it('停用即 PUT 全量 user（USER_STATE_INACTIVE）——经 Popconfirm 二次确认（设计整改 P2）', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('admin')).toBeTruthy());
     // antd 两字按钮自动插空格（停用→停 用），用正则匹配
@@ -84,7 +84,7 @@ describe('UsersPage（V2.1 列表）', () => {
     expect((put.body as { user: { state: string } }).user.state).toBe('USER_STATE_INACTIVE');
   });
 
-  it('重置密码弹一次性临时密码窗（仅一次显示）——经 Popconfirm 二次确认', async () => {
+  it('重置密码弹一次性临时密码窗（仅一次显示）——经 Popconfirm 二次确认（设计整改 P2）', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('admin')).toBeTruthy());
     fireEvent.click(screen.getAllByRole('button', { name: '重置密码' })[0]);
@@ -98,7 +98,7 @@ describe('UsersPage（V2.1 列表）', () => {
     expect(req.url).toBe('/v1/users/u-1/password:reset');
   });
 
-  it('新建用户 POST /v1/users（角色缺省 DEVELOPER）', async () => {
+  it('新建用户 POST /v1/users（角色默认 DEVELOPER）', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('admin')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: '新建用户' }));
@@ -113,7 +113,7 @@ describe('UsersPage（V2.1 列表）', () => {
     expect((post.body as { role?: string }).role).toBe('ROLE_DEVELOPER');
   });
 
-  // (P3-d)：管理员建号密码规则与服务端 validatePasswordStrength 同源——纯数字 8 位
+  // B5(P3-d)：管理员建号密码规则与服务端 validatePasswordStrength 同源——纯数字 8 位
   // 此前被前端放行、服务端 400（须字母+数字）且通用文案无法指导修正
   it('B5: 建号密码纯数字被前端校验拦截（字母+数字同源规则），不发创建请求', async () => {
     renderPage();
@@ -152,8 +152,8 @@ describe('UsersPage（V2.1 列表）', () => {
   });
 });
 
-// ===== （审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询 =====
-describe('UsersPage 无限查询分页', () => {
+// ===== B3-1（审计修复）：单 cursor useQuery → useInfiniteQuery 无限查询 =====
+describe('UsersPage 无限查询分页（B3-1）', () => {
   const u1 = { user_id: 'u-1', username: 'admin', email: 'a@x', state: 'USER_STATE_ACTIVE', role: 'ROLE_ADMIN', must_change_password: false, created_at: null };
   const u2 = { user_id: 'u-9', username: 'second-page-user', email: 's@x', state: 'USER_STATE_ACTIVE', role: 'ROLE_DEVELOPER', must_change_password: false, created_at: null };
 

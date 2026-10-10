@@ -66,7 +66,7 @@ def run_bandit():
         return list(resp.findings)
 
 
-# ADR-175: rulescan-only 基线入口随 ai-inference 删除（RuleScan 已内嵌 dsh-runtime 仅作降级兜底）
+# ADR-175: rulescan-only 基线入口随 ai-inference 删除（RuleScan 已内嵌 runtime 仅作降级兜底）
 def match(findings):
     """计算 TP/FP/FN（±2 行窗口 + CWE 语义匹配；先过评估前置过滤）。"""
     findings = eval_scope(findings)
@@ -125,7 +125,7 @@ def test_f1_evaluation_report(services_up=None):
     print(f"\n[F1] bandit-only:    TP={tp} FP={fp} FN={fn} P={p} R={r} F1={f1}")
     assert f1 >= 0.85, f"bandit-only F1={f1} < 0.85 (07 §1)"
 
-    # ADR-175: rulescan-only 基线段已随 ai-inference 删除（RuleScan 仅作 dsh-runtime 降级兜底，无独立入口）
+    # ADR-175: rulescan-only 基线段已随 ai-inference 删除（RuleScan 仅作 runtime 降级兜底，无独立入口）
     # 归档证据
     ev = {
         "evaluation": "TP11-T2 F1 mechanism (local sample; DiverseVul blocked as recorded; ADR-175 rulescan baseline removed)",
@@ -133,6 +133,6 @@ def test_f1_evaluation_report(services_up=None):
         "bandit": {"tp": tp, "fp": fp, "fn": fn, "precision": p, "recall": r, "f1": f1},
         "ground_truth_size": len(GROUND_TRUTH),
     }
-    os.makedirs("build/evidence", exist_ok=True)
-    with open("build/evidence/F1_e2e_report.json", "w") as f:
+    os.makedirs(".agent/evidence", exist_ok=True)
+    with open(".agent/evidence/F1_e2e_report.json", "w") as f:
         json.dump(ev, f, indent=2)

@@ -1,0 +1,6 @@
+{"type":"graph.node_declared","seq":1,"time":"2026-09-20T10:00:00Z","data":{"declaredBy":"pack","from":[],"intent":"初扫注入面：SQL 注入与硬编码凭据","nodeId":"n001","type":"executor"}}
+{"type":"graph.node_started","seq":2,"time":"2026-09-20T10:00:00Z","data":{"nodeId":"n001","sessionId":"g-n001","turnRef":"g-n001"}}
+{"type":"graph.node_result","seq":3,"time":"2026-09-20T10:00:00Z","data":{"nodeId":"n001","outcome":"completed","resultRef":"3 处发现（B608×2/B105）","usageEstimate":{"turns":3}}}
+{"type":"graph.plan_triggered","seq":4,"time":"2026-09-20T10:00:00Z","data":{"detail":"n001 报告可疑残面，重规划复核节点","trigger":"new_evidence"}}
+{"type":"graph.paused","seq":5,"time":"2026-09-20T10:00:00Z","data":{"openNodeIds":["n002"],"plannerMark":1,"reason":"handoff"}}
+{"type":"graph.converged","seq":6,"time":"2026-09-20T10:00:00Z","data":{"openRemaining":0,"summary":"open 排空且无新态势：completed=1 failed=0 rejected=0"}}

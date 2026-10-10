@@ -5,10 +5,12 @@ package service
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"math/big"
 	"regexp"
 
+	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -16,6 +18,32 @@ import (
 	v1 "github.com/codeaudit/proto-gen"
 	"github.com/codeaudit/services/project-service/internal/repo"
 )
+
+// pgUniqueViolation — lib/pq 23505（unique_violation）判定。TP19-T7：users 表
+// username/email 列带 UNIQUE（repo/mirror_pg.go DDL），双副本并发注册时 PG 为
+// 唯一性权威——本地内存各自通过不代表全局唯一。
+// 依据: roadmap TP19-T7 ②；03 §3 ALREADY_EXISTS 口径。
+func pgUniqueViolation(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && string(pqErr.Code) == "23505"
+}
+
+// mirrorCreateUser — 建号写穿（TP19-T7 收口 RegisterUser/CreateUser 两处同型块）：
+// PG 侧唯一冲突（并发同名，本地未见）=回滚本地插入并按 AlreadyExists 上抛；
+// 其余写穿失败维持 best-effort（ADR-250：PG 故障=中间件故障域，不反噬本地成功）。
+func (s *UserService) mirrorCreateUser(rec *repo.UserRecord) error {
+	if s.mirror == nil {
+		return nil
+	}
+	if err := s.mirror.UpsertUser(rec); err != nil {
+		if pgUniqueViolation(err) {
+			s.store.DeleteUser(rec.User.GetUserId())
+			return status.Error(codes.AlreadyExists, "username or email already exists")
+		}
+		mirrorErr("user-create", rec.User.GetUserId(), err)
+	}
+	return nil
+}
 
 // 账号安全策略常量（07 §账号安全，ADR-205 提案行；改动须先改 07 再同步此处引用）。
 const (
@@ -103,13 +131,16 @@ func newUserID() string { return "user-" + generateID() }
 
 // RegisterUser — 自助注册（幂等缓存由 handler 层承载）；成功返回建号用户，
 // 令牌对由 handler 复用 LoginResponse 语义签发（注册即登录，ADR-205）。
-// 角色固定 ROLE_DEVELOPER（自注册不可自封 admin）。
+// 角色按邀请码落地（ADR-257）：码带 VIEWER→VIEWER，其余（含旧码/静态配置码）→
+// DEVELOPER；自注册不可自封 admin（create 侧已拒发 ADMIN 码，此处仅认 VIEWER 特判）。
 func (s *UserService) RegisterUser(username, email, password, inviteCode string) (*v1.User, error) {
 	switch s.registrationMode() {
 	case "disabled":
 		return nil, status.Error(codes.FailedPrecondition, "registration is disabled")
 	case "invitation":
-		if !s.inviteCodeValid(inviteCode) {
+		// V2.2 (ADR-255)：DB 码 ∪ 静态配置码合并校验（廉价预检挡在建号前；原子消费
+		// 在 CreateUser 成功后——归属可记 user_id，消费失败回滚建号）。
+		if !s.inviteCodeLooksValid(inviteCode) {
 			return nil, status.Error(codes.FailedPrecondition, "invalid or missing invite code")
 		}
 	}
@@ -126,12 +157,22 @@ func (s *UserService) RegisterUser(username, email, password, inviteCode string)
 			Username: username,
 			Email:    email,
 			State:    v1.User_USER_STATE_ACTIVE,
-			Role:     v1.Role_ROLE_DEVELOPER,
+			Role:     s.inviteCodeRole(inviteCode),
 		},
 		Password: hash,
 	}
 	if !s.store.CreateUser(rec) {
 		return nil, status.Error(codes.AlreadyExists, "username or email already exists")
+	}
+	if s.registrationMode() == "invitation" && !s.consumeInviteCode(inviteCode, rec.User.GetUserId()) {
+		// 并发用尽最后一额度的竞态败者：回滚建号（预检通过≠额度仍在）。
+		s.store.DeleteUser(rec.User.GetUserId())
+		return nil, status.Error(codes.FailedPrecondition, "invalid or missing invite code")
+	}
+	if err := s.mirrorCreateUser(rec); err != nil { // TP19-T7：PG 唯一冲突→回滚+AlreadyExists
+		// 该罕见路径（并发同名）已消费的码留痕不退还（ADR-255 注记：浪费可接受，退款
+		// 需二次 CAS 反转，复杂度不成比例）。
+		return nil, err
 	}
 	return rec.User, nil
 }
@@ -142,7 +183,7 @@ func (s *UserService) ListUsers(state v1.User_UserState, usernameContains string
 }
 
 // CreateUser — 管理员直建：must_change_password 置真（临时密码语义），角色由请求指定
-//（UNSPECIFIED 缺省 DEVELOPER）。自注册不可指定角色，此为管理通道专属。
+// （UNSPECIFIED 缺省 DEVELOPER）。自注册不可指定角色，此为管理通道专属。
 func (s *UserService) CreateUser(username, email, password string, role v1.Role) (*v1.User, error) {
 	if err := validateNewUser(username, email, password); err != nil {
 		return nil, err
@@ -168,12 +209,15 @@ func (s *UserService) CreateUser(username, email, password string, role v1.Role)
 	if !s.store.CreateUser(rec) {
 		return nil, status.Error(codes.AlreadyExists, "username or email already exists")
 	}
+	if err := s.mirrorCreateUser(rec); err != nil { // TP19-T7：PG 唯一冲突→回滚+AlreadyExists
+		return nil, err
+	}
 	return rec.User, nil
 }
 
 // ChangePassword — 自助改密：校验旧密码，成功即清除 must_change_password。
 func (s *UserService) ChangePassword(userID, oldPassword, newPassword string) error {
-	rec, ok := s.store.GetUser(userID)
+	rec, ok := s.userByIDWithFallback(userID) // TP19-T7：读回落（跨副本注册用户可改密）
 	if !ok {
 		return status.Errorf(codes.NotFound, "user %s not found", userID)
 	}
@@ -190,6 +234,11 @@ func (s *UserService) ChangePassword(userID, oldPassword, newPassword string) er
 	rec.Password = hash
 	rec.User.MustChangePassword = false
 	s.store.UpdateUser(rec)
+	if s.mirror != nil {
+		if err := s.mirror.UpsertUser(rec); err != nil {
+			mirrorErr("user-update", rec.User.GetUserId(), err)
+		}
+	}
 	s.invalidateSessions(userID) // R87: 改密成功=旧会话纪元推进（被盗 refresh 即刻失效）
 	return nil
 }
@@ -197,7 +246,7 @@ func (s *UserService) ChangePassword(userID, oldPassword, newPassword string) er
 // ResetPassword — 管理员重置：服务端生成一次性临时密码（不落日志，仅响应返回一次），
 // must_change_password 置真强制首登改密。
 func (s *UserService) ResetPassword(userID string) (string, error) {
-	rec, ok := s.store.GetUser(userID)
+	rec, ok := s.userByIDWithFallback(userID) // TP19-T7：读回落（跨副本用户可被重置）
 	if !ok {
 		return "", status.Errorf(codes.NotFound, "user %s not found", userID)
 	}
@@ -212,6 +261,11 @@ func (s *UserService) ResetPassword(userID string) (string, error) {
 	rec.Password = hash
 	rec.User.MustChangePassword = true
 	s.store.UpdateUser(rec)
+	if s.mirror != nil {
+		if err := s.mirror.UpsertUser(rec); err != nil {
+			mirrorErr("user-update", rec.User.GetUserId(), err)
+		}
+	}
 	s.invalidateSessions(userID) // R87: 管理员重置=受害者全部既有 refresh 即刻失效
 	return temp, nil
 }

@@ -10,9 +10,9 @@ import { API_ERROR_EVENT, API_OK_EVENT, type ApiErrorCode } from '../api/apiEven
 // 路由级错误页：404 兜底路由 / 显式引用
 export function ErrorPage({ code, hideAction }: { code: 403 | 404 | 501; hideAction?: boolean }) {
   const navigate = useNavigate();
-  // 403/404 共用同一「返回项目页」出口；hideAction 供 ApiErrorOverlay 收敛双出口（见下方 overlay 注释）
-  const backToProjects = hideAction ? undefined : (
-    <Button type="primary" onClick={() => navigate('/projects')}>返回项目页</Button>
+  // ADR-257: 出口统一「返回总览」（总览对所有角色可达；/projects 对 VIEWER 曾必 403）
+  const backHome = hideAction ? undefined : (
+    <Button type="primary" onClick={() => navigate('/')}>返回总览</Button>
   );
   if (code === 403) {
     return (
@@ -20,7 +20,7 @@ export function ErrorPage({ code, hideAction }: { code: 403 | 404 | 501; hideAct
         status="403"
         title="权限不足"
         subTitle="当前账号无权访问该资源或执行该操作。"
-        extra={backToProjects}
+        extra={backHome}
       />
     );
   }
@@ -35,7 +35,7 @@ export function ErrorPage({ code, hideAction }: { code: 403 | 404 | 501; hideAct
           </Typography.Text>
           {!hideAction && (
             <div style={{ marginTop: 16 }}>
-              <Button onClick={() => navigate('/projects')}>返回项目页</Button>
+              <Button onClick={() => navigate('/')}>返回总览</Button>
             </div>
           )}
         </Card>
@@ -47,7 +47,7 @@ export function ErrorPage({ code, hideAction }: { code: 403 | 404 | 501; hideAct
       status="404"
       title="404"
       subTitle="页面不存在或已被移除。"
-      extra={backToProjects}
+      extra={backHome}
     />
   );
 }
@@ -91,8 +91,8 @@ export function ApiErrorOverlay() {
           {/* B5: hideAction——overlay 自带「关闭并返回项目页」（会清 pageCode）；ErrorPage 自带按钮只 navigate 不清遮罩，双按钮并存时上层点击无反馈形似失灵 */}
           <ErrorPage code={pageCode} hideAction />
           <div style={{ textAlign: 'center' }}>
-            <Button type="link" onClick={() => { setPageCode(null); navigate('/projects'); }}>
-              关闭并返回项目页
+            <Button type="link" onClick={() => { setPageCode(null); navigate('/'); }}>
+              关闭并返回总览
             </Button>
           </div>
         </div>

@@ -16,22 +16,24 @@ import (
 // seedGroup — 构造一个 SAST+AI 同位置合并组的后 dedup 状态（FusedFindings 仅 primary）。
 func seedGroup() (*FusionContext, *pb.UnifiedFinding) {
 	sast := &pb.UnifiedFinding{
-		FindingId:  "sast-1",
-		SourceTool: "bandit",
-		Confidence: 0.85,
-		Severity:   pb.Severity_SEVERITY_HIGH,
-		AiVerdict:  pb.AIVerdict_AI_VERDICT_TRUE_POSITIVE, // SAST 侧此前的裁决
+		FindingId:        "sast-1",
+		SourceTool:       "bandit",
+		Confidence:       0.85,
+		Severity:         pb.Severity_SEVERITY_HIGH,
+		VerdictDirection: pb.VerdictDirection_VERDICT_DIRECTION_TRUE, // SAST 侧此前的裁决
+		VerdictTier:      pb.VerdictTier_VERDICT_TIER_DEFINITE,
 	}
 	ai := &pb.UnifiedFinding{
-		FindingId:  "ai-1",
-		SourceTool: "ai_agent",
-		Confidence: 0.92,
-		Severity:   pb.Severity_SEVERITY_MEDIUM, // 与 SAST 相左
-		AiVerdict:  pb.AIVerdict_AI_VERDICT_FALSE_POSITIVE,
+		FindingId:        "ai-1",
+		SourceTool:       "ai_agent",
+		Confidence:       0.92,
+		Severity:         pb.Severity_SEVERITY_MEDIUM, // 与 SAST 相左
+		VerdictDirection: pb.VerdictDirection_VERDICT_DIRECTION_FALSE,
+		VerdictTier:      pb.VerdictTier_VERDICT_TIER_DEFINITE,
 	}
 	ctx := &FusionContext{
-		FilteredSAST: []*pb.UnifiedFinding{sast},
-		FilteredAI:   []*pb.UnifiedFinding{ai},
+		FilteredSAST:  []*pb.UnifiedFinding{sast},
+		FilteredAI:    []*pb.UnifiedFinding{ai},
 		FusedFindings: []*pb.UnifiedFinding{sast}, // dedup 后：仅 primary
 		Groups: []*pb.MergeGroup{{
 			GroupId:          "group_1",
@@ -51,8 +53,8 @@ func TestConflictResolve_SeesAIMember_AndWritesBackVerdict(t *testing.T) {
 	if len(out.Conflicts) == 0 {
 		t.Fatalf("verdict mismatch must produce ConflictItem (pre-fix: AI member invisible, Conflicts empty)")
 	}
-	if sast.GetAiVerdict() != pb.AIVerdict_AI_VERDICT_FALSE_POSITIVE {
-		t.Fatalf("use_ai_verdict write-back missing: %v", sast.GetAiVerdict())
+	if sast.GetVerdictDirection() != pb.VerdictDirection_VERDICT_DIRECTION_FALSE {
+		t.Fatalf("use_ai_verdict write-back missing: %v", sast.GetVerdictDirection())
 	}
 }
 
@@ -79,9 +81,10 @@ func TestPipeline_ConflictAndConfidenceLive(t *testing.T) {
 	}
 	ai := &pb.UnifiedFinding{
 		FindingId: "a-1", SourceTool: "ai_agent", Confidence: 0.9,
-		Severity: pb.Severity_SEVERITY_MEDIUM, // 与 SAST 分歧 → severity_mismatch
-		AiVerdict: pb.AIVerdict_AI_VERDICT_FALSE_POSITIVE,
-		Location: &pb.LocationInfo{FilePath: "src/a.py", StartLine: 10, EndLine: 20},
+		Severity:         pb.Severity_SEVERITY_MEDIUM, // 与 SAST 分歧 → severity_mismatch
+		VerdictDirection: pb.VerdictDirection_VERDICT_DIRECTION_FALSE,
+		VerdictTier:      pb.VerdictTier_VERDICT_TIER_DEFINITE,
+		Location:         &pb.LocationInfo{FilePath: "src/a.py", StartLine: 10, EndLine: 20},
 	}
 	res, err := p.Execute(context.Background(), &pb.FuseResultsRequest{TaskId: "t"}, []*pb.UnifiedFinding{sast}, []*pb.UnifiedFinding{ai})
 	if err != nil {

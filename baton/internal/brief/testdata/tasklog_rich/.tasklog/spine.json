@@ -1,0 +1,33 @@
+{
+  "task": "T-1042",
+  "updated_at_seq": 11,
+  "goal": "修复订单回调重复扣款",
+  "constraints": [
+    "不动支付网关SDK",
+    "回归测试全绿"
+  ],
+  "facts": [
+    {
+      "text": "回调入口 callback.go:42 无幂等键，网关重试即重复扣款",
+      "evidence": [6, 7]
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D-1",
+      "text": "在回调入口加幂等键（order_id 派生）",
+      "status": "adopted"
+    },
+    {
+      "id": "D-2",
+      "text": "升级支付网关 SDK 由其统一去重",
+      "status": "rejected"
+    }
+  ],
+  "open": [
+    "幂等键存 Redis 还是 DB 尚未定",
+    "回归测试集是否需补回调重放用例"
+  ],
+  "hypothesis": "网关侧重试风暴是重复扣款的触发源，待网关日志证实",
+  "next": "先写幂等键单测（红），再实现 callback.go 补丁"
+}

@@ -19,8 +19,9 @@ type MockFindingRepository struct {
 	GetByIDFn                    func(id string) (*model.Finding, error)
 	UpdateFn                     func(finding *model.Finding) error
 	DeleteFn                     func(id string) error
-	ListFn                       func(lastID string, limit int, taskID string, verdict string) ([]*model.Finding, string, error)
-	ListByVerdictFn              func(verdict string, lastID string, limit int) ([]*model.Finding, string, error)
+	ListFn                       func(lastID string, limit int, taskID string, direction string, tier string) ([]*model.Finding, string, error)
+	CountFn                      func(taskID string, direction string, tier string) (int, error)
+	ListByVerdictFn              func(direction string, tier string, lastID string, limit int) ([]*model.Finding, string, error)
 	GetByRequestIDAndFindingIDFn func(requestID string, findingID string) (*model.Finding, error)
 	GetStatsByTaskIDFn           func(taskID string) (*model.ResultStats, error)
 	CreateFeedbackFn             func(feedback *model.FindingFeedback) error
@@ -55,16 +56,23 @@ func (m *MockFindingRepository) Delete(id string) error {
 	return nil
 }
 
-func (m *MockFindingRepository) List(lastID string, limit int, taskID string, verdict string) ([]*model.Finding, string, error) {
+func (m *MockFindingRepository) List(lastID string, limit int, taskID string, direction string, tier string) ([]*model.Finding, string, error) {
 	if m.ListFn != nil {
-		return m.ListFn(lastID, limit, taskID, verdict)
+		return m.ListFn(lastID, limit, taskID, direction, tier)
 	}
 	return nil, "", nil
 }
 
-func (m *MockFindingRepository) ListByVerdict(verdict string, lastID string, limit int) ([]*model.Finding, string, error) {
+func (m *MockFindingRepository) Count(taskID string, direction string, tier string) (int, error) {
+	if m.CountFn != nil {
+		return m.CountFn(taskID, direction, tier)
+	}
+	return 0, nil
+}
+
+func (m *MockFindingRepository) ListByVerdict(direction string, tier string, lastID string, limit int) ([]*model.Finding, string, error) {
 	if m.ListByVerdictFn != nil {
-		return m.ListByVerdictFn(verdict, lastID, limit)
+		return m.ListByVerdictFn(direction, tier, lastID, limit)
 	}
 	return nil, "", nil
 }
@@ -140,6 +148,48 @@ func TestCreateFinding(t *testing.T) {
 	}
 	if resp.GetFinding().GetFindingId() != "finding-1" {
 		t.Errorf("Expected finding ID 'finding-1', got '%s'", resp.GetFinding().GetFindingId())
+	}
+}
+
+// TestFindingTitleCweRoundTrip — v0.1.2 持久化补齐契约（2026-10-10 GUI 遍历经验：
+// title/cwe_id 模型层有、表无列，落库即丢读回恒空——发现列只剩按钮、CWE 列恒 —）。
+// 锁三面：CreateFinding 写入两字段；GetFinding 回读两字段；BatchCreate 同口径。
+func TestFindingTitleCweRoundTrip(t *testing.T) {
+	var stored *model.Finding
+	mockRepo := &MockFindingRepository{
+		CreateFn: func(f *model.Finding) error { stored = f; return nil },
+		GetByIDFn: func(id string) (*model.Finding, error) {
+			if stored != nil && stored.ID == id {
+				return stored, nil
+			}
+			return nil, repository.ErrNotFound
+		},
+	}
+	service := NewResultServiceImpl(mockRepo)
+
+	in := &pb.UnifiedFinding{
+		FindingId: "finding-tc", TaskId: "task-1",
+		SourceTool: "ai_agent", SourceRuleId: "dsh-headless",
+		Title: "SQL 注入：user_id 拼接", CweId: "CWE-89",
+		Severity: pb.Severity_SEVERITY_HIGH, Description: "desc",
+		Location: &pb.LocationInfo{FilePath: "app.py", StartLine: 16},
+	}
+	_, err := service.CreateFinding(context.Background(), &pb.CreateFindingRequest{
+		Metadata: &pb.RequestMetadata{RequestId: "req-tc"}, Finding: in,
+	})
+	if err != nil {
+		t.Fatalf("CreateFinding: %v", err)
+	}
+	if stored.Title != "SQL 注入：user_id 拼接" || stored.CWE != "CWE-89" {
+		t.Errorf("落库丢失: title=%q cwe=%q", stored.Title, stored.CWE)
+	}
+
+	got, err := service.GetFinding(context.Background(), &pb.GetFindingRequest{FindingId: "finding-tc"})
+	if err != nil {
+		t.Fatalf("GetFinding: %v", err)
+	}
+	if got.GetFinding().GetTitle() != "SQL 注入：user_id 拼接" || got.GetFinding().GetCweId() != "CWE-89" {
+		t.Errorf("回读丢失: title=%q cwe=%q", got.GetFinding().GetTitle(), got.GetFinding().GetCweId())
 	}
 }
 
@@ -308,7 +358,7 @@ func TestSubmitFindingFeedbackIdempotent(t *testing.T) {
 // TestListFindingsWithCursor - 依据: 03 §5 cursor 分页
 func TestListFindingsWithCursor(t *testing.T) {
 	mockRepo := &MockFindingRepository{
-		ListFn: func(lastID string, limit int, taskID string, verdict string) ([]*model.Finding, string, error) {
+		ListFn: func(lastID string, limit int, taskID string, direction string, tier string) ([]*model.Finding, string, error) {
 			return []*model.Finding{
 				{ID: "finding-1", TaskID: "task-1", CreatedAt: time.Now(), UpdatedAt: time.Now()},
 				{ID: "finding-2", TaskID: "task-1", CreatedAt: time.Now(), UpdatedAt: time.Now()},
@@ -343,6 +393,33 @@ func TestListFindingsWithCursor(t *testing.T) {
 	}
 }
 
+// TestListFindingsTotalContract — pagination.total 契约（2026-10-10 GUI 遍历经验：
+// total 恒 0 时 web「共 0 条」与实体行同屏矛盾，且 protojson 的 0 非 nullish 绕过
+// 前端回退）。锁三点：ListFindings 填 total；Count 过滤轴与调用方一致（task 轴）；
+// ListByVerdict 的 total 随 direction 轴收缩。
+func TestListFindingsTotalContract(t *testing.T) {
+	mockRepo := &MockFindingRepository{
+		ListFn: func(lastID string, limit int, taskID, direction, tier string) ([]*model.Finding, string, error) {
+			return []*model.Finding{{ID: "finding-1", TaskID: "task-1"}}, "", nil
+		},
+		CountFn: func(taskID, direction, tier string) (int, error) {
+			if taskID != "task-1" || direction != "" || tier != "" {
+				t.Errorf("Count axes mismatch: taskID=%q direction=%q tier=%q", taskID, direction, tier)
+			}
+			return 6, nil
+		},
+	}
+	service := NewResultServiceImpl(mockRepo)
+
+	resp, err := service.ListFindings(context.Background(), &pb.ListFindingsRequest{TaskId: "task-1"})
+	if err != nil {
+		t.Fatalf("ListFindings: %v", err)
+	}
+	if resp.Pagination.GetTotal() != 6 {
+		t.Errorf("Expected pagination.total=6, got %d", resp.Pagination.GetTotal())
+	}
+}
+
 // TestDeleteFinding - 依据: codeaudit_common.proto L924
 func TestDeleteFinding(t *testing.T) {
 	mockRepo := &MockFindingRepository{
@@ -371,15 +448,15 @@ func TestUpdateVerdict(t *testing.T) {
 	mockRepo := &MockFindingRepository{
 		GetByIDFn: func(id string) (*model.Finding, error) {
 			return &model.Finding{
-				ID:        "finding-1",
-				TaskID:    "task-1",
-				ToolName:  "semgrep",
-				RuleID:    "rule-1",
-				Severity:  "SEVERITY_HIGH",
-				Message:   "SQL injection vulnerability",
-				Verdict:   "AI_VERDICT_UNSPECIFIED",
-				CreatedAt: time.Now(),
-				UpdatedAt: time.Now(),
+				ID:               "finding-1",
+				TaskID:           "task-1",
+				ToolName:         "semgrep",
+				RuleID:           "rule-1",
+				Severity:         "SEVERITY_HIGH",
+				Message:          "SQL injection vulnerability",
+				VerdictDirection: "VERDICT_DIRECTION_UNSPECIFIED",
+				CreatedAt:        time.Now(),
+				UpdatedAt:        time.Now(),
 			}, nil
 		},
 		UpdateFn: func(finding *model.Finding) error {
@@ -390,7 +467,7 @@ func TestUpdateVerdict(t *testing.T) {
 
 	req := &pb.UpdateVerdictRequest{
 		FindingId:  "finding-1",
-		Verdict:    pb.AIVerdict_AI_VERDICT_TRUE_POSITIVE,
+		Direction:  pb.VerdictDirection_VERDICT_DIRECTION_TRUE,
 		Confidence: 0.95,
 		Reasoning:  "Confirmed by manual review",
 	}
@@ -421,8 +498,8 @@ func TestGetTaskResultStats(t *testing.T) {
 					"SEVERITY_LOW":    2,
 				},
 				ByVerdict: map[string]int32{
-					"AI_VERDICT_TRUE_POSITIVE":  6,
-					"AI_VERDICT_FALSE_POSITIVE": 4,
+					"TRUE_DEFINITE":  6,
+					"FALSE_DEFINITE": 4,
 				},
 			}, nil
 		},
@@ -452,7 +529,7 @@ func TestGetTaskResultStats(t *testing.T) {
 // TestExportFindings - 依据: codeaudit_common.proto L932
 func TestExportFindings(t *testing.T) {
 	mockRepo := &MockFindingRepository{
-		ListFn: func(lastID string, limit int, taskID string, verdict string) ([]*model.Finding, string, error) {
+		ListFn: func(lastID string, limit int, taskID string, direction string, tier string) ([]*model.Finding, string, error) {
 			return []*model.Finding{
 				{ID: "finding-1", TaskID: "task-1", CreatedAt: time.Now(), UpdatedAt: time.Now()},
 				{ID: "finding-2", TaskID: "task-1", CreatedAt: time.Now(), UpdatedAt: time.Now()},
@@ -482,17 +559,17 @@ func TestExportFindings(t *testing.T) {
 // TestGetFindingsByVerdict - 依据: codeaudit_common.proto L930
 func TestGetFindingsByVerdict(t *testing.T) {
 	mockRepo := &MockFindingRepository{
-		ListByVerdictFn: func(verdict string, lastID string, limit int) ([]*model.Finding, string, error) {
+		ListByVerdictFn: func(direction string, tier string, lastID string, limit int) ([]*model.Finding, string, error) {
 			return []*model.Finding{
-				{ID: "finding-1", TaskID: "task-1", Verdict: verdict, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+				{ID: "finding-1", TaskID: "task-1", VerdictDirection: direction, VerdictTier: tier, CreatedAt: time.Now(), UpdatedAt: time.Now()},
 			}, "", nil
 		},
 	}
 	service := NewResultServiceImpl(mockRepo)
 
 	req := &pb.GetFindingsByVerdictRequest{
-		TaskId:  "task-1",
-		Verdict: pb.AIVerdict_AI_VERDICT_TRUE_POSITIVE,
+		TaskId:    "task-1",
+		Direction: pb.VerdictDirection_VERDICT_DIRECTION_TRUE,
 		Pagination: &pb.PaginationRequest{
 			PageSize: 20,
 		},
@@ -517,7 +594,7 @@ func TestGetFindingsByVerdict(t *testing.T) {
 func TestListFindingsCursorRoundTrip(t *testing.T) {
 	var seenLastID string
 	mockRepo := &MockFindingRepository{
-		ListFn: func(lastID string, limit int, taskID string, verdict string) ([]*model.Finding, string, error) {
+		ListFn: func(lastID string, limit int, taskID string, direction string, tier string) ([]*model.Finding, string, error) {
 			seenLastID = lastID
 			now := time.Now()
 			if lastID == "" { // 第一页
@@ -561,8 +638,8 @@ func TestListFindingsCursorRoundTrip(t *testing.T) {
 // stubProducer 记录事件发布调用（验证 verdict 事件链真实接线）。
 type stubProducer struct{ events []string }
 
-func (p *stubProducer) PublishVerdictUpdated(ctx context.Context, finding *model.Finding, oldVerdict string, updatedBy string) error {
-	p.events = append(p.events, finding.ID+":"+oldVerdict+"->"+finding.Verdict)
+func (p *stubProducer) PublishVerdictUpdated(ctx context.Context, finding *model.Finding, oldDirection string, oldTier string, updatedBy string) error {
+	p.events = append(p.events, finding.ID+":"+oldDirection+"/"+oldTier+"->"+finding.VerdictDirection+"/"+finding.VerdictTier)
 	return nil
 }
 
@@ -573,21 +650,21 @@ func TestUpdateVerdictPublishesEvent(t *testing.T) {
 	prod := &stubProducer{}
 	svc.SetEventProducer(prod)
 
-	f := &model.Finding{ID: "f-ev-1", TaskID: "t1", ToolName: "bandit", RuleID: "B101", Severity: "HIGH", Verdict: "AI_VERDICT_NOT_REVIEWED"}
+	f := &model.Finding{ID: "f-ev-1", TaskID: "t1", ToolName: "bandit", RuleID: "B101", Severity: "HIGH", VerdictDirection: "VERDICT_DIRECTION_UNSPECIFIED", VerdictTier: "VERDICT_TIER_UNSPECIFIED"}
 	if err := repo.Create(f); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.UpdateVerdict(context.Background(), &pb.UpdateVerdictRequest{
-		FindingId: "f-ev-1", Verdict: pb.AIVerdict_AI_VERDICT_TRUE_POSITIVE, Reasoning: "verified by llm",
+		FindingId: "f-ev-1", Direction: pb.VerdictDirection_VERDICT_DIRECTION_TRUE, Reasoning: "verified by llm",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(prod.events) != 1 || prod.events[0] != "f-ev-1:AI_VERDICT_NOT_REVIEWED->AI_VERDICT_TRUE_POSITIVE" {
+	if len(prod.events) != 1 || prod.events[0] != "f-ev-1:VERDICT_DIRECTION_UNSPECIFIED/VERDICT_TIER_UNSPECIFIED->VERDICT_DIRECTION_TRUE/VERDICT_TIER_DEFINITE" {
 		t.Fatalf("verdict event not published correctly: %v", prod.events)
 	}
 	// unchanged verdict → no event
 	if _, err := svc.UpdateVerdict(context.Background(), &pb.UpdateVerdictRequest{
-		FindingId: "f-ev-1", Verdict: pb.AIVerdict_AI_VERDICT_TRUE_POSITIVE}); err != nil {
+		FindingId: "f-ev-1", Direction: pb.VerdictDirection_VERDICT_DIRECTION_TRUE}); err != nil {
 		t.Fatal(err)
 	}
 	if len(prod.events) != 1 {
@@ -618,7 +695,7 @@ func TestBatchUpdateFindings_FusionPatch(t *testing.T) {
 	repo := repository.NewMemoryFindingRepository()
 	svc := NewResultServiceImpl(repo)
 	for _, id := range []string{"f-a", "f-b", "f-c"} {
-		if err := repo.Create(&model.Finding{ID: id, TaskID: "t1", ToolName: "bandit", RuleID: "B1", Severity: "HIGH", Verdict: "AI_VERDICT_NOT_REVIEWED"}); err != nil {
+		if err := repo.Create(&model.Finding{ID: id, TaskID: "t1", ToolName: "bandit", RuleID: "B1", Severity: "HIGH", VerdictDirection: "VERDICT_DIRECTION_UNSPECIFIED"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -693,13 +770,14 @@ func TestFixSuggestionFieldsRoundTrip(t *testing.T) {
 	in := &pb.UnifiedFinding{
 		FindingId: "t-rt-sbx-1", TaskId: "t-rt", SourceTool: "ai_agent",
 		SourceRuleId: "dsh-headless", Severity: pb.Severity_SEVERITY_CRITICAL,
-		Description:     "SQL 注入",
-		AiVerdict:       pb.AIVerdict_AI_VERDICT_LIKELY_TRUE,
-		AiReasoning:     "[DSH-sandbox] 拼接",
-		AiFixSuggestion: "## 修复说明\n参数化查询",
-		DiffPatch:       patch,
-		AiConfidence:    0.95,
-		Location:        &pb.LocationInfo{FilePath: "vuln_fix_demo.py", StartLine: 6},
+		Description:      "SQL 注入",
+		VerdictDirection: pb.VerdictDirection_VERDICT_DIRECTION_TRUE,
+		VerdictTier:      pb.VerdictTier_VERDICT_TIER_LIKELY,
+		AiReasoning:      "[DSH-sandbox] 拼接",
+		AiFixSuggestion:  "## 修复说明\n参数化查询",
+		DiffPatch:        patch,
+		AiConfidence:     0.95,
+		Location:         &pb.LocationInfo{FilePath: "vuln_fix_demo.py", StartLine: 6},
 	}
 	resp, err := svc.BatchCreateFindings(context.Background(), &pb.BatchCreateFindingsRequest{
 		Metadata: &pb.RequestMetadata{RequestId: "req-rt-1"},

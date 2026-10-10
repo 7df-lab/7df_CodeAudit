@@ -1,4 +1,4 @@
-// buildFindingsCsv 纯函数回归（2026-09-09 对标竞品 CSV 导出）
+// buildFindingsCsv 纯函数回归
 import { describe, expect, it } from 'vitest';
 import { buildFindingsCsv } from '../findings/csv';
 import type { UnifiedFinding } from '../api/types';
@@ -7,7 +7,7 @@ function row(over: Partial<UnifiedFinding>): UnifiedFinding {
   return {
     finding_id: 'f-1', title: 'SQL 注入', severity: 'SEVERITY_HIGH', cwe_id: 'CWE-89',
     source_tool: 'bandit', location: { file_path: 'src/app.py', start_line: 88 },
-    ai_verdict: 'AI_VERDICT_FALSE_POSITIVE', ai_confidence: 0.8, created_at: '2026-09-09T02:00:00Z',
+    verdict_direction: 'VERDICT_DIRECTION_FALSE', verdict_tier: 'VERDICT_TIER_DEFINITE', ai_confidence: 0.8, created_at: '2026-09-09T02:00:00Z',
     ...over,
   } as UnifiedFinding;
 }
@@ -46,7 +46,7 @@ describe('buildFindingsCsv', () => {
   });
 
   it('空位置/未判定如实输出空字段', () => {
-    const csv = buildFindingsCsv([row({ location: undefined, ai_verdict: 'AI_VERDICT_UNSPECIFIED' })]);
+    const csv = buildFindingsCsv([row({ location: undefined, verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED' })]);
     const lines = csv.slice(1).split('\r\n');
     const cells = lines[1].split(',');
     expect(cells[5]).toBe(''); // 文件路径空
@@ -54,7 +54,7 @@ describe('buildFindingsCsv', () => {
     expect(lines[1]).toContain('未判定');
   });
 
-  // （审计修复）：CSV 公式注入中和——= / + / - / @ 开头字段前置单引号，
+  // B4-3（审计修复）：CSV 公式注入中和——= / + / - / @ 开头字段前置单引号，
   // Excel/LibreOffice/WPS 打开时不按公式求值（=cmd|DDE、@SUM 等执行面）。
   it('B4-3: =/+/-/@ 开头字段前置单引号；正常字段不受影响', () => {
     const csv = buildFindingsCsv([

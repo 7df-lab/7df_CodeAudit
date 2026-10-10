@@ -1,4 +1,4 @@
-// （2026-09-13）签名元素回归：Source→Sink 证据链组件。
+// 设计整改 P3签名元素回归：Source→Sink 证据链组件。
 // 规则：≥2 步才成"链"（单点不渲染）；首=源（青）/末=汇（红）/中间灰；chip 可点选定位。
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';

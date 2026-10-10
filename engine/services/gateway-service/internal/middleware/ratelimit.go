@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// 07 §7 限流100req/min（运行值来自 configs/codeaudit.yaml gateway.rate_limit_per_min）
-const RateLimitPerMinute = 100
+// 07 §7 限流100req/min（2026-09-10  50→100；运行值来自 configs/codeaudit.yaml
+// gateway.rate_limit_per_min——ADR-137 起代码零缺省，旧常量已随 R138 死代码清理删除）
 
 // tokenBucket implements a token bucket rate limiter
 type tokenBucket struct {

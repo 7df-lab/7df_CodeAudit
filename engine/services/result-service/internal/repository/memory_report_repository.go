@@ -3,6 +3,7 @@ package repository
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -80,37 +81,56 @@ func (m *MemoryReportRepository) GetReportByRequestID(requestID string) (*model.
 	return nil, fmt.Errorf("not found")
 }
 
-func (m *MemoryReportRepository) ListReports(lastID string, limit int, taskID string) ([]*model.Report, string, error) {
+func (m *MemoryReportRepository) ListReports(q ListReportsQuery) ([]*model.Report, int, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	// ADR-142: 报告中心新→旧（插入序倒序）。游标 lastID = 上页最后一条 ID，
-	// 从其插入位置之前（更旧）继续。
-	start := len(m.order) - 1
-	if lastID != "" {
-		for i, v := range m.order {
-			if v == lastID {
-				start = i - 1
-				break
-			}
-		}
-	}
-	out := []*model.Report{}
-	next := ""
-	for idx := start; idx >= 0; idx-- {
-		r := m.reports[m.order[idx]]
-		if taskID != "" && !strings.EqualFold(r.TaskID, taskID) {
+	// ADR-256：过滤（task_id/format）→排序（白名单键）→offset 切片；total=过滤后总数。
+	filtered := make([]*model.Report, 0, len(m.order))
+	for _, id := range m.order {
+		r := m.reports[id]
+		if q.TaskID != "" && !strings.EqualFold(r.TaskID, q.TaskID) {
 			continue
 		}
-		out = append(out, func() *model.Report { c := *r; return &c }())
-		if len(out) >= limit {
-			next = r.ID
-			break
+		if q.Format != "" && r.Format != q.Format {
+			continue
 		}
+		filtered = append(filtered, r)
 	}
-	return out, next, nil
+	sort.Slice(filtered, func(i, j int) bool {
+		a, b := filtered[i], filtered[j]
+		// 键三分支（小于/大于/相等）各自定向；等键落 id 同向决胜——两分支写法
+		// （less!=desc 提前返回）在 a>b 时误入决胜分支，非严格弱序出乱序（测试实证）。
+		var aLess, bLess bool
+		switch q.SortBy {
+		case "task_id":
+			aLess, bLess = a.TaskID < b.TaskID, b.TaskID < a.TaskID
+		case "format":
+			aLess, bLess = a.Format < b.Format, b.Format < a.Format
+		case "generated_at":
+			aLess, bLess = a.CreatedAt.Before(b.CreatedAt), b.CreatedAt.Before(a.CreatedAt)
+		default: // report_id（缺省，旧口径）
+			aLess, bLess = a.ID < b.ID, b.ID < a.ID
+		}
+		if aLess {
+			return !q.SortDesc
+		}
+		if bLess {
+			return q.SortDesc
+		}
+		return (a.ID < b.ID) != q.SortDesc // 等键决胜：id 同向，稳定序
+	})
+	total := len(filtered)
+	offset := q.Offset
+	if offset > total {
+		offset = total
+	}
+	end := offset + q.Limit
+	if end > total {
+		end = total
+	}
+	return filtered[offset:end], total, nil
 }
 
-// 内置模板集（与 Postgres 实现的 report_templates 种子语义一致，proto L1268）
 var builtinTemplates = []*model.ReportTemplate{
 	{ID: "tpl-summary", Name: "融合审计摘要", Description: "融合报告模板：统计+误报+AI独有发现"},
 	{ID: "tpl-comparison", Name: "对比报告", Description: "模式C四象限对比模板（04 §3.3）"},

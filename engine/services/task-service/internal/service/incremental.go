@@ -1,12 +1,13 @@
 // incremental.go — 增量扫描核心（ADR-225）。
 //
-// 设计依据: 伞仓 docs/designs/incremental-scan.md（v5）：
-//   §4.2 基线选定（同项目最近 COMPLETED 且源码可达；显式指定创建时已校验）
-//   §4.3 内容 diff（两侧剥壳对齐 → 文件级 sha256 → changed/deleted）
-//   §4.4 快照回写任务自身（重试不重算，ADR-203 哲学延续）
-//   §4.7 增量 unified diff 生成（AI 聚焦提示词素材，D3）
-//   §4.8 降级矩阵（无基线/基线不可达/diff 失败 → 记 incremental_degraded_reason 后全量继续）
-//   D5   diff_hint 交叉核对——客户端 git 提示与服务端结果不一致仅记任务日志，不作依据。
+// 设计依据: 主仓库 docs/designs/incremental-scan.md（v5）：
+//
+//	§4.2 基线选定（同项目最近 COMPLETED 且源码可达；显式指定创建时已校验）
+//	§4.3 内容 diff（两侧剥壳对齐 → 文件级 sha256 → changed/deleted）
+//	§4.4 快照回写任务自身（重试不重算，ADR-203 哲学延续）
+//	§4.7 增量 unified diff 生成（AI 聚焦提示词素材，D3）
+//	§4.8 降级矩阵（无基线/基线不可达/diff 失败 → 记 incremental_degraded_reason 后全量继续）
+//	D5   diff_hint 交叉核对——客户端 git 提示与服务端结果不一致仅记任务日志，不作依据。
 //
 // 依赖现状: 源码树按任务隔离且终态保留（archive.go 解包于 uploads-<task_id>/unpacked，
 // repo_fetch clone 于 <task_id>）；本模块只在 Prepare 瞬间读一次基线树，产物全部
@@ -33,7 +34,7 @@ import (
 
 const (
 	// incrementalDiffFileName — 大 patch 落项目树的文件名（ADR-225 §4.7）：
-	// dsh-runtime 写入、随 tar 进沙箱、prompt 指路；diff 遍历排除同名文件，
+	// runtime 写入、随 tar 进沙箱、prompt 指路；diff 遍历排除同名文件，
 	// 防其混入下一轮基线对比。
 	incrementalDiffFileName = ".codeaudit-incremental.diff"
 
@@ -420,7 +421,7 @@ func (s *TaskServiceImpl) selectBaseline(task *pb.ScanTask) *pb.ScanTask {
 }
 
 // rehydrateBaselineTar — 重物化层②（ADR-225 §4.2/S5）：基线任务的树 tar 锚点
-//（config.tree_tar_file_id，trees/<id>.tar.gz 剥壳根快照）→ 下载解包 scratch。
+// （config.tree_tar_file_id，trees/<id>.tar.gz 剥壳根快照）→ 下载解包 scratch。
 // tar 即剥壳根，无需再剥；失败返回 err 由调用者降级到层③。
 func (s *TaskServiceImpl) rehydrateBaselineTar(ctx context.Context, b *pb.ScanTask, tarFileID, taskID string) (string, func(), error) {
 	storageAddr := envOr("CODEAUDIT_STORAGE_ADDR", "")
@@ -601,7 +602,7 @@ func (s *TaskServiceImpl) runIncrementalDiff(ctx context.Context, taskID, newPat
 	cur.DeletedFiles = deleted
 	cur.DiffSource = "content"
 	s.appendLogLocked(taskID, pb.TaskLogLevel_TASK_LOG_LEVEL_INFO, "task",
-		fmt.Sprintf("增量扫描：基线 %s（changed=%d deleted=%d）", baseline.GetTaskId(), len(changed), len(deleted)))
+		fmt.Sprintf("增量扫描：基线 %s（changed=%d deleted=%d）", baseline.GetTaskId(), len(changed), len(deleted)), "")
 	s.persistTaskLocked(cur)
 	notify := cur.GetTaskId()
 	s.mu.Unlock()
@@ -643,7 +644,7 @@ func (s *TaskServiceImpl) degradeIncremental(taskID, reason string, inc *orchest
 	}
 	cur.Config["incremental_degraded_reason"] = reason
 	s.appendLogLocked(taskID, pb.TaskLogLevel_TASK_LOG_LEVEL_WARN, "task",
-		fmt.Sprintf("增量不可用，已降级全量（%s）", reason))
+		fmt.Sprintf("增量不可用，已降级全量（%s）", reason), "")
 	s.persistTaskLocked(cur)
 	s.hub.notify(taskID)
 	log.Printf("[task %s] incremental degraded: %s", taskID, reason)
@@ -674,13 +675,9 @@ func (s *TaskServiceImpl) crossCheckHint(taskID string, changed, deleted []strin
 		if len(fields) < 2 || len(fields[0]) < 1 {
 			continue
 		}
-		// git name-status: A/M/D/Rxx <path> [newpath]；R 视为删旧+增新
-		paths := fields[1:]
-		switch fields[0][0] {
-		case 'R':
-			paths = fields[1:] // old + new 都在
-		}
-		for _, p := range paths {
+		// git name-status: A/M/D/Rxx <path> [newpath]；R 的 old+new 都在 fields[1:]，
+		// 一并视为服务端未见即失配（无特判分支）
+		for _, p := range fields[1:] {
 			np := normalizeRepoPath(p)
 			if np != "" && !server[np] {
 				mismatches = append(mismatches, np)
@@ -697,5 +694,5 @@ func (s *TaskServiceImpl) crossCheckHint(taskID string, changed, deleted []strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.appendLogLocked(taskID, pb.TaskLogLevel_TASK_LOG_LEVEL_WARN, "task",
-		fmt.Sprintf("客户端 git 提示与服务端 diff 不一致（以服务端为准）：%s", strings.Join(mismatches, ", ")))
+		fmt.Sprintf("客户端 git 提示与服务端 diff 不一致（以服务端为准）：%s", strings.Join(mismatches, ", ")), "")
 }

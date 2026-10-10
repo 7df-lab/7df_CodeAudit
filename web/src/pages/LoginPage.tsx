@@ -1,10 +1,27 @@
-// 登录页（14号 §3.2 P0； AuthLayout 统一认证壳+品牌块+注册互链）
+// 登录页（14号 §3.2 P0；设计整改 P3: AuthLayout 统一认证壳+品牌块+注册互链）
 import { Alert, Form, Input, Button, Typography, Spin } from 'antd';
 import { Link, Navigate, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { getRegistrationPolicy } from '../api/client';
 import { useSession } from '../auth/session';
 import { useState } from 'react';
 import { usePageTitle } from '../hooks/usePageTitle';
 import AuthLayout from '../components/AuthLayout';
+
+// RegisterLink — 注册互链的档位自适应子组件（policy 查询与登录页解耦）
+function RegisterLink() {
+  const { data: policy } = useQuery({
+    queryKey: ['registration-policy'],
+    staleTime: 60_000,
+    retry: false,
+    queryFn: getRegistrationPolicy,
+  });
+  const mode = policy?.mode ?? 'invitation';
+  if (mode === 'disabled') {
+    return <Typography.Text disabled title="当前部署已关闭自助注册">注册（未开放）</Typography.Text>;
+  }
+  return <Link to="/register">{mode === 'open' ? '注册' : '注册（需邀请码）'}</Link>;
+}
 
 export default function LoginPage() {
   usePageTitle('登录');
@@ -13,14 +30,15 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // ADR-147 修复：已登录用户访问 /login 应回项目页（此前矛盾：登录态下仍显示登录表单）
+  // ADR-147+ADR-257: 已登录用户访问 /login 回总览（总览全角色可达；/projects 不再是全员保证面）
   if (booting) return <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 120 }}><Spin /></div>;
-  if (user) return <Navigate to="/projects" replace />;
+  if (user) return <Navigate to="/" replace />;
 
   return (
     <AuthLayout title="登录">
       {error && <Alert type="error" message={error} style={{ marginBottom: 16 }} showIcon />}
       <Form
+        layout="vertical"
         onFinish={async ({ username, password }) => {
           setLoading(true);
           setError(null);
@@ -44,10 +62,13 @@ export default function LoginPage() {
         <Button type="primary" htmlType="submit" block loading={loading}>
           登录
         </Button>
-        {/*  注册互链（此前登录页无注册入口，注册页全站不可发现） */}
+        {/* 设计整改 P3: 注册互链（此前登录页无注册入口，注册页全站不可发现）。
+            V2.2 (ADR-255, Q10 审查批补半边)：档位自适应——invitation=需邀请码；
+            open=免码；disabled=置灰+一句说明。拉取失败=维持 invitation 文案
+            （后端 FAILED_PRECONDITION 仍是最终防线）。 */}
         <div style={{ marginTop: 12, textAlign: 'center' }}>
           <Typography.Text type="secondary">还没有账号？</Typography.Text>{' '}
-          <Link to="/register">注册（需邀请码）</Link>
+          <RegisterLink />
         </div>
       </Form>
     </AuthLayout>

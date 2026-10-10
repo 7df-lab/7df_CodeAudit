@@ -1,7 +1,7 @@
 # tools/opengrep — sast-adapter 镜像烘焙工具来源
 
 - 文件: `opengrep`（OpenGrep CLI，版本 **1.29.0**，`opengrep --version` 实测）
-- 来源: OpenGrep 官方发布（semgrep 开源分叉，ADR-158 引入替代 semgrep；
+- 来源: OpenGrep 官方发布（semgrep 开源分叉，引入替代 semgrep；
   同 YAML 规则/同 JSON 输出，默认导出 dataflow_trace 变量级污点链路）
 - 校验: `opengrep.sha256`（sha256sum）
 - 形态: ELF x86-64，动态链接，**仅依赖 glibc libc.so.6（≥2.14）**——运行时镜像

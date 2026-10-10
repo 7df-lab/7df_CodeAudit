@@ -186,13 +186,13 @@ func (f *fakeResultExt) ListFindings(ctx context.Context, req *pb.ListFindingsRe
 	return &pb.ListFindingsResponse{Findings: []*pb.UnifiedFinding{{
 		FindingId: "f-1", TaskId: req.GetTaskId(), SourceTool: "bandit",
 		Title: "hardcoded password", CweId: "CWE-798",
-		Severity: pb.Severity_SEVERITY_HIGH, AiVerdict: pb.AIVerdict_AI_VERDICT_NEEDS_MANUAL,
+		Severity: pb.Severity_SEVERITY_HIGH, VerdictDirection: pb.VerdictDirection_VERDICT_DIRECTION_UNSPECIFIED,
 	}}}, nil
 }
 
 func (f *fakeResultExt) UpdateVerdict(ctx context.Context, req *pb.UpdateVerdictRequest) (*pb.AuditFinding, error) {
-	f.verdicts = append(f.verdicts, req.GetFindingId()+"="+req.GetVerdict().String())
-	return &pb.AuditFinding{Finding: &pb.UnifiedFinding{FindingId: req.GetFindingId(), AiVerdict: req.GetVerdict()}}, nil
+	f.verdicts = append(f.verdicts, req.GetFindingId()+"="+req.GetDirection().String())
+	return &pb.AuditFinding{Finding: &pb.UnifiedFinding{FindingId: req.GetFindingId(), VerdictDirection: req.GetDirection(), VerdictTier: pb.VerdictTier_VERDICT_TIER_DEFINITE}}, nil
 }
 
 func (f *fakeResultExt) BatchUpdateVerdict(ctx context.Context, req *pb.BatchUpdateVerdictRequest) (*pb.BatchUpdateVerdictResponse, error) {
@@ -499,11 +499,11 @@ func TestTP12T0_FindingsByTask(t *testing.T) {
 	if !ok || len(arr) != 1 {
 		t.Fatalf("findings body: %v", out)
 	}
-	// 缺 task_id：非 admin 裸列表=全量枚举面 → 403（R90）；admin 裸列表 → 后端 400
+	// 缺 task_id：读门已拆（ADR-257 认证即读），非 admin 与 admin 同达后端 → 400
 	//（任务维度查询的诚实约束，契约不变）
 	code, _ = httpJSON(t, tr, "GET", "/v1/findings", "")
-	if code != 403 {
-		t.Fatalf("findings without task_id (non-admin): want 403, got %d", code)
+	if code != 400 {
+		t.Fatalf("findings without task_id (non-admin): want 400（ADR-257 后端语义校验）, got %d", code)
 	}
 	code, _ = httpJSONAsAdmin(t, tr, "GET", "/v1/findings", "")
 	if code != 400 {

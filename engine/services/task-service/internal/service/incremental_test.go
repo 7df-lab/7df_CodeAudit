@@ -1,7 +1,7 @@
 package service
 
 // ADR-225 增量扫描锁定测试：内容 diff 矩阵 / 路径口径 / 基线选定 / 快照复用 /
-// 降级矩阵 / 显式基线强契约 / 幂等指纹。设计依据=伞仓 docs/designs/
+// 降级矩阵 / 显式基线强契约 / 幂等指纹。设计依据=主仓库 docs/designs/
 // incremental-scan-acceptance.md F1-F5/F9；红→绿纪律（ADR-216）适用。
 
 import (
@@ -106,12 +106,12 @@ func TestTreeDigest_ShellMismatchAlignedByResolveRoot(t *testing.T) {
 
 func TestNormalizeRepoPath(t *testing.T) {
 	cases := map[string]string{
-		"./app.py":     "app.py",
-		"app.py":       "app.py",
-		"pkg//util.py": "pkg/util.py",
+		"./app.py":      "app.py",
+		"app.py":        "app.py",
+		"pkg//util.py":  "pkg/util.py",
 		"pkg/./util.py": "pkg/util.py",
-		"a/../b.py":    "b.py",
-		"./pkg/x.py":   "pkg/x.py",
+		"a/../b.py":     "b.py",
+		"./pkg/x.py":    "pkg/x.py",
 	}
 	for in, want := range cases {
 		if got := normalizeRepoPath(in); got != want {
@@ -281,10 +281,10 @@ func TestCreateScanTask_ExplicitBaselineContract(t *testing.T) {
 				s.tasks[c.baseline.GetTaskId()] = c.baseline
 			}
 			_, err := s.CreateScanTask(context.Background(), &pb.CreateScanTaskRequest{
-				Metadata:       &pb.RequestMetadata{RequestId: "inc-new"},
-				ProjectId:      "p1",
-				ScanMode:       pb.ScanMode_SCAN_MODE_SAST_ONLY,
-				Incremental:    true,
+				Metadata:    &pb.RequestMetadata{RequestId: "inc-new"},
+				ProjectId:   "p1",
+				ScanMode:    pb.ScanMode_SCAN_MODE_SAST_ONLY,
+				Incremental: true,
 				BaselineTaskId: map[string]string{
 					"not found":     "base-x",
 					"cross project": "base-y",
@@ -334,7 +334,7 @@ func TestFingerprint_IncrementalFieldsDiffer(t *testing.T) {
 	}
 }
 
-// A6.3（验收 F6 补齐；R59 2026-09-11 修正）: 增量任务执行日志必须含一行视野声明——
+// A6.3: 增量任务执行日志必须含一行视野声明——
 // 经生产调用链（runIncrementalDiff 激活点）触发，不得直调 helper（R58/A6.3 两轮教训：
 // 直调用例绕开生产时序，曾令声明在真实任务上永不可达而测试全绿）。
 func TestIncrementalScopeNotice_ViaProductionChain(t *testing.T) {

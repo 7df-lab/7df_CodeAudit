@@ -13,7 +13,7 @@ const finding = (over: Partial<UnifiedFinding>): UnifiedFinding => ({
   description: '',
   severity: 'SEVERITY_LOW',
   confidence: 0.5,
-  ai_verdict: 'AI_VERDICT_TRUE',
+  verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED',
   ai_confidence: 0.95,
   ai_reasoning: '',
   ai_fix_suggestion: '',

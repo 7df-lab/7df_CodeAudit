@@ -13,7 +13,7 @@ const gateway = useFakeGateway(routes);
 
 const refreshUserMock = vi.fn().mockResolvedValue(undefined);
 const logoutMock = vi.fn().mockResolvedValue(undefined);
-vi.mock('../auth/session', () => ({
+vi.mock('../auth/session', () => ({ useCanWrite: () => true,
   useSession: () => ({
     user: { user_id: 'u-2', username: 'dev1', email: '', role: 'ROLE_DEVELOPER', must_change_password: true },
     refreshUser: (...args: unknown[]) => refreshUserMock(...(args as [])),
@@ -57,7 +57,7 @@ describe('ChangePasswordPage（ADR-205）', () => {
     await waitFor(() => expect(screen.getByText('须同时包含字母与数字')).toBeTruthy());
   });
 
-  // (P3-j)：改密 POST 成功后 refreshUser 失败不再误报"旧密码不正确"——密码已改成功，
+  // B5(P3-j)：改密 POST 成功后 refreshUser 失败不再误报"旧密码不正确"——密码已改成功，
   // 误报会引导用户拿旧密码重试必败；应直接放行导航由守卫接管
   it('B5: 改密成功但会话刷新失败——不显示"旧密码不正确"，仍导航离开', async () => {
     refreshUserMock.mockRejectedValueOnce(new Error('me 503'));

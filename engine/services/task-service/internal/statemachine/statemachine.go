@@ -59,7 +59,7 @@ func New() *StateMachine {
 // 依据: 04_工作流设计.md §1 状态机图
 // 依据: .agent/research/brief-TP03-04-05.md §3.2 全部合法转换边
 func (sm *StateMachine) registerTransitions() {
-	// T1(2026-09-01 人类裁定): CREATED → RUNNING (StartTask) —— 审批流（提交/批准/拒绝）
+	// T1: CREATED → RUNNING (StartTask) —— 审批流（提交/批准/拒绝）
 	// 废除，有创建权限即有启动权限；04 §1 的人工门三状态不再产生（PENDING/QUEUED 仅作
 	// 存量兼容值，QUEUED 保留为自动重试目标态）
 	sm.addTransition(TaskStatusCreated, TaskStatusRunning, "StartTask")

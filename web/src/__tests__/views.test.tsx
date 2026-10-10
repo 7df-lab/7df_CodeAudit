@@ -11,15 +11,15 @@ import { useFakeGateway } from '../testsupport/fakeGateway';
 // ADR-203 fakeGateway：真实 api/client 执行，仅 HTTP 层伪造；未建模路由响亮失败
 const routesDefaultFindings = () => ({ findings: [
   { finding_id: 'f-s1', task_id: 't1', source_tool: 'semgrep', source_rule_id: 'R1', cwe_id: 'CWE-89',
-    title: 'sast primary', severity: 'SEVERITY_HIGH', confidence: 0.8, ai_verdict: 'AI_VERDICT_UNSPECIFIED',
+    title: 'sast primary', severity: 'SEVERITY_HIGH', confidence: 0.8, verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED',
     ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', location: null,
     dedup_group: 'group_1', matched_findings: ['f-a1'], is_unique: false },
   { finding_id: 'f-a1', task_id: 't1', source_tool: 'ai_agent', source_rule_id: '', cwe_id: 'CWE-89',
-    title: 'ai dup', severity: 'SEVERITY_HIGH', confidence: 0.9, ai_verdict: 'AI_VERDICT_UNSPECIFIED',
+    title: 'ai dup', severity: 'SEVERITY_HIGH', confidence: 0.9, verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED',
     ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', location: null,
     dedup_group: 'group_1', matched_findings: ['f-s1'], is_unique: false },
   { finding_id: 'f-u1', task_id: 't1', source_tool: 'ai_agent', source_rule_id: '', cwe_id: 'CWE-798',
-    title: 'ai unique', severity: 'SEVERITY_CRITICAL', confidence: 0.9, ai_verdict: 'AI_VERDICT_UNSPECIFIED',
+    title: 'ai unique', severity: 'SEVERITY_CRITICAL', confidence: 0.9, verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED',
     ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', location: null,
     dedup_group: '', matched_findings: [], is_unique: true },
 ] });
@@ -71,12 +71,12 @@ describe('ReviewView（旧模式D，诚实降级）', () => {
   });
 });
 
-// （审计修复）：视图单页只拉 100 条——has_next=true 时必须渲染截断提示，不静默丢剩余
-describe('视图截断提示', () => {
+// B3-4（审计修复）：视图单页只拉 100 条——has_next=true 时必须渲染截断提示，不静默丢剩余
+describe('视图截断提示（B3-4）', () => {
   const truncatedFindings = (title: string) => {
     routes['GET /v1/findings'] = () => ({ findings: [
       { finding_id: 'f-t1', task_id: 't1', source_tool: 'semgrep', source_rule_id: 'R1', cwe_id: 'CWE-89',
-        title, severity: 'SEVERITY_HIGH', confidence: 0.8, ai_verdict: 'AI_VERDICT_UNSPECIFIED',
+        title, severity: 'SEVERITY_HIGH', confidence: 0.8, verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED',
         ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', location: null,
         dedup_group: '', matched_findings: [], is_unique: true },
     ], pagination: { next_cursor: 'c2', has_next: true, total: 153 } });

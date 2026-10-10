@@ -1,0 +1,89 @@
+# targeted.yaml — 沙箱网络分型·targeted 组合模板（不进镜像；engine 侧组合源）。
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# targeted 档（pack spec.network.profile=targeted，渗透负载）的物理语义是
+# 【spec.policy 整档替换】：上游创建沙箱时 spec 携带 SandboxPolicy 即完全
+# 取代镜像内 policy.yaml。因此
+# targeted 档的权威不在镜像而在【本模板 + 任务授权目标的组合结果】，本模板
+# 就是组合的锚定基线（pack/引擎经修订版引用锚定本文件，公理 C3 禁浮动）。
+#
+# 组合契约（engine 侧实施，切片 4 后半）：
+#   spec.policy = 本文件全文 + authorized_targets.endpoints ←—— 任务【资源】字段
+#   - 端点形状（2026-09-19 源码核读+激活实验定论，上游 supervisor v0.0.116 起内置
+#     透明 TCP，b2ea818）：{host, port, protocol: tcp, allowed_ips: [真实 IP/CIDR]}
+#     ——host 为主机名（policy DNS 应答合成地址，直连真实 IP 恒拒=SSRF 防线）；
+#     allowed_ips 是代理可拨的真实 IP 钉扎。任务【资源】字段须携带
+#     host+port+真实 IP 三元组，非裸网段。
+#   - 单向收紧（B1 推论）：endpoints 只允许来自任务资源声明，不得添加资源之外
+#     的任何目标；基础档（codeaudit_inference）逐字保留；
+#   - fail-closed：本文件烘焙态 endpoints 为空 = targeted 沙箱无注入即零目标
+#     可达（注入缺失/失败时任务可见失败，不静默回退，D1）；
+#   - 必须整档携带（filesystem/landlock/process 三段与 restricted.yaml 逐字
+#     一致——只带 network_policies 的裸注入会替换掉禁锢策略，静态门禁钉住
+#     两文件三段一致）。
+#
+# 能力边界：
+#   - 两条路径并存：HTTP(S) 系客户端走代理 env（honor HTTP_PROXY）；**原生裸 TCP
+#     经透明中继可用**（授权端点带 protocol: tcp + allowed_ips，客户端以主机名
+#     访问——policy DNS→合成地址→SO_ORIGINAL_DST 捕获→钉真实 IP 中继）。nmap
+#     -sT（connect 扫描）可跑。
+#   - 端口执法在中继层：未授权端口本地握手成功但数据不中继——nmap -sT 对未授权
+#     端口假阳性 open，端口结论需 banner/数据级验证；SYN 原始扫描非 root 不可用。
+#   - DNS：policy DNS 只应答授权主机名（未授权拒答，单向收紧在 DNS 层可见）；
+#     大批量子域枚举（subfinder 式逐名查询）不是此模型——每个名字都要先授权。
+#   - 直连真实 IP 恒拒（SSRF 防线，与 policy 无关）——渗透工具一律按主机名访问
+#     授权目标。
+
+version: 1
+
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /app
+    - /etc
+    - /var/log
+    - /opt
+  read_write:
+    - /sandbox
+    - /tmp
+    - /dev/null
+
+landlock:
+  compatibility: best_effort
+
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+network_policies:
+  codeaudit_inference:
+    name: codeaudit-inference
+    endpoints:
+      - { host: inference.local, port: 443 }
+    binaries:
+      - { path: /usr/bin/node }
+  authorized_targets:
+    # 授权目标=任务【资源】字段（人类测试时提供，不内置——本文件烘焙态恒空）。
+    # endpoints 由 engine 按任务资源注入，端点形状（激活透明 TCP）：
+    #   - { host: <主机名>, port: <端口>, protocol: tcp, allowed_ips: [<真实 IP/CIDR>] }
+    # binaries 是渗透工具 envelope：基础档的 node 之外，覆盖 pdtools 全件套与
+    # 脚本型工具的 exec 路径。
+    name: authorized-targets
+    endpoints: []
+    binaries:
+      - { path: /bin/bash }
+      - { path: /usr/bin/node }
+      - { path: /usr/bin/curl }
+      - { path: /usr/bin/python3 }
+      - { path: /usr/bin/nmap }
+      - { path: /opt/pdtools/** }
+      - { path: /opt/testssl/** }
+      - { path: /opt/sqlmap/** }
+      - { path: /usr/local/bin/sqlmap }
+      - { path: /usr/local/bin/testssl.sh }
+      - { path: /usr/local/bin/wscat }

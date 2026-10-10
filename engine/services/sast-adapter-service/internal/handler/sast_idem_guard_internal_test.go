@@ -26,11 +26,11 @@ import (
 // fakeIdemResult — 可切换成败的 result-service 假后端（计数 BatchCreateFindings 次数）。
 type fakeIdemResult struct {
 	pb.UnimplementedResultServiceServer
-	fail    atomic.Bool
-	calls   atomic.Int32
-	addrs   string
+	fail     atomic.Bool
+	calls    atomic.Int32
+	addrs    string
 	listener net.Listener
-	srv     *grpc.Server
+	srv      *grpc.Server
 }
 
 func startFakeIdemResult(t *testing.T, fail bool) *fakeIdemResult {
@@ -61,14 +61,17 @@ func (f *fakeIdemResult) BatchCreateFindings(ctx context.Context, req *pb.BatchC
 	return &pb.BatchCreateFindingsResponse{FindingIds: ids}, nil
 }
 
-
 // idemCountAsInt — M56 变异两态（atomic.Int64 / 裸 int）下的断言读取。
 func idemCountAsInt(v any) int64 {
+	// 指针形态：atomic.Int64 含 noCopy，按值装箱=vet 报锁拷贝（R138 顺手修）；
+	// 同时兼容 M56 变异后的裸 int 与裸 int 指针（两态编译+两态断言）。
 	switch x := v.(type) {
-	case atomic.Int64:
+	case *atomic.Int64:
 		return x.Load()
 	case int:
 		return int64(x)
+	case *int:
+		return int64(*x)
 	}
 	return -1
 }
@@ -144,7 +147,7 @@ func TestBumpIdemGuard_ConcurrentAtomic(t *testing.T) {
 	}
 	wg.Wait()
 	// 类型开关同时兼容 atomic.Int64 与 M56 变异后的裸 int（两态编译+两态断言）
-	if got := idemCountAsInt(h.idemCount); got != 1600 {
+	if got := idemCountAsInt(&h.idemCount); got != 1600 {
 		t.Fatalf("idemCount = %d, want 1600（计数丢失更新=非原子）", got)
 	}
 }

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Sync this directory (source of truth) -> gateway runtime dir in the LXC,
+# Sync this directory (source of truth) -> gateway runtime dir in the 部署主机,
 # then make it take effect via gateway_lifecycle.sh ensure.
 #
 # Discipline: gateway.toml / docker-compose.yml are edited HERE, never on the
-# LXC; the LXC copy is a deployment target. deploy.sh overwrites it on every
+# 部署主机; the 部署主机 copy is a deployment target. deploy.sh overwrites it on every
 # run (a timestamped backup of the previous runtime copy is kept remotely).
 #
-# 统一契约（供伞仓 ../deploy/sandbox-deploy.sh 分发，清单 deploy/sandbox-deploy.toml）：
+# 统一契约（供主仓库 ../deploy/internal/sandbox-deploy.sh 分发，清单 deploy/internal/sandbox-deploy.toml）：
 #   deploy   下发变更并生效（默认；配置无变化则不重启）
 #   check    漂移检查，不改任何东西（= --check）
 #   status|start|stop|restart|logs [N]   委托 gateway_lifecycle.sh
@@ -14,7 +14,7 @@
 # Usage:
 #   deploy.sh              # push files + ensure (restart only if config changed)
 #   deploy.sh deploy       # 同上
-#   deploy.sh check        # show drift between CD and LXC copies, change nothing
+#   deploy.sh check        # show drift between CD and 部署主机 copies, change nothing
 #
 # Environment: REMOTE / DEPLOY_DIR / SERVICE / ROUTING_DOMAIN / LIVENESS_*
 #   (same variables as gateway_lifecycle.sh, which this script calls).
@@ -23,18 +23,33 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # `-` 而非 `:-`：REMOTE=""（空串）= 显式本机执行契约，与 gateway_lifecycle.sh
-# 同语义（README"同变量"口径 + 伞仓 production-deploy.sh 依赖；`:-` 会在空串时
-# 静默触发 pct 缺省、打错目标宿主——2026-09-05 同族回归见 gateway_lifecycle.sh）。
-REMOTE="${REMOTE-pct exec 107 --}"
-VMID="${VMID:-107}"
-DEPLOY_DIR="${DEPLOY_DIR:-/root/os-deploy/deploy/docker}"
+# 同语义（README"同变量"口径 + 主仓库 production-deploy.sh 依赖；`:-` 会在空串时
+# 静默触发 远程执行 缺省、打错目标宿主——2026-09-05 同族回归见 gateway_lifecycle.sh）。
+REMOTE="${REMOTE-ssh <deploy-host> --}"
+VMID="${VMID:-}"
+# 2026-09-18 修订：缺省自 os-deploy 死路径
+# 改钉部署树现役目录（与 gateway_lifecycle.sh 同值，T-D4 守卫逐字一致）。
+DEPLOY_DIR="${DEPLOY_DIR:-/opt/codeaudit/openshell-gateway}"
 
-FILES=(docker-compose.yml gateway.toml Dockerfile.gateway Dockerfile.supervisor)
+# gateway_db_backup.sh：备份/恢复脚本本体（cron 调度属 <host-id> 侧安装，
+# 见 docs/prod-ops-*.md；脚本仅读 db/tls，不改容器）
+FILES=(docker-compose.yml gateway.toml gateway_db_backup.sh)
 
 run_remote() { $REMOTE "$@"; }  # intentional word splitting (command prefix)
 
 md5_local() { md5sum "$1" | awk '{print $1}'; }
-md5_remote() { run_remote md5sum "$DEPLOY_DIR/$1" 2>/dev/null | awk '{print $1}'; }
+# 2d 清理批修复：REMOTE=""（本机模式）下对账对象=本机仓树自身
+# （"$PWD/$f"）而非 $DEPLOY_DIR——$DEPLOY_DIR 缺省钉 <host-id> 部署树路径（R11），本机
+# 模式下该路径不存在 → md5_remote 恒空 → check 恒 drift（B1-5 只修了 push 短路，
+# 对账面漏改，本机模式 check 自 R11 起从未真正可用）。本机模式"文件以仓内目录
+# 为事实源"（E1 契约第 0 条），对账=自查存在性+一致性恒真。
+md5_remote() {
+    if [ -z "$REMOTE" ]; then
+        md5_local "$PWD/$1" 2>/dev/null
+    else
+        run_remote md5sum "$DEPLOY_DIR/$1" 2>/dev/null | awk '{print $1}'
+    fi
+}
 
 drift=0
 for f in "${FILES[@]}"; do
@@ -52,16 +67,16 @@ case "$cmd" in
             echo "in sync"
             exit 0
         fi
-        # 漂移必须非零退出——伞仓 sandbox-deploy.sh check 按退出码
-        # 聚合，恒 0 令 CD↔LXC 漂移在门禁静默通过（正是本脚本自述要防的场景）
+        # B2-2：漂移必须非零退出——主仓库 sandbox-deploy.sh check 按退出码
+        # 聚合，恒 0 令 CD↔部署主机 漂移在门禁静默通过（正是本脚本自述要防的场景）
         echo "^ CD differs from LXC runtime; run deploy.sh to apply"
         exit 1
         ;;
     deploy)
         if [ "$drift" = "0" ]; then echo "openshell-gateway: in sync, ensure only"; fi
-        # REMOTE 空=本机模式：mkdir/备份/pct push 都是宿主→LXC
-        # 的远程动作，本机无 LXC 可推——push 路径此前未纳入 REMOTE 契约，空串
-        # 时仍打真 pct 二进制。本机模式文件以仓内目录为事实源，跳过推送直接
+        # REMOTE 空=本机模式（B1-5 审计修复）：mkdir/备份/远程执行 push 都是宿主→部署主机
+        # 的远程动作，本机无 部署主机 可推——push 路径此前未纳入 REMOTE 契约，空串
+        # 时仍打真 远程执行 二进制。本机模式文件以仓内目录为事实源，跳过推送直接
         # ensure（production-deploy.sh 即 REMOTE='' 直跑 lifecycle 的同构路径）。
         if [ -z "$REMOTE" ]; then
             echo "REMOTE 空=本机模式，跳过推送"

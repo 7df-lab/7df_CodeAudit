@@ -1,6 +1,6 @@
 // Package codeauditcfg — CodeAudit 全局配置加载器（ADR-137）。
 //
-// 规则（人类裁决 2026-08-29）：全项目非密钥可调值统一承载于 configs/codeaudit.yaml，
+// 规则：全项目非密钥可调值统一承载于 configs/codeaudit.yaml，
 // 代码内不保留业务缺省值；优先级 = 环境变量（CODEAUDIT_*）> 配置文件；
 // 缺键 = 错误（fail-fast），杜绝代码默认值与部署环境漂移。
 // 密钥不入配置文件（ADR-115），配置只记录"读取哪个环境变量"。
@@ -29,8 +29,8 @@ type Config struct {
 }
 
 var (
-	once   sync.Once
-	shared *Config
+	once      sync.Once
+	shared    *Config
 	sharedErr error
 )
 

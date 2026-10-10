@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://baton.codeaudit.dev/schema/event.schema.json",
+  "title": "baton 中立事件（events.jsonl 单行）",
+  "description": "v0.1 2026-09-19（v0 2026-09-17 + graph.* 六事件入族，切片 5+6 ADR-001）。每行一个 JSON 对象；seq=行号=因果序=游标。崩溃撕裂行（JSON parse 失败的末行）由消费者检测丢弃。",
+  "type": "object",
+  "required": ["seq", "ts", "task", "type", "pen"],
+  "properties": {
+    "seq": {"type": "integer", "minimum": 1, "description": "任务内单调递增行号"},
+    "ts": {"type": "string", "format": "date-time", "description": "v0=投影时刻（sse.log 无帧时间戳）；M2+ 升级为事件发生时刻"},
+    "task": {"type": "string", "description": "engine task_id；换手不变更（持笔人变更语义）"},
+    "tenant": {"type": "string"},
+    "user": {"type": "string"},
+    "session": {"type": "string", "default": "main", "description": "子任务会话 ID，主会话=main（对齐 DSH sessionId）"},
+    "pen": {"$ref": "#/$defs/pen_ref"},
+    "type": {"type": "string", "enum": [
+      "task.created", "task.status", "task.subagent",
+      "spine.updated",
+      "model.message",
+      "tool.call", "tool.result",
+      "usage.recorded",
+      "context.compacted",
+      "handoff.requested", "handoff.checkpointed", "handoff.seeded", "handoff.completed",
+      "workspace.checkpointed",
+      "graph.node_declared", "graph.node_started", "graph.node_result",
+      "graph.plan_triggered", "graph.paused", "graph.converged"
+    ]},
+    "goal": {"type": "string"},
+    "constraints": {"type": "array", "items": {"type": "string"}},
+    "workspace": {
+      "type": "object",
+      "properties": {
+        "workspace_id": {"type": "string"},
+        "git_anchor": {"type": "string"},
+        "tree_ref": {"type": "string", "description": "桶级源码树 tar 引用（engine uploadTreeTar）"}
+      }
+    },
+    "status": {"type": "string", "enum": ["CREATED", "QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "DEAD", "PAUSED"], "description": "对齐 engine TaskStatus"},
+    "reason": {"type": "string"},
+    "subagent": {
+      "type": "object",
+      "required": ["parent_session", "child_session", "phase"],
+      "properties": {
+        "parent_session": {"type": "string"},
+        "child_session": {"type": "string"},
+        "phase": {"type": "string", "enum": ["started", "finished"]},
+        "status": {"type": "string"},
+        "stop_reason": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "spine": {"$ref": "spine.schema.json"},
+    "message": {
+      "type": "object",
+      "required": ["role"],
+      "properties": {
+        "role": {"type": "string", "enum": ["user", "assistant", "system"]},
+        "parts": {"type": "array", "items": {
+          "type": "object",
+          "required": ["kind", "text"],
+          "properties": {
+            "kind": {"type": "string", "enum": ["text", "reasoning"]},
+            "text": {"type": "string"}
+          },
+          "additionalProperties": false
+        }},
+        "parts_ref": {"$ref": "#/$defs/blob_ref", "description": "大消息正文走 blob"}
+      },
+      "additionalProperties": false
+    },
+    "call": {
+      "type": "object",
+      "required": ["call_id", "tool"],
+      "properties": {
+        "call_id": {"type": "string"},
+        "tool": {"type": "string"},
+        "args": {"description": "小载荷内联"},
+        "args_ref": {"$ref": "#/$defs/blob_ref"},
+        "approval": {
+          "type": "object",
+          "required": ["decision"],
+          "properties": {
+            "decision": {"type": "string", "enum": ["granted", "denied", "preset"]},
+            "policy": {"type": "string"}
+          },
+          "additionalProperties": false
+        },
+        "via": {"type": "string", "description": "来源 harness 标识"}
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": ["call_id", "ok", "outcome"],
+      "properties": {
+        "call_id": {"type": "string"},
+        "ok": {"type": "boolean"},
+        "outcome": {"type": "string", "enum": ["completed", "error", "denied", "indeterminate"], "description": "indeterminate=公理落点：缺失结果≠没跑过，交工作区仲裁"},
+        "result": {"description": "小载荷内联"},
+        "result_ref": {"$ref": "#/$defs/blob_ref"},
+        "bytes": {"type": "integer"},
+        "error": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "usage": {
+      "type": "object",
+      "required": ["model", "input_tokens", "output_tokens"],
+      "properties": {
+        "model": {"type": "string"},
+        "input_tokens": {"type": "integer", "description": "仅未缓存输入；计费输入=input+cache_read+cache_write"},
+        "output_tokens": {"type": "integer"},
+        "cache_read_tokens": {"type": "integer"},
+        "cache_write_tokens": {"type": "integer"},
+        "reasoning_tokens": {"type": "integer"},
+        "total_tokens": {"type": "integer"}
+      },
+      "additionalProperties": false
+    },
+    "compaction": {
+      "type": "object",
+      "required": ["by", "spine_unchanged"],
+      "properties": {
+        "by": {"type": "string", "description": "执行压缩的 harness 标识"},
+        "dropped": {"type": "string", "description": "丢弃范围描述（如 seq 区间/类别）"},
+        "summary_ref": {"$ref": "#/$defs/blob_ref"},
+        "spine_unchanged": {"type": "boolean", "description": "显式确认裁剪未触碰脊柱"},
+        "tokens_before": {"type": "integer"},
+        "tokens_after": {"type": "integer"}
+      },
+      "additionalProperties": false
+    },
+    "handoff_requested": {
+      "type": "object",
+      "required": ["by_user", "from", "to", "reason"],
+      "properties": {
+        "by_user": {"type": "string"},
+        "from": {"$ref": "#/$defs/pen_ref"},
+        "to": {"$ref": "#/$defs/pen_ref"},
+        "reason": {"type": "string", "enum": ["quota", "capability", "cost", "user", "incident", "other"]}
+      },
+      "additionalProperties": false
+    },
+    "handoff_checkpoint": {
+      "type": "object",
+      "required": ["log_seq", "workspace"],
+      "properties": {
+        "log_seq": {"type": "integer", "description": "冻结点 seq"},
+        "workspace": {
+          "type": "object",
+          "properties": {
+            "git_anchor": {"type": "string"},
+            "tree_ref": {"type": "string"},
+            "dirty": {"type": "array", "items": {"type": "string"}, "description": "未提交改动文件清单"}
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "handoff_seed": {
+      "type": "object",
+      "required": ["via", "brief_ref", "tail"],
+      "properties": {
+        "via": {"type": "string", "enum": ["prompt", "AGENTS.md", "CLAUDE.md", "task-card"]},
+        "brief_ref": {"$ref": "#/$defs/blob_ref"},
+        "tail": {
+          "type": "object",
+          "required": ["from_seq", "to_seq"],
+          "properties": {
+            "from_seq": {"type": "integer"},
+            "to_seq": {"type": "integer", "description": "逐字尾部窗口（通常=最近回合）"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "handoff_done": {
+      "type": "object",
+      "required": ["fidelity"],
+      "properties": {
+        "fidelity": {"type": "string", "description": "如 brief+verbatim-tail；信息完备+工作区可核对"},
+        "holes": {"type": "array", "items": {"type": "string"}, "description": "已知不确定窗口（如 Maka 投影金丝雀 park 段）"}
+      },
+      "additionalProperties": false
+    },
+    "checkpoint": {
+      "type": "object",
+      "properties": {
+        "git_anchor": {"type": "string"},
+        "tree_ref": {"type": "string"},
+        "dirty": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "graph_node_declared": {
+      "type": "object",
+      "required": ["nodeId", "type", "intent", "declaredBy", "from"],
+      "properties": {
+        "nodeId": {"type": "string", "description": "n001 起单调（engine 分配）"},
+        "type": {"type": "string", "enum": ["planner", "executor", "verifier"]},
+        "intent": {"type": "string", "description": "一句话；禁业务 schema 词（C4）"},
+        "declaredBy": {"type": "string", "description": "pack | planner 节点 id"},
+        "from": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "graph_node_started": {
+      "type": "object",
+      "required": ["nodeId", "sessionId", "turnRef"],
+      "properties": {
+        "nodeId": {"type": "string"},
+        "sessionId": {"type": "string", "description": "g-<nodeId>（bridge 独立 session）"},
+        "turnRef": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "graph_node_result": {
+      "type": "object",
+      "required": ["nodeId", "outcome", "resultRef"],
+      "properties": {
+        "nodeId": {"type": "string"},
+        "outcome": {"type": "string", "enum": ["completed", "failed", "rejected", "indeterminate"], "description": "D1 分道：拒答≠失败≠没跑完"},
+        "resultRef": {"type": "string", "description": "提交通道引用或文本摘要 ≤200 字"},
+        "usageEstimate": {
+          "type": "object",
+          "properties": {
+            "turns": {"type": "number", "description": "节点会话轮次（粗估；精确计量归 usage.recorded 面）"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "graph_plan_triggered": {
+      "type": "object",
+      "required": ["trigger", "detail"],
+      "properties": {
+        "trigger": {"type": "string", "enum": ["initial", "new_evidence", "open_drained"]},
+        "detail": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "graph_paused": {
+      "type": "object",
+      "required": ["reason", "openNodeIds"],
+      "properties": {
+        "reason": {"type": "string", "enum": ["handoff", "crash_recover", "task_pause"]},
+        "openNodeIds": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "graph_converged": {
+      "type": "object",
+      "required": ["summary", "openRemaining"],
+      "properties": {
+        "summary": {"type": "string"},
+        "openRemaining": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "blob_ref": {"type": "string", "pattern": "^blob:[0-9a-f]{7,64}$", "description": "正文在 .tasklog/blobs/（内容寻址）"},
+    "pen_ref": {
+      "type": "object",
+      "required": ["agent"],
+      "properties": {
+        "agent": {"type": "string", "description": "如 dsh@1.2.0 / maka@0.x / codex@2.1"},
+        "model": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"type": {"const": "task.created"}}}, "then": {"required": ["goal"]}},
+    {"if": {"properties": {"type": {"const": "task.status"}}}, "then": {"required": ["status"]}},
+    {"if": {"properties": {"type": {"const": "task.subagent"}}}, "then": {"required": ["subagent"]}},
+    {"if": {"properties": {"type": {"const": "spine.updated"}}}, "then": {"required": ["spine"]}},
+    {"if": {"properties": {"type": {"const": "model.message"}}}, "then": {"required": ["message"]}},
+    {"if": {"properties": {"type": {"const": "tool.call"}}}, "then": {"required": ["call"]}},
+    {"if": {"properties": {"type": {"const": "tool.result"}}}, "then": {"required": ["result"]}},
+    {"if": {"properties": {"type": {"const": "usage.recorded"}}}, "then": {"required": ["usage"]}},
+    {"if": {"properties": {"type": {"const": "context.compacted"}}}, "then": {"required": ["compaction"]}},
+    {"if": {"properties": {"type": {"const": "handoff.requested"}}}, "then": {"required": ["handoff_requested"]}},
+    {"if": {"properties": {"type": {"const": "handoff.checkpointed"}}}, "then": {"required": ["handoff_checkpoint"]}},
+    {"if": {"properties": {"type": {"const": "handoff.seeded"}}}, "then": {"required": ["handoff_seed"]}},
+    {"if": {"properties": {"type": {"const": "handoff.completed"}}}, "then": {"required": ["handoff_done"]}},
+    {"if": {"properties": {"type": {"const": "workspace.checkpointed"}}}, "then": {"required": ["checkpoint"]}},
+    {"if": {"properties": {"type": {"const": "graph.node_declared"}}}, "then": {"required": ["graph_node_declared"]}},
+    {"if": {"properties": {"type": {"const": "graph.node_started"}}}, "then": {"required": ["graph_node_started"]}},
+    {"if": {"properties": {"type": {"const": "graph.node_result"}}}, "then": {"required": ["graph_node_result"]}},
+    {"if": {"properties": {"type": {"const": "graph.plan_triggered"}}}, "then": {"required": ["graph_plan_triggered"]}},
+    {"if": {"properties": {"type": {"const": "graph.paused"}}}, "then": {"required": ["graph_paused"]}},
+    {"if": {"properties": {"type": {"const": "graph.converged"}}}, "then": {"required": ["graph_converged"]}}
+  ]
+}

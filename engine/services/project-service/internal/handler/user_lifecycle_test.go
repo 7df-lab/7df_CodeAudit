@@ -140,7 +140,7 @@ func TestListUsers_FilterAndPagination(t *testing.T) {
 		}
 	}
 	resp, err := h.ListUsers(ctx, &v1.ListUsersRequest{
-		Pagination:      &v1.PaginationRequest{PageSize: 1},
+		Pagination:       &v1.PaginationRequest{PageSize: 1},
 		UsernameContains: "dev",
 	})
 	if err != nil {
@@ -150,7 +150,7 @@ func TestListUsers_FilterAndPagination(t *testing.T) {
 		t.Fatalf("page1 = %d users, hasNext=%v; want 1/true", len(resp.GetUsers()), resp.GetPagination().GetHasNext())
 	}
 	page2, err := h.ListUsers(ctx, &v1.ListUsersRequest{
-		Pagination:      &v1.PaginationRequest{Cursor: resp.GetPagination().GetNextCursor(), PageSize: 1},
+		Pagination:       &v1.PaginationRequest{Cursor: resp.GetPagination().GetNextCursor(), PageSize: 1},
 		UsernameContains: "dev",
 	})
 	if err != nil {
@@ -286,7 +286,7 @@ func roleOf(t *testing.T, token string) string {
 	return role
 }
 
-// R43（2026-09-11 修复批次）: ListUsers 游标超界必须钳制返回空页——end 有钳而
+// R43: ListUsers 游标超界必须钳制返回空页——end 有钳而
 // offset 无，大 cursor 触发 slice 越界 panic（admin 面 DoS）。对齐 ListProjects 口径。
 func TestListUsers_CursorBeyondEnd_EmptyPage(t *testing.T) {
 	h := setupUserLifecycle(t, "open", nil)
@@ -311,7 +311,7 @@ func TestListUsers_CursorBeyondEnd_EmptyPage(t *testing.T) {
 	}
 }
 
-// （D2 裁决 2026-09-11）: token TTL 对齐契约 30min/7d——实现 1h/24h 与契约
+// B5-2: token TTL 对齐契约 30min/7d——实现 1h/24h 与契约
 // （03 §4 / configs yaml access_ttl_min=30·refresh_ttl_day=7 / gateway taskwatch 推导）
 // 三方冲突；改代码对齐（现网影响仅 token 提前续期）。exp-iat 直读 JWT claims 断言。
 func TestTokenTTL_MatchesContract(t *testing.T) {
@@ -340,7 +340,7 @@ func TestTokenTTL_MatchesContract(t *testing.T) {
 	}
 }
 
-// R65（2026-09-12 待办收尾·账号面三件）：
+// R65：
 // ①登录失败文案必须合一——"user not found"vs"invalid password"经网关透传构成用户名枚举
 func TestLogin_UnifiedFailureMessage(t *testing.T) {
 	h := setupUserLifecycle(t, "open", nil)
@@ -356,4 +356,3 @@ func TestLogin_UnifiedFailureMessage(t *testing.T) {
 		t.Fatalf("failure messages must be identical (anti user-enumeration, R65):\n%q\n%q", errExist.Error(), errNo.Error())
 	}
 }
-

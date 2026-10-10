@@ -1,7 +1,7 @@
-// （2026-09-13）回归：
+// 设计整改 P1回归：
 //  1. 状态体系组件（PageLoading/EmptyState/QueryError）——替换全站四种并存加载形态的统一件；
 //  2. FusionView/ReviewView 查询失败显性化——此前无错误分支，失败永远停在加载文案
-//    （与 FindingDetailBody (P3-k) 同病）。
+//    （与 FindingDetailBody B5(P3-k) 同病）。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -46,7 +46,7 @@ describe('状态体系组件（states.tsx）', () => {
   });
 });
 
-describe('视图查询失败显性化', () => {
+describe('视图查询失败显性化（设计整改 P1）', () => {
   it('FusionView 500 → QueryError + 重试，非"加载中…"死态', async () => {
     withProviders(<FusionView taskId="t1" />);
     await waitFor(() => expect(screen.getByText('加载失败')).toBeTruthy());

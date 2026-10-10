@@ -32,7 +32,7 @@ func (m *MemoryFindingRepository) Create(f *model.Finding) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.findings[f.ID]; ok {
-		return fmt.Errorf("finding %s already exists", f.ID)
+		return nil // R135：与 PG ON CONFLICT (id) DO NOTHING 对齐——跨纪元重报幂等 no-op
 	}
 	cp := *f
 	if cp.CreatedAt.IsZero() {
@@ -84,40 +84,74 @@ func (m *MemoryFindingRepository) Delete(id string) error {
 }
 
 // List 复刻 03 §5 cursor 语义：lastID 之后 limit 条（按插入序）。
-func (m *MemoryFindingRepository) List(lastID string, limit int, taskID string, verdict string) ([]*model.Finding, string, error) {
+func (m *MemoryFindingRepository) List(lastID string, limit int, taskID string, direction string, tier string) ([]*model.Finding, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	idx := 0
 	if lastID != "" {
+		found := false
 		for i, v := range m.order {
 			if v == lastID {
 				idx = i + 1
+				found = true
 				break
 			}
+		}
+		// R138（第四轮审计 P3-3）：游标引用已删条目时不得归零重放（整页重复）——
+		// PG 版 keyset 语义天然跳过，内存档对齐为诚实空页。
+		if !found {
+			return []*model.Finding{}, "", nil
 		}
 	}
 	out := []*model.Finding{}
 	next := ""
-	for ; idx < len(m.order); idx++ {
+	// R138（P3-3）：limit+1 探测定 next（原"恰好填满 limit 即置 next"在尾页恰好
+	// 剩 limit 条时产出幻影下一页——PG 版同款探测语义）。
+	for ; idx < len(m.order) && len(out) <= limit; idx++ {
 		f := m.findings[m.order[idx]]
 		if taskID != "" && f.TaskID != taskID {
 			continue
 		}
-		if verdict != "" && !strings.EqualFold(f.Verdict, verdict) {
+		if direction != "" && !strings.EqualFold(f.VerdictDirection, direction) {
+			continue
+		}
+		if tier != "" && !strings.EqualFold(f.VerdictTier, tier) {
 			continue
 		}
 		out = append(out, func() *model.Finding { c := *f; return &c }())
-		if len(out) >= limit {
-			next = f.ID
-			break
-		}
+	}
+	if len(out) > limit {
+		next = out[limit-1].ID
+		out = out[:limit]
 	}
 	return out, next, nil
 }
 
-func (m *MemoryFindingRepository) ListByVerdict(verdict string, lastID string, limit int) ([]*model.Finding, string, error) {
-	return m.List(lastID, limit, "", verdict)
+func (m *MemoryFindingRepository) ListByVerdict(direction string, tier string, lastID string, limit int) ([]*model.Finding, string, error) {
+	return m.List(lastID, limit, "", direction, tier)
+}
+
+// Count — 三过滤轴与 List 同语义的行数（PG 档 Count 的内存对齐；
+// 匹配语义同款 EqualFold，游标轴不参与计数）
+func (m *MemoryFindingRepository) Count(taskID string, direction string, tier string) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, id := range m.order {
+		f := m.findings[id]
+		if taskID != "" && f.TaskID != taskID {
+			continue
+		}
+		if direction != "" && !strings.EqualFold(f.VerdictDirection, direction) {
+			continue
+		}
+		if tier != "" && !strings.EqualFold(f.VerdictTier, tier) {
+			continue
+		}
+		n++
+	}
+	return n, nil
 }
 
 func (m *MemoryFindingRepository) GetByRequestIDAndFindingID(requestID string, findingID string) (*model.Finding, error) {
@@ -149,7 +183,17 @@ func (m *MemoryFindingRepository) GetStatsByTaskID(taskID string) (*model.Result
 		}
 		stats.TotalFindings++
 		stats.BySeverity[strings.ToUpper(f.Severity)]++
-		stats.ByVerdict[f.Verdict]++
+		// 桶口径与 PG 版对齐：两轴组合键
+		d := strings.ToUpper(f.VerdictDirection)
+		t := strings.ToUpper(f.VerdictTier)
+		switch {
+		case strings.HasSuffix(d, "_TRUE") && strings.HasSuffix(t, "_DEFINITE"):
+			stats.ByVerdict["TRUE_DEFINITE"]++
+		case strings.HasSuffix(d, "_FALSE") && strings.HasSuffix(t, "_DEFINITE"):
+			stats.ByVerdict["FALSE_DEFINITE"]++
+		default:
+			stats.ByVerdict["NEEDS_REVIEW"]++
+		}
 		// RuleID 承载 CWE 口径（模型中以 RuleID 存储）
 		stats.ByCwe[f.RuleID]++
 	}

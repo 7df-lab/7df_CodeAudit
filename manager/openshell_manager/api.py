@@ -1,20 +1,20 @@
 """OpenShell manager HTTP surface — FastAPI 架构（ADR-174）。
 
 原 stdlib http.server 实现（旧 http_api.py，2026-09-08 死代码清理中随
-退役，git 历史可考）整体迁移 FastAPI/uvicorn：
+"消除重复接口实现"整体迁移 FastAPI/uvicorn：
   - 路由声明式注册（替代 regex ROUTES 表 + 手写 dispatch）；
   - 鉴权收敛为依赖注入（/healthz 豁免，其余 Bearer token）；
   - 异常处理器统一错误契约 {"error": msg}（ApiError/LookupError/404 no route/
     兜底 500 "internal error"——B3-3：细节进服务端 stderr，且 502 会让上游按
     "网关不可达"误重试/降级），
     JSON 端点手工解包 body 保持既有错误语义（"invalid JSON body"/413/非对象 400）；
-  - async 端点的南向调用一律 run_in_threadpool（同步 gRPC 调用裸跑在
+  - async 端点的南向调用一律 run_in_threadpool（B3-1：同步 gRPC 调用裸跑在
     event loop 上会阻塞探活与全部并发请求，对齐 _handle_upload 既有形态）；
   - /files 流式上传：原始 body spool 到磁盘（有界内存）后沿用 upload.py 流式解析器，
     接口层收沙箱 name（+?workspace=，缺省 default）内部自解析 UUID（ADR-173）。
 
 南向 gRPC 形态与对外 JSON 错误契约由 tests/test_contract.py 锁定
-（契约演进须同 commit 更新 docs/api-external.md——修复批起 404/上限族
+（契约演进须同 commit 更新 docs/api-external.md——C1 审计批起 404/上限族
 口径有实质扩充）。
 """
 from __future__ import annotations
@@ -34,15 +34,17 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import config
-from .gateway import ExecOutputTooLarge, GatewayFacade, InferenceVerificationFailed
+from .gateway import (ExecOutputTooLarge, GatewayFacade, InferenceAdminRejected,
+                      InferenceVerificationFailed, StateConflict)
 from .upload import StreamingMultipartParser, UploadError, boundary_from_content_type
 
 MAX_BODY_BYTES = 20 * 1024 * 1024
-# wait_ready 服务端超时上限：缺省 300s，硬上限 600s——客户端曾可传
+# wait_ready 服务端超时上限（B3-1）：缺省 300s，硬上限 600s——客户端曾可传
 # 1e9 让南向连接无限占用；超过上限 = 客户端错误 400。
 WAIT_READY_TIMEOUT_DEFAULT = 300.0
 WAIT_READY_TIMEOUT_MAX = 600.0
-# exec 服务端超时上限（R23，同族漏修）：engine 现役实参 60/20，600 对齐 wait_ready 硬上限。
+# exec 服务端超时上限（R23，B3-1 同族漏修）：engine 现役实参 60/20（fix-plan
+# 2026-09-12 §0 兼容性已核），600 对齐 wait_ready 硬上限。
 EXEC_TIMEOUT_MAX = 600
 
 facade = GatewayFacade()
@@ -88,7 +90,7 @@ def _opt_str(body: Dict[str, Any], key: str) -> Optional[str]:
 
 
 async def _json_body(request: Request) -> Dict[str, Any]:
-    # 审计修复：Transfer-Encoding: chunked 请求没有 Content-Length，
+    # B1-13 审计修复：Transfer-Encoding: chunked 请求没有 Content-Length，
     # 原 length==0 短路把整个 body 丢弃（静默当空对象 → 400 missing field）。
     # chunked 改走流式读取，同样受 MAX_BODY_BYTES 上限约束。
     if "chunked" in (request.headers.get("Transfer-Encoding") or "").lower():
@@ -125,6 +127,15 @@ def _one(request: Request, key: str) -> str:
     return vals[0]
 
 
+def _opt_query(request: Request, key: str) -> str:
+    """可选单值 query 参数：缺失/空值 → ""（proto 契约里空串即缺省语义，
+    如 route_name="" 为默认推理路由）。"""
+    vals = parse_qs(request.url.query).get(key)
+    if not vals or not vals[0]:
+        return ""
+    return vals[0]
+
+
 def _query_int(request: Request, key: str, default: int,
                minimum: int = 0, maximum: int = 2**31 - 1) -> int:
     """Optional integer query parameter; malformed values are a CLIENT error
@@ -147,7 +158,7 @@ def _query_int(request: Request, key: str, default: int,
 
 def _check_int(key: str, raw: Any, *,
                minimum: int = 0, maximum: int = 2**31 - 1) -> int:
-    """严格整数字段校验核心（严格化，_opt_bool 同款）：只收 int。
+    """严格整数字段校验核心（B3-3 严格化，_opt_bool 同款）：只收 int。
     bool（int 子类，恒真陷阱）、float（含整值形式）、字符串数字一律
     400——原 int() 强转放过这些垃圾类型（"8123"/8123.5/True 都曾被静默
     接受）。R26a 审计修复：范围钳制（int32 技术边界为缺省，语义域如
@@ -167,8 +178,20 @@ def _int_field(body: Dict[str, Any], key: str, *,
     return _check_int(key, body[key], minimum=minimum, maximum=maximum)
 
 
+def _opt_int(body: Dict[str, Any], key: str, *,
+             default: int = 0, minimum: int = 0,
+             maximum: int = 2**31 - 1) -> int:
+    """可选整数字段：缺失/None → default（调用点语义自定，如 proto uint64
+    的 0=未设置）；存在则走 _check_int 严格校验——bool/float/字符串数字与
+    越界值一律 400 拒绝（R26a 范围钳制纪律：钳的是合法值域，出界即拒）。"""
+    raw = body.get(key)
+    if raw is None:
+        return default
+    return _check_int(key, raw, minimum=minimum, maximum=maximum)
+
+
 def _opt_bool(body: Dict[str, Any], key: str) -> bool:
-    """可选布尔字段：只接受 JSON 布尔或 "true"/"false"
+    """可选布尔字段（B1-12 审计修复）：只接受 JSON 布尔或 "true"/"false"
     字符串，其余 400。bool("false") is True 的恒真陷阱在此堵死——字符串
     "false" 曾把 domain/no_verify 打开（行为与字面相反）。缺省/None → False。"""
     value = body.get(key)
@@ -209,7 +232,7 @@ def _log_safe(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 async def require_token(request: Request) -> None:
-    # fail-closed：tokenFile 已配置但读失败（EACCES/EIO）时鉴权材料
+    # B3-2 fail-closed：tokenFile 已配置但读失败（EACCES/EIO）时鉴权材料
     # 不可得——503 + 服务端 stderr 日志，绝不静默放行（原实现吞异常当
     # 无 token，读失败瞬间整面鉴权失效）。
     try:
@@ -248,6 +271,18 @@ def create_app() -> FastAPI:
         # 确定性 400——5xx 会被上游按"服务端故障"误重试/降级
         return JSONResponse({"error": str(exc)}, status_code=400)
 
+    @app.exception_handler(InferenceAdminRejected)
+    async def _inference_admin_rejected(_req: Request, exc: InferenceAdminRejected):
+        # 管理面南向 INVALID_ARGUMENT（类型不支持/类型不可改，details 含
+        # supported 类型表等指引）=客户端可修正条件，400 透传——同 R30 口径
+        #
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    @app.exception_handler(StateConflict)
+    async def _state_conflict(_req: Request, exc: StateConflict):
+        # 切片3b：资源状态冲突（workspace 重名/删区含资源）→ 409，details 透传
+        return JSONResponse({"error": str(exc)}, status_code=409)
+
     @app.exception_handler(StarletteHTTPException)
     async def _http_exc(req: Request, exc: StarletteHTTPException):
         if exc.status_code == 404:
@@ -257,7 +292,7 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _unhandled(req: Request, exc: Exception):
-        # 兜底 = 500 + 通用文案。原 502 让上游把服务端缺陷按"网关
+        # B3-3：兜底 = 500 + 通用文案。原 502 让上游把服务端缺陷按"网关
         # 不可达"重试/降级，且 {type: msg} 直接向客户端泄漏内部细节；
         # 细节只进服务端 stderr 日志。
         print(f"[manager] unhandled error on {req.method} "
@@ -318,10 +353,10 @@ def create_app() -> FastAPI:
             raise ApiError(400, f"invalid field timeout_seconds={raw_timeout!r} "
                                 "(expect number)") from None
         timeout = float(raw_timeout)
-        # 服务端上限：客户端曾可传 1e9 让南向连接无限占用。R26b：NaN 用
+        # B3-1 服务端上限：客户端曾可传 1e9 让南向连接无限占用。R26b：NaN 用
         # 自不等判定（json.loads 默认收 NaN 字面量，`nan > cap` 恒 False 曾
         # 绕过本 cap）与负值一并拒绝（负值曾直达 SDK 瞬间 500）。
-        if timeout != timeout or timeout < 0 \
+        if timeout != timeout or timeout <= 0 \
                 or timeout > WAIT_READY_TIMEOUT_MAX:
             raise ApiError(400, f"invalid field timeout_seconds={raw_timeout!r} "
                                 f"(NaN/negative or exceeds server-side cap of "
@@ -350,7 +385,7 @@ def create_app() -> FastAPI:
         workdir = _opt_str(body, "workdir")
         timeout = body.get("timeout_seconds")
         if timeout is not None:
-            # R23 审计修复：严格化+服务端上限（wait_ready 同族漏修，
+            # R23 审计修复：严格化+服务端上限（B3-1 wait_ready 同族漏修，
             # 与 _int_field 同一 _check_int 通道）。bool/float/字符串数字
             # 一律 400（原 int() 强转全放行，R21 口径）；>600 曾可抬 gRPC
             # deadline 至 1e9 级无限占线程池令牌与南向连接。
@@ -358,8 +393,14 @@ def create_app() -> FastAPI:
                                  maximum=EXEC_TIMEOUT_MAX)
         stdin = None
         if body.get("stdin_b64"):
+            # R34/P3-1：非字符串类型走 TypeError→500（违反一律 400 红线）；
+            # validate=False 下非字母表字符被静默丢弃——腐坏字节进沙箱 stdin。
+            raw_stdin = body["stdin_b64"]
+            if not isinstance(raw_stdin, str):
+                raise ApiError(400, f"invalid stdin_b64: expect base64 string, "
+                                    f"got {type(raw_stdin).__name__}")
             try:
-                stdin = base64.b64decode(body["stdin_b64"])
+                stdin = base64.b64decode(raw_stdin, validate=True)
             except ValueError as exc:  # binascii.Error 的基类
                 raise ApiError(400, f"invalid stdin_b64: {exc}") from exc
         try:
@@ -374,7 +415,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/sandboxes/{name}/logs", dependencies=[Depends(require_token)])
     def sandbox_logs(name: str, request: Request) -> Dict[str, Any]:
-        # 审计修复：GetSandboxLogs 属 ExecSandbox 系 RPC，只认
+        # B1-15 审计修复：GetSandboxLogs 属 ExecSandbox 系 RPC，只认
         # sandbox_id=UUID——原实现把路由 name 原样当 sandbox_id 查询，网关侧
         # 必 NOT_FOUND。与 /files 同口径（ADR-173）：接口层收 name 自解析 UUID。
         workspace = _one(request, "workspace")
@@ -435,7 +476,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/inference/route", dependencies=[Depends(require_token)])
     def route_get(request: Request) -> Dict[str, Any]:
-        return facade.get_route(workspace=_one(request, "workspace"))
+        return facade.get_route(workspace=_one(request, "workspace"),
+                                route_name=_opt_query(request, "route_name"))
 
     @app.put("/api/v1/inference/route", dependencies=[Depends(require_token)])
     async def route_set(request: Request) -> Dict[str, Any]:
@@ -444,7 +486,23 @@ def create_app() -> FastAPI:
         return await run_in_threadpool(
             facade.set_route, workspace=body["workspace"],
             provider=body["provider"], model=body["model"],
-            no_verify=_opt_bool(body, "no_verify"))
+            no_verify=_opt_bool(body, "no_verify"),
+            route_name=_opt_str(body, "route_name") or "",
+            # 纯管道：manager 只钳 proto uint64 类型域；网关对值原样落库、
+            # 无校验拒绝路径，0=缺省 60s 由网关 router 层施加（d51a653f
+            # supervisor-network inference_routes.rs）
+            timeout_secs=_opt_int(body, "timeout_secs",
+                                  maximum=2**64 - 1))
+
+    @app.delete("/api/v1/inference/route", dependencies=[Depends(require_token)])
+    def route_delete(request: Request) -> Dict[str, Any]:
+        return facade.delete_route(workspace=_one(request, "workspace"),
+                                   route_name=_opt_query(request,
+                                                         "route_name"))
+
+    # 无 GET /api/v1/inference/bundle：GetInferenceBundle 是沙箱主体专享 RPC
+    # （bearer 调用必被 PERMISSION_DENIED 拒），透传=永远 500 的死面——决策
+    # 记录 docs/api-external.md §3.22（R32 锁定：test_inference_bundle_not_proxied）
 
     @app.get("/api/v1/inference/providers", dependencies=[Depends(require_token)])
     def providers_list(request: Request) -> Dict[str, Any]:
@@ -470,6 +528,32 @@ def create_app() -> FastAPI:
         return facade.delete_provider(name=name,
                                       workspace=_one(request, "workspace"))
 
+    # -- workspace lifecycle（切片3b team 上车；纯透传，B1 执法在网关）------
+
+    @app.get("/api/v1/workspaces", dependencies=[Depends(require_token)])
+    def workspaces_list(request: Request) -> Dict[str, Any]:
+        # R34/P2-1：R33 切片抄了宽松版 _int_query——负数/超 int32 越界直通 proto
+        # uint32 构造炸 ValueError→500，违反"客户端格式错误一律 400"红线
+        # （文档 §3.23 双侧承诺 400）。换 R26a 带钳制版（全仓其余面同款）。
+        limit = _query_int(request, "limit", 100)
+        offset = _query_int(request, "offset", 0)
+        return facade.list_workspaces(limit=limit, offset=offset)
+
+    @app.post("/api/v1/workspaces", dependencies=[Depends(require_token)])
+    async def workspaces_create(request: Request) -> Dict[str, Any]:
+        body = await _json_body(request)
+        _need_str(body, "name")
+        labels = _str_map(body, "labels") or {}
+        # R34/P1-1：R33 切片漏拷 B3-1 纪律——同步 gRPC 裸跑事件循环，网关慢时
+        # 建区把整个管理面（含 /healthz）卡最长 60s，healthcheck 可被拖死。
+        return await run_in_threadpool(
+            facade.create_workspace, name=body["name"], labels=labels)
+
+    @app.delete("/api/v1/workspaces/{name}",
+                dependencies=[Depends(require_token)])
+    def workspace_delete(name: str) -> Dict[str, Any]:
+        return facade.delete_workspace(name=name)
+
     return app
 
 
@@ -494,7 +578,7 @@ async def _handle_upload(name: str, request: Request) -> Dict[str, Any]:
                             f"limit of {limit} (OPENSHELL_MANAGER_MAX_UPLOAD_BYTES; 0 = unlimited)")
 
     tmp: tempfile.SpooledTemporaryFile = tempfile.SpooledTemporaryFile(max_size=1 << 20)
-    # 审计修复：spool 文件全程 try/finally 关闭。原接收循环在 finally
+    # B1-12 审计修复：spool 文件全程 try/finally 关闭。原接收循环在 finally
     # 保护之外，客户端中途断连（request.stream() 抛出）等异常路径会泄漏
     # spool 临时文件（大文件直落磁盘，靠 GC 兜底不可靠）。
     try:

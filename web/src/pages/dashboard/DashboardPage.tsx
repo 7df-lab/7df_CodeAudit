@@ -1,19 +1,23 @@
-// 总览（首页仪表盘）：登录后的态势全貌——
+// 总览（首页仪表盘，设计整改 P4，2026-09-13 人类指令）：登录后的态势全貌——
 // 跨项目的工作该从哪里继续看起。数据全部来自既有契约面（projects/tasks/reports/
 // notifications 一次性查询，30s staleTime，无新增轮询）；状态分布用 antd Progress
 // 纯组件渲染（控制台不引入图表库）。
+// 2026-10-08 统计冒充总数修复：任务域改 listAllTasks 全量翻页（服务端钳 page_size
+// 上限 100，此前一次请求 200 被静默截断、页长被冒充总数——107 实录 569 显示 100；
+// 状态分布同样只描述了最近 100 条）。任务/任务页统计/报告中心项目名索引共用
+// ['tasks-all'] 缓存，跨页导航不重走。
 import { useQuery } from '@tanstack/react-query';
 import { Badge, Button, Card, Col, List, Progress, Row, Statistic, Table, Tag, Typography } from 'antd';
 import { Link, useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
-import { api, getProjects } from '../../api/client';
-import type { ReportRow, ScanTask } from '../../api/types';
+import { api, getProjects, listAllTasks } from '../../api/client';
+import type { ReportRow } from '../../api/types';
 import { REPORT_FORMAT, SCAN_MODE, TASK_STATUS, zh } from '../../dict';
 import { STATUS_COLOR, MONO_FONT } from '../../dict/tokens';
 import PageHeader from '../../components/PageHeader';
 import { EmptyState, PageLoading } from '../../components/states';
+import { useCanWrite, useSession } from '../../auth/session';
 import { usePageTitle } from '../../hooks/usePageTitle';
-import { useSession } from '../../auth/session';
 
 // 状态分布展示序：进行中 → 出问题的（失败/超时/暂停）→ 完成 → 其它；零计数不显示
 const DIST_ORDER: { keys: string[]; color: string }[] = [
@@ -35,21 +39,20 @@ export default function DashboardPage() {
   // 项目计数（分页 total 为权威；列表本身供"最近任务"项目名索引）
   const { data: projResp } = useQuery({
     queryKey: ['projects', 'dash'],
-    queryFn: () => getProjects({ page_size: 100, cursor: '0' }),
+    queryFn: () => getProjects({ pagination: { page_size: 100, cursor: '0' } }),
     staleTime: 60_000,
   });
   const projectName = (pid: string) =>
     projResp?.projects.find((p) => p.project_id === pid)?.name ?? pid;
 
-  // 任务域：近 200 条一次性聚合（同任务页统计口径）
-  const { data: taskResp, isLoading: taskLoading } = useQuery({
-    queryKey: ['tasks-dash'],
-    queryFn: async () => (await api.get('/v1/tasks', {
-      params: { pagination: { page_size: 200, cursor: '0' } },
-    })).data as { tasks: ScanTask[] },
-    staleTime: 30_000,
+  // 任务域：全量翻页聚合（['tasks-all'] 与任务页统计/报告中心索引共享缓存；统计带
+  // 的总数与状态分布自此是真全集口径——不再以单页页长冒充）
+  const { data: allTasks, isLoading: taskLoading } = useQuery({
+    queryKey: ['tasks-all'],
+    queryFn: listAllTasks,
+    staleTime: 60_000,
   });
-  const tasks = taskResp?.tasks ?? [];
+  const tasks = allTasks ?? [];
   const recentTasks = tasks.slice(0, 8);
 
   // 报告/通知
@@ -102,12 +105,12 @@ export default function DashboardPage() {
     <div>
       <PageHeader
         title="总览"
-        extra={(
+        extra={useCanWrite() ? (
           <>
-            <Button onClick={() => navigate('/projects?new=1')}>新建项目</Button>
+            <Button onClick={() => navigate('/projects/new')}>新建项目</Button>
             <Button type="primary" onClick={() => navigate('/tasks/new')}>新建任务</Button>
           </>
-        )}
+        ) : undefined}
       />
       {statBand}
       <Row gutter={16}>

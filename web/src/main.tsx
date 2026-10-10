@@ -9,11 +9,15 @@ import { ErrorBoundary } from './ErrorBoundary';
 import { queryClient } from './api/queryClient';
 import { SessionProvider } from './auth/session';
 import { consoleTheme } from './theme';
+import { message } from 'antd';
+
+// ADR-257 批: 全局 toast 下移到顶栏（64px）之下——静态 message 默认距顶 8px 会压住深色导航
+message.config({ top: 64 });
 
 // 应用启动即拉取当前用户（access 缺失时 401 → 刷新/跳登录，14号 §2.1）
 // B5-P2-6: QueryClient 抽为 src/api/queryClient.ts 模块单例——登出时 auth/session
 // 清同一实例的缓存（跨账号数据不残留）。
-// （2026-09-13）: dev:mock 视觉走查入口——VITE_MOCK_GATEWAY=1（npm run
+// 设计整改 P1（2026-09-13）: dev:mock 视觉走查入口——VITE_MOCK_GATEWAY=1（npm run
 // dev:mock）时先挂演示网关（adapter 层，真实 client 拦截器链全量执行）再渲染，
 // 无后端可打开全站核对设计。
 void (async () => {

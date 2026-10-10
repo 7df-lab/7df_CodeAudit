@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codeaudit/common-go/verdict"
 	codeauditcfg "github.com/codeaudit/go-config"
 	pb "github.com/codeaudit/proto-gen"
 	"github.com/codeaudit/services/result-service/internal/model"
@@ -33,7 +34,7 @@ type ResultServiceImpl struct {
 
 // VerdictEventPublisher — 事件发布最小接口（解耦 Kafka 实现与单测）。
 type VerdictEventPublisher interface {
-	PublishVerdictUpdated(ctx context.Context, finding *model.Finding, oldVerdict string, updatedBy string) error
+	PublishVerdictUpdated(ctx context.Context, finding *model.Finding, oldDirection string, oldTier string, updatedBy string) error
 }
 
 func NewResultServiceImpl(repo repository.FindingRepository) *ResultServiceImpl {
@@ -67,28 +68,39 @@ func (s *ResultServiceImpl) CreateFinding(ctx context.Context, req *pb.CreateFin
 		ToolName:   req.GetFinding().GetSourceTool(),
 		RuleID:     req.GetFinding().GetSourceRuleId(),
 		CWE:        req.GetFinding().GetCweId(),
+		Title:      req.GetFinding().GetTitle(),
 		Severity:   req.GetFinding().GetSeverity().String(),
 		Message:    req.GetFinding().GetDescription(),
 		FilePath:   req.GetFinding().GetLocation().GetFilePath(),
 		LineNumber: int(req.GetFinding().GetLocation().GetStartLine()),
 		// ADR-141→ADR-201: 代码上下文=proto L67 source_raw（原始输出 JSON 序列化）。
 		// ADR-141 曾复用 code_snippet 死列承载，ADR-201 列/字段正名 source_raw 同名直存
-		SourceRaw: string(req.GetFinding().GetSourceRaw()),
-		DedupGroup:  req.GetFinding().GetDedupGroup(),
+		SourceRaw:  string(req.GetFinding().GetSourceRaw()),
+		DedupGroup: req.GetFinding().GetDedupGroup(),
 		// ADR-142: 融合字段随 CreateFinding 同步（与 Batch 分支同口径）
 		MatchedFindings: strings.Join(req.GetFinding().GetMatchedFindings(), ","),
 		IsUnique:        req.GetFinding().GetIsUnique(),
-		Verdict:         req.GetFinding().GetAiVerdict().String(),
+		// 判定两轴直存 pb 枚举名
+		VerdictDirection: req.GetFinding().GetVerdictDirection().String(),
+		VerdictTier:      verdict.NormalizeTier(req.GetFinding().GetVerdictDirection(), req.GetFinding().GetVerdictTier()).String(),
 		// ADR-183: 修复建议两通道落盘（此前 ai_fix_suggestion 在此层被丢弃）
 		AiFixSuggestion: req.GetFinding().GetAiFixSuggestion(),
 		DiffPatch:       req.GetFinding().GetDiffPatch(),
-		CreatedAt:       time.Now(),
-		UpdatedAt:       time.Now(),
-		RequestID:       req.GetMetadata().GetRequestId(),
+		// R138（第四轮审计 P3-1）：ai_reasoning 与 BatchCreateFindings 同口径落盘
+		// （单条通道此前静默丢弃，任何改走单条的调用方会丢 AI 推理依据）
+		Reasoning: req.GetFinding().GetAiReasoning(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		RequestID: req.GetMetadata().GetRequestId(),
 	}
 
 	if err := s.repo.Create(finding); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create finding: %v", err)
+	}
+	// F3：R135 幂等化后重复 ID 落库为 no-op（首写胜出）——
+	// 若仍回显请求体=响应与存储不一致；回读存量行返回（存储真相）。
+	if existing, gerr := s.repo.GetByID(finding.ID); gerr == nil && existing != nil {
+		return s.modelToAudit(existing), nil
 	}
 
 	return s.modelToAudit(finding), nil
@@ -126,11 +138,13 @@ func (s *ResultServiceImpl) UpdateFinding(ctx context.Context, req *pb.UpdateFin
 	existing.ToolName = req.GetFinding().GetSourceTool()
 	existing.RuleID = req.GetFinding().GetSourceRuleId()
 	existing.CWE = req.GetFinding().GetCweId()
+	existing.Title = req.GetFinding().GetTitle()
 	existing.Severity = req.GetFinding().GetSeverity().String()
 	existing.Message = req.GetFinding().GetDescription()
 	existing.FilePath = req.GetFinding().GetLocation().GetFilePath()
 	existing.LineNumber = int(req.GetFinding().GetLocation().GetStartLine())
-	existing.Verdict = req.GetFinding().GetAiVerdict().String()
+	existing.VerdictDirection = req.GetFinding().GetVerdictDirection().String()
+	existing.VerdictTier = verdict.NormalizeTier(req.GetFinding().GetVerdictDirection(), req.GetFinding().GetVerdictTier()).String()
 	existing.UpdatedAt = time.Now()
 
 	if err := s.repo.Update(existing); err != nil {
@@ -155,13 +169,9 @@ func (s *ResultServiceImpl) DeleteFinding(ctx context.Context, req *pb.DeleteFin
 
 // ListFindings - 依据: codeaudit_common.proto L925 + L1220-L1221
 func (s *ResultServiceImpl) ListFindings(ctx context.Context, req *pb.ListFindingsRequest) (*pb.ListFindingsResponse, error) {
-	pageSize := int(req.GetPagination().GetPageSize()) // proto L1220 pagination 字段
-	if pageSize <= 0 {
-		pageSize = cfgPageSizeDefault() // ADR-137: proto L227 默认20（值在全局配置 result.page_size_default）
-	}
-	if pageSize > 100 {
-		pageSize = cfgPageSizeMax() // ADR-137: proto L227 最大100（值在全局配置 result.page_size_max）
-	}
+	// R138（第四轮审计 A9）：钳制阈值与钳入值同源（配置权威双向）——原"阈值字面量 100、
+	// 钳入取配置"在 max<100 时 (max,100] 绕过钳制、max>100 时反而放大请求。
+	pageSize := clampPageSize(int(req.GetPagination().GetPageSize()), cfgPageSizeDefault(), cfgPageSizeMax())
 
 	cursor := &model.Cursor{LastID: "", Limit: pageSize}
 	if req.GetPagination().GetCursor() != "" {
@@ -174,15 +184,22 @@ func (s *ResultServiceImpl) ListFindings(ctx context.Context, req *pb.ListFindin
 		}
 	}
 
-	findings, nextCursor, err := s.repo.List(cursor.LastID, pageSize, req.GetTaskId(), "")
+	findings, nextCursor, err := s.repo.List(cursor.LastID, pageSize, req.GetTaskId(), "", "")
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to list findings: %v", err)
+	}
+	// pagination.total（proto L264"可选：总数"）=同过滤轴 COUNT——web「共 N 条」
+	// 吃服务端口径（B3-1），缺省 0 会以非 nullish 绕过前端回退
+	total, err := s.repo.Count(req.GetTaskId(), "", "")
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to count findings: %v", err)
 	}
 
 	resp := &pb.ListFindingsResponse{
 		Findings: make([]*pb.UnifiedFinding, len(findings)), // proto L1221 repeated UnifiedFinding
 		Pagination: &pb.PaginationResponse{ // 依据: proto L230-L234
 			HasNext: nextCursor != "",
+			Total:   int32(total),
 		},
 	}
 	for i, f := range findings {
@@ -219,17 +236,19 @@ func (s *ResultServiceImpl) BatchCreateFindings(ctx context.Context, req *pb.Bat
 			ToolName:   finding.GetSourceTool(),
 			RuleID:     finding.GetSourceRuleId(),
 			CWE:        finding.GetCweId(),
+			Title:      finding.GetTitle(),
 			Severity:   finding.GetSeverity().String(),
 			Message:    finding.GetDescription(),
 			FilePath:   finding.GetLocation().GetFilePath(),
 			LineNumber: int(finding.GetLocation().GetStartLine()),
 			// ADR-141→ADR-201: 代码上下文随 finding 持久化（source_raw 同名直存）
-			SourceRaw:       string(finding.GetSourceRaw()),
-			Reasoning:       finding.GetAiReasoning(),
-			DedupGroup:      finding.GetDedupGroup(),
-			MatchedFindings: strings.Join(finding.GetMatchedFindings(), ","),
-			IsUnique:        finding.GetIsUnique(),
-			Verdict:         finding.GetAiVerdict().String(),
+			SourceRaw:        string(finding.GetSourceRaw()),
+			Reasoning:        finding.GetAiReasoning(),
+			DedupGroup:       finding.GetDedupGroup(),
+			MatchedFindings:  strings.Join(finding.GetMatchedFindings(), ","),
+			IsUnique:         finding.GetIsUnique(),
+			VerdictDirection: finding.GetVerdictDirection().String(),
+			VerdictTier:      verdict.NormalizeTier(finding.GetVerdictDirection(), finding.GetVerdictTier()).String(),
 			// ADR-183: 修复建议两通道落盘（与 Create 分支同口径）
 			AiFixSuggestion: finding.GetAiFixSuggestion(),
 			DiffPatch:       finding.GetDiffPatch(),
@@ -280,8 +299,10 @@ func (s *ResultServiceImpl) BatchUpdateFindings(ctx context.Context, req *pb.Bat
 				f.MatchedFindings = v // CSV 串
 			case "is_unique":
 				f.IsUnique = v == "true"
-			case "verdict":
-				f.Verdict = v
+			case "verdict_direction":
+				f.VerdictDirection = v
+			case "verdict_tier":
+				f.VerdictTier = v
 			// confidence 无独立存储字段——白名单暂不接受（诚实：不接受即不写）
 			default:
 				// 未知字段忽略（诚实：不静默写库）
@@ -313,9 +334,11 @@ func (s *ResultServiceImpl) BatchUpdateVerdict(ctx context.Context, req *pb.Batc
 			log.Printf("[result] BatchUpdateVerdict: finding %s not found/err: %v", findingID, err)
 			continue // 失败不计入 updated_count(L1238)
 		}
-		oldVerdict := finding.Verdict
+		oldDirection, oldTier := finding.VerdictDirection, finding.VerdictTier
 
-		finding.Verdict = req.GetVerdict().String()
+		finding.VerdictDirection = req.GetDirection().String()
+		// 档位服务端钉 DEFINITE（proto 注）：该口写者=人工 triage/沙箱验证回写，皆结构化裁决
+		finding.VerdictTier = pb.VerdictTier_VERDICT_TIER_DEFINITE.String()
 		finding.UpdatedAt = time.Now()
 		finding.RequestID = req.GetMetadata().GetRequestId()
 
@@ -324,9 +347,9 @@ func (s *ResultServiceImpl) BatchUpdateVerdict(ctx context.Context, req *pb.Batc
 			continue
 		}
 		resp.UpdatedCount++
-		// ADR-006 事件链真实接线（ADR-135）：verdict 变更才发布
-		if s.producer != nil && oldVerdict != finding.Verdict {
-			if perr := s.producer.PublishVerdictUpdated(ctx, finding, oldVerdict, "batch"); perr != nil {
+		// ADR-006 事件链真实接线（ADR-135）：判定变化才发布
+		if s.producer != nil && (oldDirection != finding.VerdictDirection || oldTier != finding.VerdictTier) {
+			if perr := s.producer.PublishVerdictUpdated(ctx, finding, oldDirection, oldTier, "batch"); perr != nil {
 				log.Printf("[result] PublishVerdictUpdated %s: %v (DB 已更新, 事件投递失败)", findingID, perr)
 			}
 		}
@@ -345,9 +368,11 @@ func (s *ResultServiceImpl) UpdateVerdict(ctx context.Context, req *pb.UpdateVer
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "finding not found: %v", err)
 	}
-	oldVerdict := finding.Verdict
+	oldDirection, oldTier := finding.VerdictDirection, finding.VerdictTier
 
-	finding.Verdict = req.GetVerdict().String()
+	finding.VerdictDirection = req.GetDirection().String()
+	// 档位服务端钉 DEFINITE（proto 注）：人工复核即结构化裁决
+	finding.VerdictTier = pb.VerdictTier_VERDICT_TIER_DEFINITE.String()
 	finding.UpdatedAt = time.Now()
 	if req.GetReasoning() != "" {
 		finding.Reasoning = req.GetReasoning() // 依据: proto L1240 reasoning 字段（ADR-135 落库）
@@ -358,8 +383,8 @@ func (s *ResultServiceImpl) UpdateVerdict(ctx context.Context, req *pb.UpdateVer
 	}
 
 	// ADR-006 事件链真实接线（ADR-135）
-	if s.producer != nil && oldVerdict != finding.Verdict {
-		if perr := s.producer.PublishVerdictUpdated(ctx, finding, oldVerdict, "rpc"); perr != nil {
+	if s.producer != nil && (oldDirection != finding.VerdictDirection || oldTier != finding.VerdictTier) {
+		if perr := s.producer.PublishVerdictUpdated(ctx, finding, oldDirection, oldTier, "rpc"); perr != nil {
 			log.Printf("[result] PublishVerdictUpdated %s: %v (DB 已更新, 事件投递失败)", finding.ID, perr)
 		}
 	}
@@ -388,15 +413,31 @@ func (s *ResultServiceImpl) GetFindingsByVerdict(ctx context.Context, req *pb.Ge
 		}
 	}
 
-	findings, nextCursor, err := s.repo.ListByVerdict(req.GetVerdict().String(), cursor.LastID, pageSize)
+	// 请求零值=不过滤该轴（repo 空串语义）：tier 缺省不按档位收窄；direction 零值
+	// 同理——按"未判定"过滤须显式传 VERDICT_DIRECTION_UNSPECIFIED
+	direction := ""
+	if req.GetDirection() != pb.VerdictDirection_VERDICT_DIRECTION_UNSPECIFIED {
+		direction = req.GetDirection().String()
+	}
+	tier := ""
+	if req.GetTier() != pb.VerdictTier_VERDICT_TIER_UNSPECIFIED {
+		tier = req.GetTier().String()
+	}
+	findings, nextCursor, err := s.repo.ListByVerdict(direction, tier, cursor.LastID, pageSize)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to list findings: %v", err)
+	}
+	// 同上：total=同过滤轴 COUNT（direction/tier 两轴随过滤收缩）
+	total, err := s.repo.Count("", direction, tier)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to count findings: %v", err)
 	}
 
 	resp := &pb.ListFindingsResponse{
 		Findings: make([]*pb.UnifiedFinding, len(findings)),
 		Pagination: &pb.PaginationResponse{
 			HasNext: nextCursor != "",
+			Total:   int32(total),
 		},
 	}
 	for i, f := range findings {
@@ -463,7 +504,7 @@ func (s *ResultServiceImpl) ExportFindings(ctx context.Context, req *pb.ExportFi
 	var allFindings []*model.Finding
 
 	for {
-		findings, nextCursor, err := s.repo.List(cursor, pageSize, req.GetTaskId(), "")
+		findings, nextCursor, err := s.repo.List(cursor, pageSize, req.GetTaskId(), "", "")
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to list findings: %v", err)
 		}
@@ -581,14 +622,16 @@ func (s *ResultServiceImpl) modelToUnified(f *model.Finding) *pb.UnifiedFinding 
 		SourceTool:   f.ToolName,
 		SourceRuleId: f.RuleID,
 		CweId:        f.CWE,
+		Title:        f.Title,
 		Severity:     pb.Severity(pb.Severity_value[f.Severity]),
 		Description:  f.Message,
 		Location: &pb.LocationInfo{
 			FilePath:  f.FilePath,
 			StartLine: int32(f.LineNumber),
 		},
-		AiVerdict:   pb.AIVerdict(pb.AIVerdict_value[f.Verdict]),
-		AiReasoning: f.Reasoning,
+		VerdictDirection: pb.VerdictDirection(pb.VerdictDirection_value[f.VerdictDirection]),
+		VerdictTier:      pb.VerdictTier(pb.VerdictTier_value[f.VerdictTier]),
+		AiReasoning:      f.Reasoning,
 		// ADR-183: 修复建议两通道回读（插件 diff_patch 优先 / ai_fix_suggestion 降级消费）
 		AiFixSuggestion: f.AiFixSuggestion,
 		DiffPatch:       f.DiffPatch,
@@ -643,4 +686,15 @@ func cfgResultInt(key string) int {
 }
 
 func cfgPageSizeDefault() int { return cfgResultInt("result.page_size_default") }
-func cfgPageSizeMax() int     { return cfgResultInt("result.page_size_max") }
+
+// clampPageSize — 分页上限钳制（纯函数可测）：≤0 取缺省；超 max 钳到 max。
+func clampPageSize(pageSize, def, max int) int {
+	if pageSize <= 0 {
+		return def
+	}
+	if pageSize > max {
+		return max
+	}
+	return pageSize
+}
+func cfgPageSizeMax() int { return cfgResultInt("result.page_size_max") }

@@ -5,8 +5,8 @@
 package service
 
 import (
-	"fmt"
 	"context"
+	"fmt"
 	"time"
 
 	pb "github.com/codeaudit/proto-gen"
@@ -17,7 +17,7 @@ import (
 const projectConfigTimeout = 5 * time.Second
 
 // fetchProjectConfigValue — 读项目 config map 单键；RPC 失败/键缺省返回空串。
-// R63失败原因经 fetchProjectConfigErr 带回（StartTask 拼接进
+// R63：失败原因经 fetchProjectConfigErr 带回（StartTask 拼接进
 // ErrorMessage）——原静默空串会让"项目本有 upload_file_id 但瞬态失败"的任务静默
 // 降级 repo clone 扫错代码。
 func (s *TaskServiceImpl) fetchProjectConfigValue(projectID, key string) string {

@@ -39,7 +39,7 @@ Shell 与 LoginPage 双处消费防闪烁。锚点：session.test.tsx。
   ai_cursor  = 单调递增字节游标（base64 chunk → UTF-8 追加）
 终态且 AI 收束 → 轮询自停 + WS settled 不再重连 + 服务端关连接。
 卸载 → clearTimeout + ws.close()（连接泄漏回归：此前只置标志不 close，
-       旧挂载 onmessage 持续写缓存、反复进出任务页连接累积——2026-09-06 修复）。
+
 ```
 
 锚点：TaskDetailSnapshot.test.tsx、TaskDetailPage.test.tsx（卸载关闭）；变异 M4/M5。
@@ -48,12 +48,14 @@ Shell 与 LoginPage 双处消费防闪烁。锚点：session.test.tsx。
 
 | 轮询器 | 间隔 | 自停条件 | 模块 |
 |--------|------|----------|------|
-| 任务快照（详情页唯一轮询器，ADR-170 四并一） | 10s（`pollIntervalMs` 可被 429 拉长） | WS 在线暂停；终态+AI 收束自停 | TaskDetailPage |
+| 任务快照（详情页主轮询器，四并一） | 10s（`pollIntervalMs` 可被 429 拉长） | WS 在线暂停；终态+AI 收束自停 | TaskDetailPage |
+| 图执行视图 `['task-graph', taskId]` | 5s | 终态自停；仅 execution==='graph' 任务渲染时启用 | TaskGraphCard |
 | 未读角标 `['notify-unread']` | 60s | 仅登录态（enabled !!user） | App.tsx |
 | react-query 全局 | retry 1；refetchOnWindowFocus false | — | main.tsx |
 
 历史根因：4 个独立轮询器并 1 前请求 20/min 级逼近 07 §7 单用户 50/min 限流（429 冻结页面）。
-**禁止新增独立轮询器**——新数据源必须并入快照口或走 WS。
+**禁止新增独立轮询器**——新数据源必须并入快照口或走 WS（裁决例外：graph 5s 轮询——
+节点分钟级时长下已近实时，跨服务通知链成本不配，65642f1 注记）。
 
 ## D-4 浏览器对象流（下载 / 新窗口 / 剪贴板）
 
@@ -61,24 +63,24 @@ Shell 与 LoginPage 双处消费防闪烁。锚点：session.test.tsx。
 |----|------|------|------|
 | 报告下载 | `GET /v1/reports/:id/download`(blob) → `URL.createObjectURL` → 隐形 `<a download="${id}.${ext}">`.click() → revoke | 文件名扩展名由 `reportFileExt(format)`（I-63）；两处复用（ReportsPage/TaskDetail） | dict.test.ts |
 | AI 日志下载 | `Blob([text], 'text/plain;charset=utf-8')` → `ai-interaction.ai.log` | 纯前端文本落盘 | AIInteractionLogPanel.test.tsx |
-| 在线查看（HTML/JSON） | 统一 `openReportWindow(content,mime)`：about:blank 宿主窗 + `<iframe sandbox="">`（空 token：脚本全灭+来源隔离）+ blob 前置 CSP meta 双保险（453b6bd）；JSON 分支先 `JSON.stringify(...,2)`+尖括号转义再走同一通道 | RegressionFixes.test.tsx | B5 已核 |
+| 在线查看（HTML/JSON） | 统一 `openReportWindow(content,mime)`：about:blank 宿主窗 + `<iframe sandbox="">`（空 token：脚本全灭+来源隔离）+ blob 前置 CSP meta 双保险（453b6bd）；JSON 分支先 `JSON.stringify(...,2)`+尖括号转义再走同一通道 | B3AuditFixes.test.tsx | B5 已核 |
 | 报告内联摘要 | getReportContent（text 模式嗅探）→ `JSON.parse(content).summary` 四指标卡 | parse 失败静默不渲染（报告格式漂移不崩页） | clientContract.test.ts |
 
 ## D-5 表单/上传的 antd 拦截流
 
 | 流 | 契约 | 锚点 |
 |----|------|------|
-| ~~任务向导上传~~ | **已退役**：任务向导不再提供上传/仓库/路径输入，源码来源由项目解析（任务 config 留空，启动时 task-service 走 ADR-203 兜底链）；原 onRemove 清 file_id 矛盾态（ADR-202/P-16）随控件移除消失 | TaskNewPage.test.tsx（无上传控件锁） |
-| 项目弹窗上传 | `Upload.Dragger.beforeUpload` → `uploadArchive(file)` → file_id+原始文件名一并落项目 config（upload_file_id/upload_file_name，2026-09-09）→ `return Upload.LIST_IGNORE`（受控 fileList 禁 antd 追加）；`onRemove` 同步清两态（防 file_id 残留跨项目）；弹窗重开/提交后清空 | ProjectsPage.test.tsx |
-| 创建后自动链 | 建任务成功 → `autoRunTask`（start）失败仅 warning 不阻塞导航（任务页可手动续走）；建项目成功 → 自动 createTask(config 留空) → autoRun → navigate 任务页；项目详情页快建任务同链（2026-09-09） | ProjectsPage.test.tsx；ProjectDetailPage.test.tsx |
+| ~~任务向导上传~~ | **已退役**：任务向导不再提供上传/仓库/路径输入，源码来源由项目解析（任务 config 留空，启动时 task-service 走 兜底链）；原 onRemove 清 file_id 矛盾态（/P-16）随控件移除消失 | TaskNewPage.test.tsx（无上传控件锁） |
+| 项目弹窗上传 | `Upload.Dragger.beforeUpload` → `uploadArchive(file)` → file_id+原始文件名一并落项目 config→ `return Upload.LIST_IGNORE`（受控 fileList 禁 antd 追加）；`onRemove` 同步清两态（防 file_id 残留跨项目）；弹窗重开/提交后清空 | ProjectsPage.test.tsx |
+| 创建后自动链 | 建任务成功 → `autoRunTask`（start）失败仅 warning 不阻塞导航（任务页可手动续走）；建项目成功 → 自动 createTask(config 留空) → autoRun → navigate 任务页；项目详情页快建任务同链 | ProjectsPage.test.tsx；ProjectDetailPage.test.tsx |
 
 ## D-6 反代与代理链（部署面）
 
 ```
 浏览器 ──同源──> [dev/preview: Vite proxy /v1 → CODEAUDIT_GATEWAY_URL (ws:true)]
               └─[容器: nginx /v1 → CODEAUDIT_GATEWAY_UPSTREAM]
-                    ├─ Upgrade/Connection 头映射（WS 升级透传，ADR-172）
-                    ├─ client_max_body_size 100m（100MB 上传 + multipart 余量）
+                    ├─ Upgrade/Connection 头映射（WS 升级透传，）
+                    ├─ client_max_body_size 101m
                     ├─ proxy_read/send_timeout 300s + proxy_buffering off（长响应）
                     ├─ /assets/ 30d immutable；index.html no-cache；gzip JS/CSS/JSON/SVG
                     └─ 非 /v1 路径 try_files → index.html（SPA history 路由回退）
@@ -98,7 +100,7 @@ Shell 与 LoginPage 双处消费防闪烁。锚点：session.test.tsx。
 | `ErrorBoundary`（main.tsx 挂全树） | 渲染期异常 → 可读错误面板 + 重载按钮（白屏=不可诊断的静默失败） | — |
 | `zh()` 字典回退 | 未知枚举键回显原键（数据不隐藏） | dict.test.ts |
 | TaskLogPanel `hhmmss` | int64 字符串统一 `Number()` 再 new Date（NaN 回归防御） | TaskLogPanel.test.tsx |
-| FindingDetailBody `base64ToUtf8` | atob 后必须经 `TextDecoder('utf-8')` 字节层解码（中文乱码回归，2026-08-30 会话#41） | codeContext.test.tsx |
+| FindingDetailBody `base64ToUtf8` | atob 后必须经 `TextDecoder('utf-8')` 字节层解码 | codeContext.test.tsx |
 | SourceFileViewer | 行号超界钳制末行；>2 万行截断渲染并如实标注 | codeContext.test.tsx |
 | 吸收层 `absorbSnapshot` | 游标/去重兜底轮询与 WS 交叠重复 | TaskDetailSnapshot.test.tsx |
 
@@ -106,15 +108,15 @@ Shell 与 LoginPage 双处消费防闪烁。锚点：session.test.tsx。
 
 | 环节 | 事实 | 锚点 |
 |------|------|------|
-| 本地门禁 | `npm test`（vitest run，jsdom；test-setup 补 matchMedia）+ `npm run build`（`tsc -b` 类型门禁 + vite build） | 伞仓 make test-web / build-web |
+| 本地门禁 | `npm test`（vitest run，jsdom；test-setup 补 matchMedia）+ `npm run build`（`tsc -b` 类型门禁 + vite build） | 主仓库 make test-web / build-web |
 | 镜像 | 多阶段：node:20-alpine（npm ci + build，锁文件独立成层）→ nginx:1.27-alpine 托管 dist；HEALTHCHECK wget 80 | Dockerfile |
-| 部署 | `deploy.sh` 统一契约 `deploy\|check\|status\|start\|stop\|restart\|logs`；收敛式同步源码树 → compose up -d --build → 健康等待 + `/v1` 401 透传断言防假健康 | deploy.sh（伞仓 pb-B/pb-A 联动） |
+| 部署 | `deploy.sh` 统一契约 `deploy\|check\|status\|start\|stop\|restart\|logs`；收敛式同步源码树 → compose up -d --build → 健康等待 + `/v1` 401 透传断言防假健康。镜像 tag 变量化（Phase2 c9db185：compose `${WEB_IMAGE_TAG:-latest}`；deploy.sh 缺省=树 sha 构建，显式 env 恒尊重——详见 deployment.md） | deploy.sh（主仓库 pb-B/pb-A 联动） |
 | 类型门禁范围 | tsconfig include `src`——**测试文件同受 strict 检查**（新测试破坏 tsc = 门禁红） | tsconfig.json |
 
 ## D-9 数据形状的「单点锚定」原则（贯穿性约定）
 
 REST 响应形状唯一锚定点 = `api/client.ts` 类型化端层；UI 组件只允许消费该层类型。
-历史上 20 处散落 `as` 手写形状曾让 `ProjectsPage res.dir` 死链路存活三个版本（ADR-203 实证）。
+历史上 20 处散落 `as` 手写形状曾让 `ProjectsPage res.dir` 死链路存活三个版本（实证）。
 配套机制：
 - 静态守卫：~~页面/组件目录禁止 `as {` 形状断言~~——**guard.sh 无此检查**（G-01 实为禁止整模块 mock api/client）；as-cast 收敛是渐进纪律（P-03），残余靠代码评审，B5 修正此前虚构的守卫表述；
 - 契约测试：clientContract.test.ts 逐条锚定 E-xx 请求/响应形状；

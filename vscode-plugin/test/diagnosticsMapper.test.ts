@@ -14,7 +14,7 @@ function finding(over: Partial<UnifiedFinding> = {}): UnifiedFinding {
     description: '反射型 XSS',
     severity: 'SEVERITY_HIGH',
     confidence: 0.9,
-    ai_verdict: 'AI_VERDICT_CONFIRMED',
+    verdict_direction: 'VERDICT_DIRECTION_TRUE', verdict_tier: 'VERDICT_TIER_DEFINITE',
     ai_confidence: 0.8,
     ai_reasoning: '',
     ai_fix_suggestion: '',
@@ -53,11 +53,11 @@ describe('diagnosticsMapper', () => {
     const m = mapFinding(finding());
     assert.ok(m!.message.includes('[semgrep] XSS'));
     assert.ok(m!.message.includes('CWE-79'));
-    assert.ok(m!.message.includes('AI:AI_VERDICT_CONFIRMED'));
+    assert.ok(m!.message.includes('确认为真'));
     assert.strictEqual(m!.code, 'CWE-79');
   });
 
-  it('SEVERITY_LABEL 键集 golden：与 proto Severity 六枚举全等（漂移即红，B2-4；伞仓 parity 闸门同口径）', () => {
+  it('SEVERITY_LABEL 键集 golden：与 proto Severity 六枚举全等（漂移即红，B2-4；主仓库 parity 闸门同口径）', () => {
     assert.deepStrictEqual(Object.keys(SEVERITY_LABEL), [
       'SEVERITY_CRITICAL',
       'SEVERITY_HIGH',

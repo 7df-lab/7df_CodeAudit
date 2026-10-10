@@ -1,0 +1,73 @@
+: ts 2026-09-17T10:00:01.123456789Z
+event: bridge.hello
+data: {"provider":"dsh","model":"deepseek-chat-v3.2","agentCwd":"/sandbox/project","filter":{}}
+
+: ping
+
+: ts 2026-09-17T10:00:02.123456789Z
+event: session.status
+data: {"sessionId":"main","status":"running"}
+
+: ts 2026-09-17T10:00:03.123456789Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"turn/start","data":{"turn":1}}}
+
+: ts 2026-09-17T10:00:04.123456789Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"user/message","data":{"content":[{"type":"text","text":"任务卡：审计 /sandbox/project，重点回调幂等性。"}]}}}
+
+: ts 2026-09-17T10:00:05.123456789Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"assistant/chunk","data":{"chunk":{"type":"reasoning-delta","text":"先定位重试入口。"}}}}
+
+: ts 2026-09-17T10:00:06.123456789Z
+event: session.stream
+data: {"sessionId":"main","frame":{"type":"chunk","attemptId":"a1","chunk":{"type":"text-delta","text":"从回调入口开始定位。"}}}
+
+: ts 2026-09-17T10:00:07.123456789Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"assistant/chunk","data":{"chunk":{"type":"usage","usage":{"inputTokens":1200,"outputTokens":80,"cacheReadTokens":300}}}}}
+
+: ts 2026-09-17T10:00:08.123456789Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"assistant/chunk","data":{"chunk":{"type":"finish","reason":{"kind":"tool-calls"}}}}}
+
+: ts 2026-09-17T10:00:09.123456789Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"tool/call","data":{"name":"submit_findings","callId":"call_basic_c1","arguments":"{\"findings\":[{\"title\":\"Callback is not idempotent\",\"severity\":\"SEVERITY_HIGH\",\"file_path\":\"src/pay/callback.go\",\"start_line\":42}]}"}}}
+
+: ts 2026-09-17T10:00:09.5Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"approval/asked","data":{"id":"apr_basic_1","toolName":"submit_findings","callId":"call_basic_c1","reason":"read-only submission"}}}
+
+: ts 2026-09-17T10:00:10.123456789Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"approval/decided","data":{"id":"apr_basic_1","outcome":"allowed-once"}}}
+
+: ts 2026-09-17T10:00:12.123456789Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"turn/end","data":{"reason":{"kind":"stop"}}}}
+
+: ts 2026-09-17T10:00:13.123456789Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"turn/start","data":{"turn":2}}}
+
+: ts 2026-09-17T10:00:14.123456789Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"assistant/message","data":{"turn":2,"step":0,"stream":[{"type":"text-chunks","texts":["（重复正文，应被忽略）"]}],"message":{"content":[{"type":"text","text":"复核完成：无新增发现。"}]}}}}
+
+: ts 2026-09-17T10:00:15.123456789Z
+event: session.status
+data: {"sessionId":"main","status":"idle"}
+
+: ts 2026-09-17T10:00:16.123456789Z
+event: subagent.started
+data: {"parentSessionId":"main","childSessionId":"8f3a-demo-child-0001"}
+
+: ts 2026-09-17T10:00:17.123456789Z
+event: session.event
+data: {"sessionId":"8f3a-demo-child-0001","event":{"type":"user/message","data":{"content":[{"type":"text","text":"子任务：验证 callback.go:42"}]}}}
+
+: ts 2026-09-17T10:00:18.123456789Z
+event: subagent.finished
+data: {"provider":"dsh-subagent-in-process","agentId":"8f3a-demo-child-0001","parentSessionId":"main","childSessionId":"8f3a-demo-child-0001","status":"ok","stopReason":"completed"}

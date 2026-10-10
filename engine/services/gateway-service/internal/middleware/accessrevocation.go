@@ -3,7 +3,7 @@ package middleware
 // R88: 网关本地 access token 撤销集——登出即时性补齐。服务端 revokedTokens 仅
 // GetCurrentUser 消费，网关业务路由此前不回查：登出后 access（30min）在全部业务
 // 路由照常可用。refresh 侧由服务端会话纪元（R87）负责；本集只管 access 的即时性。
-// TTL=access TTL 30min（07 §8 口径），超时条目随查询惰性清扫（rateLimiter
+// TTL=access TTL 30min（07 §8/B5-2 口径），超时条目随查询惰性清扫（rateLimiter
 // cleanup 同款形态）。
 
 import (
@@ -14,7 +14,7 @@ import (
 var (
 	accessRevokedMu sync.RWMutex
 	accessRevoked   = make(map[string]time.Time)
-	// accessRevocationTTL — 撤销记录保留时长=access TTL（07 §8 口径 30min）；
+	// accessRevocationTTL — 撤销记录保留时长=access TTL（07 §8/B5-2 口径 30min）；
 	// 超过即自然过期无需查询。var 仅为测试可注入（TTL 行为面）。
 	accessRevocationTTL = 30 * time.Minute
 )

@@ -49,19 +49,23 @@ def service_tree(service):
 # 1. 路由表 ↔ 代码
 # ---------------------------------------------------------------------------
 
-def docs_routes():
-    """解析 api-external.md §2 路由总表 → {(METHOD, path)}。"""
+def docs_route_rows():
+    """解析 api-external.md §2 路由总表 → [(METHOD, path)]（保留重复，供重复行看护）。"""
     md = read("docs/api-external.md")
     section = md.split("## 2. 路由总表", 1)[1].split("## 3.", 1)[0]
-    routes = set()
-    for m in re.finditer(r"^\| (GET|POST|PUT|DELETE|PATCH) (\S+) \|", section, re.M):
-        routes.add((m.group(1), m.group(2)))
-    return routes
+    return re.findall(r"^\| (GET|POST|PUT|DELETE|PATCH) (\S+) \|", section, re.M)
+
+
+def docs_routes():
+    """解析 api-external.md §2 路由总表 → {(METHOD, path)}。"""
+    return set(docs_route_rows())
 
 
 def code_routes():
     """从 transcode.go + main.go 的字面量抽取路由面 → {(METHOD, path)}。"""
     src = read("services/gateway-service/internal/handler/transcode.go")
+    # 编排 CRUD 批：orchestrations 路由独立成文件——并入字面提取面
+    src += "\n" + read("services/gateway-service/internal/handler/orchestrations.go")
     main_src = read("services/gateway-service/cmd/main.go")
 
     routes = set()
@@ -84,7 +88,12 @@ def code_routes():
             sub = re.search(r'rest\[1\] == "([^"]+)"', line)
             sub0 = re.search(r'rest\[0\] == "([^"]+)"', line)
             n = re.search(r"len\(rest\) == (\d)", line)
-            if sub:
+            nodes_sub = re.search(r'rest\[2\] == "nodes".*rest\[4\] == "([^"]+)"', line)
+            if nodes_sub:
+                # v0.5 图节点动作（/v1/tasks/{id}/graph/nodes/{nid}/{action}）——
+                # rest[3]=节点变量段；sub(rest[1]="graph") 不再产出短路径。
+                out.add((method, f"/v1/{domain}/{{id}}/graph/nodes/{{nid}}/{nodes_sub.group(1)}"))
+            if sub and not nodes_sub:
                 out.add((method, f"/v1/{domain}/{{id}}/{sub.group(1)}"))
             elif sub0 and n and n.group(1) == "1":
                 out.add((method, f"/v1/{domain}/{sub0.group(1)}"))
@@ -128,6 +137,22 @@ def code_routes():
         routes.add(("GET", "/health"))
     if 'apiMux.HandleFunc("/v1/uploads/archive"' in main_src:
         routes.add(("POST", "/v1/uploads/archive"))
+
+    # 按名寻址的变量段（proto 语义= name 字段，web 消费端传 encodeURIComponent(name)）：
+    # orchestrations=编排名、inference providers=provider 名（api-external §3.11 路径名
+    # 权威）、workspaces=区名。这些路径的记号必须是 {name}——归一化成 {id} 会把"传名"
+    # 写成"传 id"误导调用方。其余变量段
+    # （tasks/users/projects/findings/reports/notifications）= 真实实体 id，保持 {id}。
+    NAME_ADDRESSED = {
+        ("PUT", "/v1/orchestrations/{id}"),
+        ("DELETE", "/v1/orchestrations/{id}"),
+        ("DELETE", "/v1/workspaces/{id}"),
+        ("GET", "/v1/inference/providers/{id}"),
+        ("PUT", "/v1/inference/providers/{id}"),
+        ("DELETE", "/v1/inference/providers/{id}"),
+    }
+    routes = {(m, p.replace("{id}", "{name}")) if (m, p) in NAME_ADDRESSED else (m, p)
+              for m, p in routes}
     return routes
 
 
@@ -146,6 +171,14 @@ def test_route_table_nonempty():
     assert len(code_routes()) >= 40, f"代码路由抽取异常（仅 {len(code_routes())} 条）"
 
 
+def test_route_table_no_duplicate_rows():
+    """路由表不得有重复行——set 语义天然容错重复（2026-09-21 编排 CRUD 批四行重复
+    存活一个提交周期无人发现，docs 校准批补齐盲区）。"""
+    rows = docs_route_rows()
+    dups = {r for r in rows if rows.count(r) > 1}
+    assert not dups, f"路由表重复行（编辑事故残迹，须删重）: {sorted(dups)}"
+
+
 # ---------------------------------------------------------------------------
 # 2. 鉴权链结构
 # ---------------------------------------------------------------------------
@@ -161,12 +194,14 @@ def test_gateway_auth_ratelimit_chain_built_once():
 
 
 def test_gateway_auth_chain_order():
-    """保护链必须 JWT 外置包 RateLimit（限流键读 sub，ADR-212⑨）；/v1/auth/* 免 JWT。"""
+    """保护链必须 Logging→JWT→RateLimit（限流键读 sub，ADR-212⑨；Logging 外置=业务面
+    访问日志+WS ?token= redactToken 脱敏生效，第四轮审计 P2——17d584eb 重排序曾顺手
+    丢 Logging 使全部业务路由零访问日志）；/v1/auth/* 免 JWT。"""
     main_src = read("services/gateway-service/cmd/main.go")
     assert "strings.HasPrefix(r.URL.Path, \"/v1/auth/\")" in main_src, "/v1/auth/* 免 JWT 分支缺失"
-    # protected 链：JWTMiddleware(secret, RateLimitMiddleware(...))
-    m = re.search(r"protected := middleware\.JWTMiddleware\(cfg\.JWTSecret,\s*\n\s*middleware\.RateLimitMiddleware\(", main_src)
-    assert m, "保护链中间件序漂移：应为 JWT(RateLimit(handler))——限流键依赖 JWT sub（ADR-212⑨）"
+    # protected 链：LoggingMiddleware(JWTMiddleware(secret, RateLimitMiddleware(...)))
+    m = re.search(r"protected := middleware\.LoggingMiddleware\(\s*\n\s*middleware\.JWTMiddleware\(cfg\.JWTSecret,\s*\n\s*middleware\.RateLimitMiddleware\(", main_src)
+    assert m, "保护链中间件序漂移：应为 Logging(JWT(RateLimit(handler)))——限流键依赖 JWT sub（ADR-212⑨），访问日志/WS token 脱敏依赖 Logging 外置（第四轮审计 P2）"
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +248,8 @@ SERVICE_DIRS = {
     "UserService": "project-service",
     "ResultService": "result-service",
     "ReportService": "result-service",
-    "DSHRuntimeService": "dsh-runtime-service",
-    "CodeAnalysisService": "dsh-runtime-service",
+    "RuntimeService": "runtime-service",
+    "CodeAnalysisService": "runtime-service",
     "SASTAdapterService": "sast-adapter-service",
     "SASTFusionService": "sast-adapter-service",
     "StorageService": "storage-service",
@@ -224,7 +259,7 @@ SERVICE_DIRS = {
 # 文档记载的显式 Unimplemented 集合（api-internal.md §0；有人悄悄改回 Unimplemented → 红）
 DOCUMENTED_UNIMPLEMENTED = {
     "TaskService": {"WatchTaskProgress"},
-    "DSHRuntimeService": {"WatchAnalysisProgress"},
+    "RuntimeService": {"WatchAnalysisProgress"},
     "CodeAnalysisService": {"GetCallGraph", "GetDataFlow", "GetAnalysisProgress"},
 }
 
@@ -240,13 +275,24 @@ def proto_services():
 
 def test_proto_rpc_counts():
     """proto 11 service / 112 RPC 口径（文档与实际声明的结构不变量；
-    2026-09-07 ADR-217 起 104→110：DSHRuntimeService +6 推理管理面 RPC；
+    2026-09-07 ADR-217 起 104→110：RuntimeService +6 推理管理面 RPC；
     2026-09-10 ADR-225 起 110→111：ResultService +InheritFindings 增量继承；
-    2026-09-10 ADR-225 S5 起 111→112：StorageService +GetStorageMode 档位探测）。"""
+    2026-09-10 ADR-225 S5 起 111→112：StorageService +GetStorageMode 档位探测；
+    2026-09-18 ADR-247 起 112→113：TaskService +GetTaskUsage 计量查询〔切片3后半〕；
+    2026-09-19 切片3b 起 113→114：RuntimeService +ListWorkspaces（team 上车选择器数据源）；
+    2026-09-19 切片3b 扩面 114→116：+CreateWorkspace/+DeleteWorkspace（web 工作区管理页通道）；
+    2026-09-19 ADR-249（切片 5+6）116→117：RuntimeService +RunGraphTask（图执行模式）；
+    2026-09-20 暴露批 P1a 117→118：TaskService +GetTaskGraph（图执行视图投影，graph.log 回放）；
+    2026-09-21 编排 CRUD 批 118→122：TaskService +ListOrchestrations/+CreateOrchestration/
+    +UpdateOrchestration/+DeprecateOrchestration（负载 pack 生命周期，人类裁决立项）；
+    2026-10-02 TP20-T2 切换 Agent 收口 126→128：RuntimeService +ListAgents
+    （清单端点）+TaskService +SetTaskAgent（PAUSED|QUEUED 态换笔）；
+    2026-10-04 TP21-T1 邀请码管理批 128→133：UserService +Create/List/Revoke/
+    DeleteInviteCode +GetRegistrationPolicy（V2.2 ADR-255）。"""
     services = proto_services()
     assert set(services) == set(SERVICE_DIRS), f"proto service 集合漂移: {set(services) ^ set(SERVICE_DIRS)}"
     total = sum(len(v) for v in services.values())
-    assert total == 112, f"proto RPC 总数 {total} != 112（文档/api-internal.md 需同步）"
+    assert total == 133, f"proto RPC 总数 {total} != 133（文档/api-internal.md 需同步）"
 
 
 def test_every_proto_rpc_has_impl():
@@ -265,7 +311,7 @@ def _impl_stubs(svc_dir, rpc_index):
     """服务目录内的 (proto service, 方法) 裸桩集合。
 
     归位规则：接收者结构体名 `<Service>Impl` 优先（同目录多 service 共存时同名
-    RPC 靠它消歧，如 dsh-runtime 的 GetAnalysisProgress 双声明双实现）；
+    RPC 靠它消歧，如 runtime 的 GetAnalysisProgress 双声明双实现）；
     无 Impl 后缀时退回"仅一个 proto service 声明该方法"的单候选判定。
     """
     stubs = set()
@@ -389,6 +435,76 @@ def test_known_divergence_table_rows():
     section = md.split("## 7. 已知文档/配置与代码漂移", 1)[1].split("## 8.", 1)[0]
     for row in ("| D1 |", "| D2 |", "| D3 |", "| D4 |"):
         assert row in section, f"漂移表 {row} 行被删除——已知问题必须保持可见（修复后改写为已解决，而非删行）"
+
+
+def test_verify_sh_gating_conditions_sigpipe_safe():
+    """R96: verify.sh 门禁存在性条件禁用裸 find|grep -q 管道。
+
+    set -o pipefail 下 find 输出超过管道缓冲时 grep -q 提前退出 → find 收 SIGPIPE
+    以 141 退出 → pipefail 把整条管道判假 → "无测试文件"分支静默命中，G2 Go/pytest
+    单测被跳过而门禁照报 PASS（2026-09-18 实证：10 checks 假绿，Go 单测未跑）。
+    修法=find 加 -print -quit（输出至多一行，无管道破裂）。本断言防回潮。
+    """
+    src = read(".agent/verify.sh")
+    for i, line in enumerate(src.splitlines(), 1):
+        if "find " in line and "| grep -q" in line and "-print -quit" not in line:
+            raise AssertionError(
+                f"verify.sh:{i} 存在裸 find|grep -q 门禁条件（pipefail 下 SIGPIPE 假阴性，R96）: {line.strip()}")
+
+
+def test_compose_mount_placement():
+    """R108: base compose 挂载归属=消费方服务块（ADR-245/ADR-248）。
+
+    targeted.yaml 消费方=runtime（sandbox_analysis.go policyTmpl 缺省路径），
+    packs 目录消费方=task（ADR-245 约定键回落位）。72ce0b93 曾把 targeted 挂载
+    错放进 gateway 块——sim 链因 overlay 桥接挂对而全绿，dev/生产链 runtime
+    无模板、targeted 组合 fail-closed 失败（e2e 掩盖型缺陷，R108 复审抓出）。
+    """
+    import yaml
+
+    compose = yaml.safe_load(read("docker-compose.yml"))
+    mounts = {}
+    for name, spec in compose["services"].items():
+        pairs = set()
+        for v in spec.get("volumes") or []:
+            parts = v.split(":")
+            if len(parts) >= 2:
+                pairs.add((parts[0], parts[1]))
+        mounts[name] = pairs
+
+    assert ("./configs/packs", "/etc/codeaudit/packs") in mounts["task"], (
+        "task 服务缺 packs 约定位挂载（ADR-245 注册表装载，切片2 生产接线）")
+    assert ("./configs/policy/targeted.yaml",
+            "/etc/codeaudit/policy/targeted.yaml") in mounts["runtime"], (
+        "runtime 缺 targeted 模板挂载（ADR-248 消费方=sandbox_analysis.go，"
+        "错挂他服务=R108 复发）")
+    holders = {n for n, p in mounts.items()
+               if ("./configs/policy/targeted.yaml",
+                   "/etc/codeaudit/policy/targeted.yaml") in p}
+    assert holders == {"runtime"}, (
+        f"targeted 模板挂载归属漂移（恰 runtime 一处，实测 {holders}）——"
+        "挂错块=该链消费方读不到模板，fail-closed")
+
+
+def test_deploy_overlay_baton_wiring():
+    """R109: 生产 overlay runtime 必须 BATON 接线（env BATON_BIN + 宿主挂载）。
+
+    计量归集（task-service usage_collector 读 .tasklog/events.jsonl）与换手种子
+    投影（.sse.log→.tasklog/）都经 baton 钩子——生产面缺接线=钩子缺省禁用、两路
+    静默空转；sim 面自 TP17 已接而 e2e 只跑 sim（掩盖形态同 R108 的 overlay 桥接）。
+    """
+    import yaml
+
+    ov = yaml.safe_load(read("deploy/docker-compose.deploy.yml"))
+    dsh = ov["services"]["runtime"]
+    env = dsh.get("environment") or {}
+    assert env.get("BATON_BIN") == "/usr/local/codeaudit-baton/baton", (
+        "生产 overlay runtime 缺 BATON_BIN env（计量/换手投影空转，R109）")
+    vols = dsh.get("volumes") or []
+    assert any(
+        v.startswith("${BATON_HOST_BIN_DIR:-/opt/codeaudit/bin}:/usr/local/codeaudit-baton")
+        for v in vols), (
+        f"生产 overlay runtime 缺 baton 宿主挂载（实测 volumes={vols}，R109）")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+# 构建上下文收窄（ADR-233）：镜像构建输入 = services/ + libs/ + configs/ + proto/ + scripts/。
+# 注意与 .gitignore 是两套机制——gitignore 挡不住 docker build 的上下文打包：
+# .toolchain 是 GB 级本地 Go 工具链，本地直构（compose context=.）若不在此挡，
+# 会整个打进上下文送 daemon（<host-id> 远端树靠 tar exclude 躲过，本地构建无此防线）。
+.git
+.gitignore
+.gitmodules
+.toolchain
+.agent
+docs
+tests
+*.md

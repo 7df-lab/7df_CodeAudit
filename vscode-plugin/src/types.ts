@@ -146,7 +146,10 @@ export interface UnifiedFinding {
   description: string;
   severity: string; // proto Severity 枚举名，如 SEVERITY_HIGH
   confidence: number;
-  ai_verdict: string;
+  // 判定两轴：
+  // direction=未判定/判真/判假；tier=确定/可能（方向未判定时恒 UNSPECIFIED）
+  verdict_direction: string;
+  verdict_tier: string;
   ai_confidence: number;
   ai_reasoning: string;
   ai_fix_suggestion: string;

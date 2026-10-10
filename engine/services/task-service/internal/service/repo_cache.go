@@ -1,18 +1,19 @@
 // repo_cache.go — 数据面：桶为持久 SSOT，共享卷为可丢弃缓存（ADR-225 D6）。
 //
-// 设计依据: 伞仓 docs/designs/incremental-scan.md §4.10（丢弃时机）：
-//   F12 树 tar 入桶：Prepare 产出的剥壳根打成 trees/<task_id>.tar.gz 流式上传
-//       storage（trees 域桶），成功后 file_id 回写任务 config.tree_tar_file_id——
-//       持久锚点兼 GC 删除前提与 gateway 重物化依据；失败不阻塞主流程（诚实记账）。
-//   F13 卷缓存丢弃（三条触发线 + 硬保护，执行者=周期对账回收器，ADR-210 同模式）：
-//       ①TTL：终态 && tar 在桶（HEAD 校验）&& 距终态超过 repo_cache_ttl_s → 丢弃
-//       ②容量：卷用量超 repo_cache_max_bytes → 终态任务旧→新强制驱逐（tar 前提不变）
-//       ③孤儿：目录在但任务记录不在 → repo_cache_orphan_ttl_s 后清理+记账
-//       硬保护：运行中/PAUSED 任务的树绝不删；storage=memory 档全线停用
-//       （GetStorageMode 探测——memory 档对象在内存重启即失，删卷树=数据不可恢复）；
-//       ai-interaction（R36 共享卷邻居）与 .gateway-cache（gateway 重物化缓存）绝不触碰；
-//       重试不依赖旧树（cloneRepo/archive 先清残留重建），驱逐不影响重试语义；
-//       删除动作=先原子改名隔离（.gc-<ts>）再 rm（并发读者句柄不断流）。
+// 设计依据: 主仓库 docs/designs/incremental-scan.md §4.10（五轮定稿的丢弃时机）：
+//
+//	F12 树 tar 入桶：Prepare 产出的剥壳根打成 trees/<task_id>.tar.gz 流式上传
+//	    storage（trees 域桶），成功后 file_id 回写任务 config.tree_tar_file_id——
+//	    持久锚点兼 GC 删除前提与 gateway 重物化依据；失败不阻塞主流程（诚实记账）。
+//	F13 卷缓存丢弃（三条触发线 + 硬保护，执行者=周期对账回收器，ADR-210 同模式）：
+//	    ①TTL：终态 && tar 在桶（HEAD 校验）&& 距终态超过 repo_cache_ttl_s → 丢弃
+//	    ②容量：卷用量超 repo_cache_max_bytes → 终态任务旧→新强制驱逐（tar 前提不变）
+//	    ③孤儿：目录在但任务记录不在 → repo_cache_orphan_ttl_s 后清理+记账
+//	    硬保护：运行中/PAUSED 任务的树绝不删；storage=memory 档全线停用
+//	    （GetStorageMode 探测——memory 档对象在内存重启即失，删卷树=数据不可恢复）；
+//	    ai-interaction（R36 共享卷邻居）与 .gateway-cache（gateway 重物化缓存）绝不触碰；
+//	    重试不依赖旧树（cloneRepo/archive 先清残留重建），驱逐不影响重试语义；
+//	    删除动作=先原子改名隔离（.gc-<ts>）再 rm（并发读者句柄不断流）。
 package service
 
 import (
@@ -175,8 +176,8 @@ const maxTreeTarBytes = 512 << 20
 func writeTreeTarGz(w io.Writer, root string) (int, error) {
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
-	n := 0      // 文件计数（roundtrip 断言消费）
-	total := 0  // R62: 累计字节（上限判定，勿混入 n）
+	n := 0     // 文件计数（roundtrip 断言消费）
+	total := 0 // R62: 累计字节（上限判定，勿混入 n）
 	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -406,17 +407,27 @@ func (g *repoCacheGC) enforceCapacity(storageAddr string, now time.Time) {
 			continue
 		}
 		g.s.mu.RLock()
+		// 第四轮审计 P2-1：Status/Config/UpdatedAt 全部持锁拷贝（tick() 同款）——
+		// 原先锁外读 GetConfig() 与锁内写者并发是并发 map 读写，Go runtime 直接 fatal。
 		task, known := g.s.tasks[taskID]
+		var terminal bool
+		var updatedAt time.Time
+		var tarFileID string
+		if known {
+			terminal = isTerminalStatus(task.GetStatus())
+			updatedAt = task.GetUpdatedAt().AsTime()
+			tarFileID = task.GetConfig()["tree_tar_file_id"]
+		}
 		g.s.mu.RUnlock()
-		if !known || !isTerminalStatus(task.GetStatus()) {
+		if !known || !terminal {
 			continue
 		}
-		if task.GetConfig()["tree_tar_file_id"] == "" {
+		if tarFileID == "" {
 			continue
 		}
 		cands = append(cands, candidate{
 			dir: filepath.Join(g.s.reposDir, e.Name()), taskID: taskID,
-			tarID: task.GetConfig()["tree_tar_file_id"], updatedAt: task.GetUpdatedAt().AsTime(),
+			tarID: tarFileID, updatedAt: updatedAt,
 		})
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].updatedAt.Before(cands[j].updatedAt) })
@@ -534,8 +545,7 @@ func storageFileInfo(addr, fileID string) (*pb.StoredFile, error) {
 	return pb.NewStorageServiceClient(conn).GetFileInfo(ctx, &pb.GetFileInfoRequest{FileId: fileID})
 }
 
-
-// sweepTerminalAux — R69（2026-09-12 待办收尾）：终态且超出保留窗的任务，清扫其
+// sweepTerminalAux — R69：终态且超出保留窗的任务，清扫其
 // 运行期辅助态（logs——ADR-167 内存态设计、重启即忘，清扫同语义；incrementalCtx——
 // diff 快照已在任务实体，上下文可弃）。防长生命周期服务无界增长。contexts 保留
 // （详情页 output_refs 消费面）。幂等三表超容量整体重置（语义=重启遗忘，03 §2 重放

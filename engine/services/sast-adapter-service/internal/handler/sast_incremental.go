@@ -1,8 +1,8 @@
 // sast_incremental.go — 增量扫描文件清单执行模式（ADR-225 §4.5）。
 //
-// 依据: 伞仓 docs/designs/incremental-scan.md §4.5——changed_files 非空时仅对
+// 依据: 主仓库 docs/designs/incremental-scan.md §4.5——changed_files 非空时仅对
 // 清单文件执行工具；argv 来自可选配置 sast_adapter.tools.<id>.files_argv
-//（{files} 占位符=本批文件；{rules} 同目录模板解析）。分批与 results 数组合并
+// （{files} 占位符=本批文件；{rules} 同目录模板解析）。分批与 results 数组合并
 // 沿用 ADR-144 semgrepFilesFallback 已验证形态（bandit/opengrep 的 -f json 输出
 // 同为顶层 results 数组，合并语义一致）。
 package handler
@@ -22,8 +22,34 @@ import (
 )
 
 // maxIncrementalFiles — 文件清单模式单任务文件数上限：超出降级全目录
-//（argv 长度与执行时长防护；500×~200B≈100KB 远离 ARG_MAX）。
+// （argv 长度与执行时长防护；500×~200B≈100KB 远离 ARG_MAX）。
 const maxIncrementalFiles = 500
+
+// validateChangedFiles — 第四轮审计 P2：changed_files 是 gRPC 请求字段，进 argv
+// 前必须消毒——①前导 "-" 会被工具当选项解析（R74 git 选项注入同类）；②".." 经
+// filepath.Join 清洗后逃逸项目根，任意路径文件被扫描并把内容带进 findings；
+// ③绝对路径同属逃逸。正常链路（task-service diff 产物）是相对路径，白名单外
+// 即拒绝（InvalidArgument，不静默修剪）。
+func validateChangedFiles(changedFiles []string) error {
+	for _, cf := range changedFiles {
+		if cf == "" {
+			return status.Error(codes.InvalidArgument, "changed_files contains empty entry")
+		}
+		if strings.HasPrefix(cf, "-") {
+			return status.Errorf(codes.InvalidArgument, "changed_files entry %q must not start with '-' (option injection)", cf)
+		}
+		norm := strings.ReplaceAll(cf, "\\", "/")
+		if strings.HasPrefix(norm, "/") {
+			return status.Errorf(codes.InvalidArgument, "changed_files entry %q must be relative (inside project root)", cf)
+		}
+		for _, seg := range strings.Split(norm, "/") {
+			if seg == ".." {
+				return status.Errorf(codes.InvalidArgument, "changed_files entry %q must not traverse outside the project ('..' segment)", cf)
+			}
+		}
+	}
+	return nil
+}
 
 // incrementalFilesChunk — 单批文件数（ADR-144 同款口径）。
 const incrementalFilesChunk = 40
@@ -31,7 +57,10 @@ const incrementalFilesChunk = 40
 // runFilesMode — 文件清单模式：files_argv 模板 + 分批执行 + results 合并。
 // 任一批产出即合并；全部批次失败返回错误（与目录模式的工具失败语义一致，
 // 由调用方按 04 §6 跳过继续）。
-func (h *SASTAdapterHandler) runFilesMode(absProject, tool string, tc toolCommand, changedFiles []string) ([]byte, error) {
+func (h *SASTAdapterHandler) runFilesMode(ctx context.Context, absProject, tool string, tc toolCommand, changedFiles []string) ([]byte, error) {
+	if err := validateChangedFiles(changedFiles); err != nil {
+		return nil, err
+	}
 	// 相对路径 → 绝对路径（与 {project} 目录模式同一基准根）
 	files := make([]string, 0, len(changedFiles))
 	for _, cf := range changedFiles {
@@ -56,8 +85,8 @@ func (h *SASTAdapterHandler) runFilesMode(absProject, tool string, tc toolComman
 		if aerr != nil {
 			return nil, status.Error(codes.Unavailable, aerr.Error()+"（04 §6 工具失败→跳过继续）")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), h.scanTimeout)
-		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		tctx, cancel := context.WithTimeout(ctx, h.scanTimeout) // R138：RPC ctx 为父（取消传播）
+		cmd := exec.CommandContext(tctx, argv[0], argv[1:]...)
 		if argv[0] == "python3" && tc.pythonPath != "" {
 			cmd.Env = append(os.Environ(), "PYTHONPATH="+tc.pythonPath)
 		}

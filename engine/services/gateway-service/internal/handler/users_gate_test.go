@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	pb "github.com/codeaudit/proto-gen"
 	"github.com/codeaudit/services/gateway-service/internal/middleware"
+	"github.com/golang-jwt/jwt/v5"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -41,7 +41,7 @@ type userGateBackend struct {
 	addr string
 	srv  *grpc.Server
 
-	mu       sync.Mutex
+	mu         sync.Mutex
 	updateReqs []*pb.UpdateUserRequest
 	loginToken string // 测试预签发的 access token（Login 应答返回）
 }

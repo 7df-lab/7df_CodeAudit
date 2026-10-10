@@ -80,10 +80,10 @@ describe('TasksPage（任务↔报告对称）', () => {
   });
 });
 
-// （审计修复）：发现数单元格——带 pagination:{page_size:100}（契约形状分页缺省命中
-// 服务端极小缺省页，>缺省条数任务的发现数被截断）；计数优先消费 pagination.total（服务端
+// B4-3（审计修复）：发现数单元格——带 pagination:{page_size:100}（契约形状分页默认命中
+// 服务端极小默认页，>默认条数任务的发现数被截断）；计数优先消费 pagination.total（服务端
 // 权威总数），缺失回退已加载行数（上一用例的无 pagination 载荷即回退路径）。
-// 创建向导弹窗化（2026-09-14）：与新建项目 Modal 同构——列表页按钮直开弹窗，不再跳页
+// 创建向导弹窗化：与新建项目 Modal 同构——列表页按钮直开弹窗，不再跳页
 describe('TasksPage 新建任务弹窗（与新建项目同构）', () => {
   it('点"新建任务"开创建向导弹窗（含四步步骤条），取消可关闭', async () => {
     renderPage();
@@ -96,7 +96,7 @@ describe('TasksPage 新建任务弹窗（与新建项目同构）', () => {
   });
 });
 
-describe('TasksPage FindingCountCell 分页形状与 total 消费', () => {
+describe('TasksPage FindingCountCell 分页形状与 total 消费（B4-3）', () => {
   it('请求带 page_size:100；显示服务端 pagination.total（157）而非已加载行数（2）', async () => {
     routes['GET /v1/findings'] = () => ({
       findings: [
@@ -114,7 +114,7 @@ describe('TasksPage FindingCountCell 分页形状与 total 消费', () => {
   });
 });
 
-// B5-P1-2（web-audit-2026-09-12）：任务列表末页空表——task_service.go:1107 只在有下页时
+// B5-P1-2：任务列表末页空表——task_service.go:1107 只在有下页时
 // 才填 Pagination，末页响应经网关 protojson EmitUnpopulated 发 "pagination":null；
 // 旧代码 `total ?? 0` 塌成 0 → antd Table 判 `rows.length < total` 为假走本地切片
 // slice(20,40) → 末页空表+分页器消失（>20 任务必现）。修复=末页按页位推导 total 兜底。
@@ -127,7 +127,7 @@ describe('B5-P1-2: 末页 pagination=null 不塌空表', () => {
   it('21 个任务翻到末页：第 21 条可见，分页器不塌缩', async () => {
     routes['GET /v1/tasks'] = (ctx: HandlerCtx) => {
       const pag = JSON.parse(ctx.query.get('pagination') ?? '{"cursor":"0"}');
-      if (pag.page_size === 200) return { tasks: [] }; // 统计卡聚合查询
+      if (pag.page_size === 100) return { tasks: [] }; // 统计卡全量翻页查询（page_size 上限 100；列表页 20）
       if ((pag.cursor ?? '0') === '0') {
         return {
           tasks: Array.from({ length: 20 }, (_, i) => mkTask(i + 1)),

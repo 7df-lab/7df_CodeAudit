@@ -91,8 +91,8 @@ fi
 
 # Check Dockerfile
 echo -e "\n${YELLOW}7. Checking Dockerfile...${NC}"
-if grep -q "golang:1.22-alpine" Dockerfile && grep -q "alpine:latest" Dockerfile; then
-    echo -e "  ${GREEN}✓${NC} Multi-stage Dockerfile with golang:1.22-alpine and alpine:latest"
+if grep -q "golang:1.22-alpine" Dockerfile && grep -q "alpine:3.19" Dockerfile; then
+    echo -e "  ${GREEN}✓${NC} Multi-stage Dockerfile with golang:1.22-alpine and alpine:3.19"
 else
     echo -e "  ${RED}✗${NC} Dockerfile missing required stages"
     exit 1

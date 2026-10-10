@@ -1,0 +1,8 @@
+{
+  "workspace_id": "22222222-2222-4222-8222-222222222222",
+  "task": "T-1042",
+  "created_ts": "2026-09-17T10:00:00Z",
+  "git_anchor": "abc123def456",
+  "parent_workspace_id": null,
+  "vcs": "git"
+}

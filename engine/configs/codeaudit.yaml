@@ -1,7 +1,7 @@
 # =============================================================================
 # CodeAudit 全局配置文件（唯一可调值承载处 — ADR-137）
 #
-# 规则（人类裁决 2026-08-29："整个项目的各类硬编码内容均存放在配置文件中"）：
+# 规则：
 #   1. 本文件承载全项目全部非密钥可调值：端口、地址、超时、重试、分页、限流、
 #      工具命令、融合阈值、Webhook 订阅等。代码内不再保留业务缺省值——
 #      缺键启动即失败（fail-fast），杜绝"代码默认值与部署环境漂移"。
@@ -21,7 +21,7 @@ ports:
   sast_adapter: 50051
   project: 50052
   task: 50054
-  dsh_runtime: 50057
+  runtime: 50057
   storage: 50055
   result: 50058
 
@@ -30,7 +30,7 @@ addresses:
   sast_adapter: localhost:50051
   project: localhost:50052
   task: localhost:50054
-  dsh_runtime: localhost:50057
+  runtime: localhost:50057
   result: localhost:50058
   storage: localhost:50055
 
@@ -40,7 +40,7 @@ gateway:
   # 限流是否信任 X-Forwarded-For（仅部署于可信反向代理之后为 true）
   # 依据: 07 §7 单用户限流口径；ADR-132 防客户端伪造
   trust_proxy: false
-  rate_limit_per_min: 100           # 07 §7 gateway（单用户）100 req/min
+  rate_limit_per_min: 100           # 07 §7 gateway（单用户）100 req/min（2026-09-10 人类指令 50→100）
   grpc_call_timeout_s: 30           # 网关→服务同步调用上界（07 §8 矩阵最短行 10m 的 REST 交互口径）
   shutdown_grace_s: 15              # 优雅停机排空窗口
   uploads_dir: data/uploads         # ADR-145: 代码压缩包上传解包根目录（相对仓库根）
@@ -51,9 +51,9 @@ gateway:
 
 task:
   orchestrator:
-    # step_timeouts_s 已整体撤销（ADR-191 补遗）：编排
+    # step_timeouts_s 已整体撤销：编排
     # 全部步骤不再设外层时限——沙箱 DSH 审计回合（ai/verify/missed/review）深度分析
-    # 实测 30m 仍健康流式（实证被网掐死于提交前一步）；其余步骤同样
+    # 实测 30m 仍健康流式（gw-9b602266 实证被网掐死于提交前一步）；其余步骤同样
     # ctx 直通（任务取消仍可传播）。回合结束只认 DSH 流式显式信号；断流自愈=
     # SSE streamErr→teardown→降级链（07 §10）。07 §8 矩阵超时列自此仅供 RPC
     # 客户端参考，编排器不再强制。
@@ -100,7 +100,7 @@ sast_adapter:
       argv: ["opengrep", "--json", "--quiet", "--no-git-ignore", "--config", "{rules}/sql-taint.yaml", "{project}"]
       files_argv: ["opengrep", "--json", "--quiet", "--no-git-ignore", "--config", "{rules}/sql-taint.yaml", "{files}"]
 
-dsh_runtime:
+runtime:
   session:
     ttl_s: 1800                     # 07 §8 "DSH 会话存活 30m"
     janitor_interval_ratio: 6       # 过期清理周期 = TTL/ratio（ADR-134）
@@ -112,16 +112,20 @@ dsh_runtime:
     persist: 30                     # batchCreateFindingsToResult（07 §8 宽限）
   sandbox:                          # ADR-168: 沙箱内 DSH bridge 通道（JSON-RPC⇄SSE），南向唯一入口=openshell-manager
     mode: "openshell"               # "off"（降级内置 RuleScan/NEEDS_MANUAL，显式标注 ADR-175）| "openshell"（manager 不可达同样降级）
-    manager_url: "http://gateway.internal:18800"  # env OPENSHELL_MANAGER_URL 优先；现役=LXC 107 容器化实例（CD/openshell-manager）
+    manager_url: "http://192.0.2.122:18800"  # env OPENSHELL_MANAGER_URL 优先；现役=部署主机 容器化实例（CD/openshell-manager）
     manager_token: ""               # 空=OPENSHELL_MANAGER_TOKEN > ../openshell-manager/config.json tokenFile
-    workspace: "default"            # 网关工作区（须预先存在；manager 无建区接口，与引擎同源）
-    image: "dsh-pentest-sse:latest"  # 沙箱镜像（任何项目不钉固定版本, 一律最新; 构建事实源 dsh-pentest-sse/deploy.sh, 版本溯源走镜像构建史/sbom）
+    workspace: "default"            # 全局缺省工作区（ADR-247 起=回落档）：任务带 TaskOrigin.workspace
+                                     # （Project.team 恒等映射，创建时快照 config.workspace）时按 team 寻址。
+                                     # 注意：网关侧 workspace 区须预先存在——manager 全
+                                     # API 对未建区 NOT_FOUND（含 provider PUT，"PUT 即建"不成立）；建区途径在
+                                     # 网关（闭源上游）侧，per-team 首用前置=建区路径裁决（跨仓缺口已记 ADR-247）
+    image: "dsh-pentest-sse:latest"  # 沙箱镜像（人类指令 2026-09-06: 任何项目不钉固定版本, 一律最新; 构建事实源 dsh-pentest-sse/deploy.sh, 版本溯源走镜像构建史/sbom）
     wait_ready_timeout_s: 300       # 07 §8 沙箱就绪等待上界
     # R76: manager/bridge HTTP 兜底超时（挂起保险，非业务时限；须大于 07 §8 会话 30m 上界，
     # 缺省 2100s；env CODEAUDIT_DSH_HTTP_CLIENT_TIMEOUT_S 可覆盖）
     http_client_timeout_s: 2100
-    dsh_max_tokens: 32768              # bridge DSH_MAX_TOKENS（统一 32768，与镜像 settings.yaml models[].maxTokens 对齐——两层同值不再有覆盖歧义；实测单步最大输出 ~10K，32K 预算充裕；provider 校验上限 [1,131072]）
-    gateway_dial_addr: "gateway.internal:8080"  # 服务路由拨号（沙箱服务域无 DNS 通配，直拨网关+Host 头路由）；空=由 manager host 推导
+    dsh_max_tokens: 32768              # bridge DSH_MAX_TOKENS（人类指令 2026-09-04 统一 32768，与镜像 settings.yaml models[].maxTokens 对齐——两层同值不再有覆盖歧义；实测单步最大输出 ~10K，32K 预算充裕；provider 校验上限 [1,131072]）
+    gateway_dial_addr: "192.0.2.122:8080"  # 服务路由拨号（沙箱服务域无 DNS 通配，直拨网关+Host 头路由）；空=由 manager host 推导
     interaction_dir: "data/ai-interaction"   # AI 交互日志落盘根（ADR-168；最终交互日志留存）
 
 # ADR-175: ai_inference 段已随服务删除（LLM 语义分析走沙箱内 DSH）

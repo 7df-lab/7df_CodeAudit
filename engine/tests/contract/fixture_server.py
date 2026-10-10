@@ -388,7 +388,7 @@ class ReportServiceServicer(pb2_grpc.ReportServiceServicer):
         return iter([])
 
 
-class DSHRuntimeServiceServicer(pb2_grpc.DSHRuntimeServiceServicer):
+class RuntimeServiceServicer(pb2_grpc.RuntimeServiceServicer):
     def __init__(self, store):
         self._s = store
 
@@ -584,7 +584,7 @@ ALL_SERVICERS = {
     'UserService': UserServiceServicer,
     'ResultService': ResultServiceServicer,
     'ReportService': ReportServiceServicer,
-    'DSHRuntimeService': DSHRuntimeServiceServicer,
+    'RuntimeService': RuntimeServiceServicer,
     'CodeAnalysisService': CodeAnalysisServiceServicer,
     'SASTAdapterService': SASTAdapterServiceServicer,
     'SASTFusionService': SASTFusionServiceServicer,

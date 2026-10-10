@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://baton.codeaudit.dev/schema/workspace.schema.json",
+  "title": ".tasklog/WORKSPACE.json — 工作区身份标记",
+  "description": "Maka 第三边界（workspace 边界）的廉价版：换手重挂工作区前核对身份，标记不符=硬闸。工作区是一等制品，沙箱是易失资源。",
+  "type": "object",
+  "required": ["workspace_id", "task", "created_ts"],
+  "properties": {
+    "workspace_id": {"type": "string", "format": "uuid"},
+    "task": {"type": "string"},
+    "created_ts": {"type": "string", "format": "date-time"},
+    "git_anchor": {"type": "string", "description": "基准 commit sha（如有 VCS）"},
+    "parent_workspace_id": {"type": ["string", "null"], "description": "换手链路上的前任工作区（无=null）"},
+    "vcs": {"const": "git"}
+  },
+  "additionalProperties": false
+}

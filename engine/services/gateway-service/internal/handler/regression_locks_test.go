@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -141,9 +140,9 @@ func TestNotifications_ReadAll_UserFromJWTNotQuery(t *testing.T) {
 // projectCaptureBackend — 捕获 CreateProject 实收幂等键的进程内真实后端。
 type projectCaptureBackend struct {
 	pb.UnimplementedProjectServiceServer
-	addr      string
-	srv       *grpc.Server
-	gotReqID  string
+	addr     string
+	srv      *grpc.Server
+	gotReqID string
 }
 
 func startProjectCaptureBackend(t *testing.T) *projectCaptureBackend {
@@ -172,16 +171,11 @@ func TestCreateProject_IdempotencyInjectedAfterDecode(t *testing.T) {
 	tr := NewTranscoder(BackendAddrs{ProjectAddr: b.addr, CallTimeoutS: 5})
 	defer tr.Close()
 
-	srv := httptest.NewServer(tr.Handler())
-	defer srv.Close()
-	resp, err := http.Post(srv.URL+"/v1/projects", "application/json",
-		strings.NewReader(`{"project":{"name":"demo"}}`))
-	if err != nil {
-		t.Fatalf("POST: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("want 200, got %d", resp.StatusCode)
+	// ADR-257: 项目创建=操作面门禁，测试以 DEVELOPER claims 走注入管道
+	code, _ := httpJSONWithClaims(t, tr, "ROLE_DEVELOPER", "u-1", http.MethodPost, "/v1/projects",
+		`{"project":{"name":"demo"}}`)
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d", code)
 	}
 	if b.gotReqID == "" {
 		t.Fatalf("idempotency regression: metadata.request_id empty at backend (injection order broken by protojson.Unmarshal reset)")

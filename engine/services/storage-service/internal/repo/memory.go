@@ -3,6 +3,8 @@
 package repo
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"sync"
 	"time"
 
@@ -20,7 +22,7 @@ type MemoryStore struct {
 
 	// Idempotency cache for write RPCs (03 §2, R4).
 	// key = RequestMetadata.request_id
-	// ADR-228（2026-09-12 幂等三套统一）：与 Redis 档同口径——24h 去重窗口
+	// ADR-228：与 Redis 档同口径——24h 去重窗口
 	//（redis.go idemTTL）+ FIFO 上限 10k（内存防护）。窗口外同键视同新请求。
 	idempotencyMu   sync.RWMutex
 	idempotencyKeys map[string]*IdempotencyEntry
@@ -210,8 +212,14 @@ func startsWith(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
 
-// GenerateID is a simple unique-ID generator using nanosecond timestamp.
-// In production, use UUID.
+// GenerateID — 唯一 ID 生成（秒级时间戳前缀保可读 + crypto/rand 后缀防并发碰撞）。
+// R138（第四轮审计 P3-2，对齐 project-service R65 手法）：原纳秒时间戳在并发调用下
+// 可取到同一纳秒——file_id/notification_id 碰撞互相覆盖（通知侧每事件一个 ID，高频
+// 消费下碰撞面实际）。
 func GenerateID(prefix string) string {
-	return prefix + "-" + time.Now().Format("20060102150405.000000000")
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return prefix + "-" + time.Now().Format("20060102150405") + "-" + hex.EncodeToString(b[:])
+	}
+	return prefix + "-" + time.Now().Format("20060102150405.000000000") // crypto 失败极罕见：纳秒兜底保运行
 }

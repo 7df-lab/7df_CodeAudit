@@ -588,3 +588,76 @@ func TestUpdateUser_PreservesStateWhenUnspecified(t *testing.T) {
 		t.Fatalf("state 被缺省更新清零: %v, want ACTIVE（R85 保全缺失）", rec.User.GetState())
 	}
 }
+
+// TestListProjects_ServerSortFilter — ADR-256：服务端排序/筛选+offset+total 语义。
+func TestListProjects_ServerSortFilter(t *testing.T) {
+	h := setupProjectHandler()
+	// 三个项目，两类模式，名字乱序造
+	for _, spec := range []struct{ name, mode string }{
+		{"beta", "SCAN_MODE_AI_ONLY"},
+		{"alpha", "SCAN_MODE_FUSION"},
+		{"gamma", "SCAN_MODE_AI_ONLY"},
+	} {
+		_, err := h.CreateProject(context.Background(), &v1.CreateProjectRequest{
+			Metadata: &v1.RequestMetadata{RequestId: "req-sf-" + spec.name},
+			Project:  &v1.Project{Name: spec.name, DefaultScanMode: v1.ScanMode(v1.ScanMode_value[spec.mode])},
+		})
+		if err != nil {
+			t.Fatalf("create %s: %v", spec.name, err)
+		}
+	}
+
+	// name 升序
+	resp, err := h.ListProjects(context.Background(), &v1.ListProjectsRequest{
+		Sort: &v1.SortRequest{Field: "name", Order: v1.SortOrder_SORT_ORDER_ASC},
+	})
+	if err != nil {
+		t.Fatalf("sort name: %v", err)
+	}
+	got := []string{resp.GetProjects()[0].GetName(), resp.GetProjects()[1].GetName(), resp.GetProjects()[2].GetName()}
+	if got[0] != "alpha" || got[2] != "gamma" {
+		t.Fatalf("name 升序: %v", got)
+	}
+
+	// 模式过滤：AI_ONLY 恰 2 个，total 随过滤真实收缩
+	resp, err = h.ListProjects(context.Background(), &v1.ListProjectsRequest{
+		Filter: &v1.FilterRequest{Conditions: []*v1.FilterCondition{{
+			Field: "default_scan_mode", Operator: v1.FilterOperator_FILTER_OPERATOR_EQ, Value: "SCAN_MODE_AI_ONLY",
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("filter mode: %v", err)
+	}
+	if len(resp.GetProjects()) != 2 || resp.GetPagination().GetTotal() != 2 {
+		t.Fatalf("模式过滤: n=%d total=%d", len(resp.GetProjects()), resp.GetPagination().GetTotal())
+	}
+
+	// 名称包含过滤
+	resp, err = h.ListProjects(context.Background(), &v1.ListProjectsRequest{
+		Filter: &v1.FilterRequest{Conditions: []*v1.FilterCondition{{
+			Field: "name", Operator: v1.FilterOperator_FILTER_OPERATOR_CONTAINS, Value: "am",
+		}}},
+	})
+	if err != nil || len(resp.GetProjects()) != 1 || resp.GetProjects()[0].GetName() != "gamma" {
+		t.Fatalf("name 包含: err=%v n=%d", err, len(resp.GetProjects()))
+	}
+
+	// 白名单 fail-loud：未知排序键 / OR / 未知过滤字段
+	if _, err := h.ListProjects(context.Background(), &v1.ListProjectsRequest{
+		Sort: &v1.SortRequest{Field: "url"},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("未知排序键: %v", err)
+	}
+	if _, err := h.ListProjects(context.Background(), &v1.ListProjectsRequest{
+		Filter: &v1.FilterRequest{Operator: v1.LogicalOperator_LOGICAL_OPERATOR_OR},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("OR: %v", err)
+	}
+	if _, err := h.ListProjects(context.Background(), &v1.ListProjectsRequest{
+		Filter: &v1.FilterRequest{Conditions: []*v1.FilterCondition{{
+			Field: "owner", Operator: v1.FilterOperator_FILTER_OPERATOR_EQ, Value: "x",
+		}}},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("未知过滤字段: %v", err)
+	}
+}

@@ -1,0 +1,19 @@
+event: bridge.hello
+data: {"provider":"deepseek-official","model":"graph-model-1","agentCwd":"/sandbox"}
+
+: ts 2026-09-19T10:00:01Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"user/message","data":{"content":[{"type":"text","text":"图任务启动"}]}}}
+
+: ts 2026-09-19T10:00:02Z
+event: session.event
+data: {"sessionId":"g-n001","event":{"type":"user/message","data":{"content":[{"type":"text","text":"节点 n001 意图"}]}}}
+
+: ts 2026-09-19T10:00:03Z
+event: session.event
+data: {"sessionId":"g-n001","event":{"type":"tool/call","data":{"name":"submit_findings","arguments":"{\"findings\":[]}"}}}
+
+: ts 2026-09-19T10:00:04Z
+event: session.status
+data: {"sessionId":"g-n001","status":"idle"}
+

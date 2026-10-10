@@ -13,8 +13,9 @@
         "cwe_id": "CWE-200",
         "severity": "SEVERITY_LOW",
         "confidence": 0.4,
-        "ai_verdict": "AI_VERDICT_FALSE_POSITIVE",
-        "ai_confidence": 0.95
+        "ai_confidence": 0.95,
+        "verdict_direction": "FALSE",
+        "verdict_tier": "DEFINITE"
       },
       {
         "finding_id": "sast-golden-003",

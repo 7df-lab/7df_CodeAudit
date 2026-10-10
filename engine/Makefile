@@ -1,9 +1,9 @@
-.PHONY: all build build-go test test-go test-contract test-guardrails test-mutation lint lint-go proto verify clean help
+.PHONY: all build build-go images image-% test test-go test-contract test-guardrails test-mutation lint lint-go proto verify clean help
 
-# 7 服务全部为 Go（dsh-runtime 唯一入口 = cmd/main.go；requirements.txt 为 FastAPI
+# 7 服务全部为 Go（runtime 唯一入口 = cmd/main.go；requirements.txt 为 FastAPI
 # 时代遗留文件，不再是构建输入）。历史 build-python/test-python/lint-python 段
-# 随 dsh-runtime 的 Python 实现退役而删除（2026-09-05）。
-GO_SERVICES := gateway-service project-service task-service result-service storage-service sast-adapter-service dsh-runtime-service
+# 随 runtime 的 Python 实现退役而删除。
+GO_SERVICES := gateway-service project-service task-service result-service storage-service sast-adapter-service runtime-service
 
 # 默认目标
 all: verify build test
@@ -18,6 +18,18 @@ build-go:
 		( cd services/$$svc && GOPROXY=https://goproxy.cn,direct go build ./... ) || exit 1; \
 	done
 
+# 镜像构建（ADR-233）：统一镜像身份 codeaudit-<svc>:<tag>（compose 内 image: 键），
+# tag 缺省=engine git short sha——部署链（主仓库 sim.sh / production-deploy.sh / prod
+# deploy.sh）同口径钉版，缺省 latest=本地开发档。构建走各服务 Dockerfile，上下文
+# 由根 .dockerignore 收窄。
+ENGINE_IMAGE_TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
+
+images:  ## 构建全部 7 服务镜像（docker compose build）
+	@ENGINE_IMAGE_TAG="$(ENGINE_IMAGE_TAG)" docker compose build
+
+image-%:  ## 构建单个服务镜像: make image-gateway-service
+	@ENGINE_IMAGE_TAG="$(ENGINE_IMAGE_TAG)" docker compose build "$*"
+
 # 运行测试
 test: test-go test-contract test-guardrails
 
@@ -28,7 +40,7 @@ test-go:
 		( cd services/$$svc && GOPROXY=https://goproxy.cn,direct go test ./... ) || exit 1; \
 	done
 
-# 契约测试：G4 契约组口径（fixture_server 假 gRPC 服务）
+# 契约测试：与 .agent/verify.sh G4 同一口径（fixture_server 假 gRPC 服务）
 test-contract:
 	@echo "Running contract tests..."
 	@CODEAUDIT_FIXTURE_PORT=50071 python3 -m pytest tests/contract -q --tb=short -p no:cacheprovider
@@ -59,7 +71,7 @@ proto:
 
 # 验证（红线检查）
 verify:
-	@echo "verify: internal red-line gate not shipped in public snapshot; use test-go / test-contract / lint"
+	@bash .agent/verify.sh
 
 # 清理
 clean:
@@ -76,6 +88,8 @@ help:
 	@echo "  all           - Run verify, build, and test"
 	@echo "  build         - Build all services (Go)"
 	@echo "  build-go      - Build Go services (7 services, module per service)"
+	@echo "  images        - Build all service images (docker compose build, tag=git sha)"
+	@echo "  image-<svc>   - Build one service image (e.g. make image-gateway-service)"
 	@echo "  test           - Run all tests (Go + contract + guardrails)"
 	@echo "  test-guardrails - Run guardrail tests (docs/code structural locks)"
 	@echo "  test-mutation  - Run mutation self-check (regression teeth proof)"
@@ -83,6 +97,6 @@ help:
 	@echo "  test-contract - Run contract tests (fixture_server, port 50071)"
 	@echo "  lint          - Run linters (Go)"
 	@echo "  proto         - Generate proto code (buf; SSOT=codeaudit_common.proto)"
-	@echo "  verify        - Run SSOT red-line checks (internal gate)"
+	@echo "  verify        - Run SSOT red-line checks (.agent/verify.sh)"
 	@echo "  clean         - Clean build artifacts"
 	@echo "  help          - Show this help"

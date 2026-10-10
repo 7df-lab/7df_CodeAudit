@@ -75,11 +75,15 @@ func (s *ConflictResolveStage) Execute(ctx context.Context, input *FusionContext
 			})
 		}
 
-		// verdict 冲突：AI优先策略，真实回写 SAST 侧 ai_verdict
-		if sastFinding.GetAiVerdict() != aiFinding.GetAiVerdict() &&
-			sastFinding.GetAiVerdict() != pb.AIVerdict_AI_VERDICT_UNSPECIFIED &&
-			aiFinding.GetAiVerdict() != pb.AIVerdict_AI_VERDICT_UNSPECIFIED {
-			sastFinding.AiVerdict = aiFinding.GetAiVerdict()
+		// verdict 冲突：AI优先策略，真实回写 SAST 侧判定两轴（2026-10-09 重构：
+		// 冲突比较按方向×档位组合，未判定不参与冲突）
+		sastHas := sastFinding.GetVerdictDirection() != pb.VerdictDirection_VERDICT_DIRECTION_UNSPECIFIED
+		aiHas := aiFinding.GetVerdictDirection() != pb.VerdictDirection_VERDICT_DIRECTION_UNSPECIFIED
+		if sastHas && aiHas &&
+			(sastFinding.GetVerdictDirection() != aiFinding.GetVerdictDirection() ||
+				sastFinding.GetVerdictTier() != aiFinding.GetVerdictTier()) {
+			sastFinding.VerdictDirection = aiFinding.GetVerdictDirection()
+			sastFinding.VerdictTier = aiFinding.GetVerdictTier()
 			conflicts = append(conflicts, &pb.ConflictItem{
 				FindingIds:   group.GetMergedFindingIds(),
 				ConflictType: "verdict_mismatch",

@@ -1,17 +1,29 @@
-version: '3.8'
-
 # CodeAudit Console — 前端容器（静态托管 + /v1 反代网关）
+#
+# 2026-09-15 微服务化收口（对齐 manager R31 项目名病根根治）：
+#   - 顶层 name 钉死项目名 codeaudit-web——--project-directory 的目录 basename
+#     不再决定项目名，本地仓根 / <host-id> 远端 DEPLOY_DIR / 一键链三路径收敛同一项目；
+#   - 镜像身份唯一：codeaudit-web:latest 只经本文件构建（sim 栈改为 image
+#     引用消费，不再以 build context=../web 越仓编译 web 树）；
+#   - GIT_REV 构建参数 → 镜像 OCI revision 标签（调用方 export GIT_REV 注入）。
+#
 # 用法:
 #   docker compose up -d                      # 网关在宿主机 8090（默认，生产事实源口径）
-#   CODEAUDIT_GATEWAY_UPSTREAM=gateway.internal:8090 docker compose up -d
+#   CODEAUDIT_GATEWAY_UPSTREAM=192.0.2.122:8090 docker compose up -d
 #   docker compose logs -f console
+name: codeaudit-web
+
 services:
-  console:
-    build: .
-    image: codeaudit-console:latest
-    container_name: codeaudit-console
+  web:
+    build:
+      context: .
+      args:
+        GIT_REV: ${GIT_REV:-unknown}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+    image: codeaudit-web:${WEB_IMAGE_TAG:-latest}
+    container_name: codeaudit-web
     ports:
-      - "${CODEAUDIT_CONSOLE_PORT:-8088}:80"
+      - "${CODEAUDIT_WEB_PORT:-8088}:80"
     environment:
       # 浏览器可见流量全部经本容器 /v1 反代；此处只需网关的"容器可达"地址
       CODEAUDIT_GATEWAY_UPSTREAM: ${CODEAUDIT_GATEWAY_UPSTREAM:-host.docker.internal:8090}
@@ -20,7 +32,7 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
-# 默认网显式命名：网络名 ↔ 部署项目一眼可辨（伞仓部署链统一 codeaudit- 前缀）
+# 默认网显式命名：网络名 ↔ 部署项目一眼可辨（主仓库部署链统一 codeaudit- 前缀）
 networks:
   default:
     name: codeaudit-web-net

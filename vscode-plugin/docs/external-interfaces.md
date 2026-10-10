@@ -16,7 +16,7 @@
 | baseUrl | 构造时剥离尾部 `/`（`http://x:8080/` → `http://x:8080`） | `apiClient.test.ts › login 成功后保存 access+refresh` |
 | 鉴权头 | 非跳过鉴权请求携带 `Authorization: Bearer <accessToken>`；跳过鉴权（login/logout/refresh）不带 | `apiClient.test.ts › 401 触发单飞刷新并重放原请求` |
 | Content-Type | body 为 JSON 时 `application/json`；FormData（上传）不设置（交由运行时生成 boundary） | 代码路径 `requestJson` |
-| 查询串编码 | `encodeQuery`：跳过 `undefined/null/''`；对象值 JSON 编码（ADR-155 网关 decodeQuery 口径）；标量 `String()` | `apiClient.test.ts › encodeQuery（ADR-155 JSON 风格查询参数）` |
+| 查询串编码 | `encodeQuery`：跳过 `undefined/null/''`；对象值 JSON 编码（网关 decodeQuery 口径）；标量 `String()` | `apiClient.test.ts › encodeQuery（JSON 风格查询参数）` |
 | 401 语义 | 非跳过鉴权请求 401 → 单飞刷新（并发请求共享一次）→ 新 token 重放原请求恰好一次；刷新请求自身走裸 fetch 不经 401 拦截（防递归） | `apiClient.test.ts › 401 触发单飞刷新并重放原请求（并发共享一次）` |
 | 刷新失败语义 | 无 refresh token 或 refresh 响应非 2xx → 清空会话（tokens.clear）→ 抛 `ApiError` | `apiClient.test.ts › 刷新失败（无 refresh token）抛 401 且清空会话` |
 | 429 语义 | 解析响应体 `retry_after`（缺省/非数按 15s），钳位 5~60s，记录 `rateLimitUntil = now + s*1000`（轮询方读它跳过限流窗口）；请求本身仍按非 2xx 抛 ApiError | `apiClient.test.ts › 429 记录退避窗口（retry_after 钳位 5~60s）` |
@@ -38,7 +38,7 @@
 ### 1.3 `POST /v1/auth/logout`
 
 - **输入**：`{ access_token: string }`（跳过鉴权）。
-- **预期输出**：无论请求成败（finally），本地会话清空（`tokens.clear(true)` 静默——用户主动登出不触发 onCleared 的"会话失效"告警，logout 命令自己出"已退出"提示）；函数正常返回。
+- **预期输出**：无论请求成败（finally），本地会话清空（`tokens.clear(true)` 静默——用户主动登出不触发 onCleared 的"会话失效"告警，logout 命令自己出"已退出"提示，B5-2）；函数正常返回。
 - **锁定测试**：代码路径 `logout`；静默口径：`extension.test.ts › 主动登出静默：清凭据但不弹"登录会话已失效"…（回归锁 B5-2）`；UI 侧命令注册守卫 `guards.test.ts › 命令注册守卫`。
 
 ### 1.4 `GET /v1/projects`
@@ -59,10 +59,14 @@
 
 ### 1.7 `POST /v1/tasks`
 
-- **输入**：`{ project_id, scan_mode, sast_tools: string[], config: Record<string,string> }`。
-- **`config` 契约（ADR-200，易错点）**：上传响应含 `file_id` → `config.upload_file_id = file_id`；否则旧平台回退 `config.project_path = dir`；**两者都缺 → doScan 抛错中止，不发 createTask**。把桶内对象路径误当 `project_path` 下发会让沙箱拿到 32B 空 tar.gz（历史事故，见 regressions.md #6）。
+- **输入**：`{ project_id, scan_mode, sast_tools: string[], config: Record<string,string> }`；
+  **增量扫描追加四字段**：`incremental: true`（开关，必带）+
+  `baseline_task_id?`（显式基线——仅用户明确指定才携带，当前 UX 为自动选定基线不带）、
+  `git_anchor?`（`{commit, branch, dirty, remote}`，vscode.git 采集；非 git 工作区
+  `null`=纯内容对比）、`diff_hint?`（变更预告文本，无变更省略）。
+- **`config` 契约（易错点）**：上传响应含 `file_id` → `config.upload_file_id = file_id`；否则旧平台回退 `config.project_path = dir`；**两者都缺 → doScan 抛错中止，不发 createTask**。把桶内对象路径误当 `project_path` 下发会让沙箱拿到 32B 空 tar.gz（历史事故，见 regressions.md #6）。
 - **预期输出**：`ScanTask`（含 `task_id`）。
-- **锁定测试**：`extension.test.ts › doScan 走 upload_file_id 契约…`、`…file_id/dir 都缺 → 中止并报错`。
+- **锁定测试**：`extension.test.ts › doScan 走 upload_file_id 契约…`、`…file_id/dir 都缺 → 中止并报错`；增量载荷=`apiClient.test.ts › createTask 增量载荷`、锚点采集=`gitAnchor.test.ts`（F16-F18）、入口分叉=`doScan-branches.test.ts`（A19 系列）。
 
 ### 1.8 `POST /v1/tasks/{id}/start | /cancel | /pause | /resume`
 
@@ -79,14 +83,14 @@
 
 ### 1.10 `GET /v1/findings?task_id=<id>&pagination=<JSON>`
 
-- **输入**：`pagination` 为 JSON 编码对象 `{ page_size: 100, cursor: '' }`（ADR-155）。
+- **输入**：`pagination` 为 JSON 编码对象 `{ page_size: 100, cursor: '' }`。
 - **预期输出**：`FindingsPage { findings: UnifiedFinding[], pagination: { next_cursor, has_next, total } }`；客户端自动翻页累积（上限 50 页防御），返回拼接后的 `UnifiedFinding[]`。
 - **锁定测试**：`apiClient.test.ts › listFindings 翻页累积（has_next/next_cursor）`。
 
 ### 1.11 `POST /v1/uploads/archive`（multipart/form-data）
 
 - **输入**：字段名 `file`，值为工作区 zip 的 Blob，文件名 `workspace.zip`。
-- **预期输出**：`UploadResult { upload_id, file_id?, file_path?, size_bytes?, dir?, files? }`；新平台（ADR-148/163）回 `file_id`（桶内对象锚点），旧平台回 `dir`（解压目录）。
+- **预期输出**：`UploadResult { upload_id, file_id?, file_path?, size_bytes?, dir?, files? }`；新平台（/163）回 `file_id`（桶内对象锚点），旧平台回 `dir`（解压目录）。
 - **锁定测试**：`extension.test.ts › doScan…`（走全局 fetch 桩全链验证）。
 
 ---
@@ -101,7 +105,7 @@ ws(s)://<gateway>/v1/tasks/{taskId}/ws?token=<encodeURIComponent(accessToken)>
 ```
 
 - `serverUrl` 的 `http(s)` 前缀机械替换为 `ws(s)`；
-- `logs_after`/`ai_cursor` 仅在非空/大于 0 时附加——**断线重连带游标续订，服务端自此起算不重发**（ADR-189）。
+- `logs_after`/`ai_cursor` 仅在非空/大于 0 时附加——**断线重连带游标续订，服务端自此起算不重发**。
 
 ### 2.2 帧契约（服务端 → 插件）
 
@@ -119,7 +123,7 @@ ws(s)://<gateway>/v1/tasks/{taskId}/ws?token=<encodeURIComponent(accessToken)>
 | onerror | `onWsEvent('error', detail)` → 回退轮询 → 5s 重连 | 同上 |
 | 无 WebSocket 环境（makeSocket 抛异常） | 纯 10s 快照轮询兜底至终态 | `taskWatcher.test.ts › WS 无环境…纯轮询兜底至终态` |
 | 轮询遇 429 限流窗口 | 本轮跳过，10s 后重试 | `taskWatcher.test.ts › 429 限流窗口内跳过本轮轮询` |
-| 轮询遇 404 "not found" | `close()` 收束（await 后先复查 closed——归属守卫）+ `onTaskGone` + 终止轮询 | `taskWatcher.test.ts › 轮询快照 404 not found…`、`› 轮询在途 404 返回前 watcher 已被 close…` |
+| 轮询遇 404 "not found" | `close()` 收束（await 后先复查 closed——B5-1 归属守卫）+ `onTaskGone` + 终止轮询 | `taskWatcher.test.ts › 轮询快照 404 not found…`、`› 轮询在途 404 返回前 watcher 已被 close…（B5-1）` |
 | close() 后到达的 WS 消息帧（已缓冲/在途） | `settle` 入口复查 closed，不再 emit（防 terminal 双发、上层收尾重跑） | `taskWatcher.test.ts › WS 在途终态帧在 close 后到达…` |
 
 - **`onTaskGone` 的上层语义**（extension）：本地 progress 落终态 `TASK_STATUS_DEAD`、`taskRunning/taskPaused` 上下文清位、释放扫描互斥、警告通知「已在平台删除或归档——已停止进度同步」。
@@ -169,7 +173,7 @@ ws(s)://<gateway>/v1/tasks/{taskId}/ws?token=<encodeURIComponent(accessToken)>
 | `codeaudit.rollbackFix` | `UnifiedFinding`/树节点包装 / 无参（→QuickPick 列出可回滚项） | 见回滚链路 data-flows.md §4.3；无已应用修复→信息通知；写盘段纳入 fixing 写盘互斥 |
 | `codeaudit.copyFindingId` / `copyFilePath` | 树节点包装或 finding | 写剪贴板 + 状态栏提示 3s |
 | `codeaudit.openConsole` | 无参 | `openExternal(consoleUrl || serverUrl 剥离端口(→:80) + /tasks/{lastTaskId})` |
-| `codeaudit.selectTask` | 无参；QuickPick 单选 | 列平台该项目任务（时间倒序）→ 有任务进行中先弹确认→ bindTask 拉历史结果；findings 拉取失败回滚绑定态 |
+| `codeaudit.selectTask` | 无参；QuickPick 单选 | 列平台该项目任务（时间倒序）→ 有任务进行中先弹确认（B2-5）→ bindTask 拉历史结果；findings 拉取失败回滚绑定态 |
 
 - 树菜单（view/item/context）传的是 `TreeNode` 包装，命令入口经 `asFinding` 解包——回归锁：`extension.test.ts › asFinding 解包`（经由 rollbackFix/fixFinding 命令驱动）。
 

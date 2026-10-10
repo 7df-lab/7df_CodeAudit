@@ -17,15 +17,17 @@ const routes: Record<string, unknown> = {
       return { reports: [] }; // TasksPage 报告索引
     }
     lastReportsQuery = q;
-    const cursor = JSON.parse(ctx.query.get('pagination') ?? '{"cursor":""}').cursor ?? '';
-    if (cursor === '') return { reports: [REPORT_ROW], pagination: { next_cursor: 'c2', has_next: true } };
-    return { reports: [{ ...REPORT_ROW, report_id: `r-${cursor}` }], pagination: { next_cursor: '', has_next: false } };
+    // ADR-256：offset 游标+total（0=首页，20=次页）
+    const cursor = JSON.parse(ctx.query.get('pagination') ?? '{"cursor":"0"}').cursor ?? '0';
+    if (cursor === '0') return { reports: [REPORT_ROW], pagination: { next_cursor: '20', has_next: true, total: 21 } };
+    return { reports: [{ ...REPORT_ROW, report_id: `r-${cursor}` }], pagination: { next_cursor: '', has_next: false, total: 21 } };
   },
   'GET /v1/projects': { projects: [{ project_id: 'p1', name: 'Demo', repo_url: '', default_branch: 'main', default_scan_mode: '', created_at: null }], pagination: { next_cursor: '', has_next: false, total: 1 } },
   'GET /v1/tasks': (ctx: HandlerCtx) => {
-    // ReportsPage 项目列索引（2026-09-09 用户指令）：task_id→project_id 一次性拉取；
-    // 不记录 lastReportsQuery——它与 reports 查询并发，落日志会互踩断言
-    if (ctx.query.get('pagination')?.includes('"page_size":200')) {
+    // ReportsPage 项目列索引：listAllTasks 全量翻页
+    // （page_size 100=服务端上限；列表页 20）——不记录 lastReportsQuery：它与
+    // reports 查询并发，落日志会互踩断言
+    if (ctx.query.get('pagination')?.includes('"page_size":100')) {
       return { tasks: [{ task_id: 't-1', project_id: 'p1', scan_mode: 'SCAN_MODE_AI_ONLY', sast_tools: [], status: 'TASK_STATUS_COMPLETED', stages: [], created_at: null, updated_at: null, error_message: '', retry_count: 0 }], pagination: { next_cursor: '', has_next: false, total: 1 } };
     }
     lastReportsQuery = `TASKS ${ctx.query.toString()}`;
@@ -47,15 +49,19 @@ beforeEach(() => {
   lastReportsQuery = '';
 });
 
-describe('E-28 ReportsPage lastID 游标（顺序前进，无 total 跳页）', () => {
-  it('首页 cursor="" → 翻下一页携带 next_cursor=c2', async () => {
+describe('E-28 ReportsPage 服务端排序/筛选+offset+total（ADR-256）', () => {
+  it('首页 offset=0+默认 generated_at DESC → 翻页 offset=20；total 真实分母', async () => {
     withProviders(<ReportsPage />);
     await waitFor(() => expect(screen.getByText('r-1')).toBeTruthy());
-    const next = document.querySelector('.ant-pagination-next button');
-    expect(next).toBeTruthy();
-    fireEvent.click(next!);
-    await waitFor(() => expect(screen.getByText('r-c2')).toBeTruthy());
-    expect(lastReportsQuery).toContain(encodeURIComponent('"cursor":"c2"'));
+    // 默认排序随请求下发（受控列头），offset=0 起点
+    expect(lastReportsQuery).toContain(encodeURIComponent('"cursor":"0"'));
+    expect(lastReportsQuery).toContain(encodeURIComponent('"field":"generated_at"'));
+    expect(lastReportsQuery).toContain(encodeURIComponent('"order":"SORT_ORDER_DESC"'));
+    // antd 标准分页（真实 total=21 → 总页 2）
+    await waitFor(() => expect(document.querySelector('.ant-pagination-item-2')).toBeTruthy());
+    fireEvent.click(document.querySelector('.ant-pagination-next button')!);
+    await waitFor(() => expect(screen.getByText('r-20')).toBeTruthy());
+    expect(lastReportsQuery).toContain(encodeURIComponent('"cursor":"20"'));
   });
 
   it('?task=<id> 过滤 → 请求携带 task_id，过滤标签可关闭', async () => {

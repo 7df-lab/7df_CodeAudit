@@ -6,15 +6,16 @@
 //     S8"删除已存储结果"=逐条 ResultService.DeleteFinding（proto L924，唯一删除口径）。
 //     S6"取消推理"/S9"重试投递"/S10"删除报告"缺 proto 支持（无 CancelAnalysis/DeleteReport/
 //     Kafka 重投 RPC）→ 不发明（R1），设计缺口记录于 ADR-131，待 proto 演进。
-//   - 09 §2 通信矩阵: task→dsh-runtime / task→sast-adapter / task→result；
-//     findings 实体由 sast-adapter 与 dsh-runtime 各自落盘（行 sast-adapter→result、dsh-runtime→result），
+//   - 09 §2 通信矩阵: task→runtime / task→sast-adapter / task→result；
+//     findings 实体由 sast-adapter 与 runtime 各自落盘（行 sast-adapter→result、runtime→result），
 //     编排层只传 ID 引用（proto ToolScanResult 定版口径：ID引用，不内嵌）。
-//   - 步骤超时已全撤（ADR-191 补遗）：编排不再设任何
+//   - 步骤超时已全撤：编排不再设任何
 //     外层步骤时限，各步骤 ctx 直通（取消仍可传播）
 package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -22,8 +23,8 @@ import (
 
 	pb "github.com/codeaudit/proto-gen"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
@@ -32,7 +33,7 @@ import (
 // sast-adapter=50051(ADR-113 前身契约夹具约定端口)
 type Config struct {
 	SastAdapterAddr string
-	DSHRuntimeAddr    string
+	RuntimeAddr     string
 	ResultAddr      string
 }
 
@@ -101,6 +102,16 @@ type RunRequest struct {
 	// 包装层在解包后填充（基线/changed/deleted/diff）；未激活（全量或已降级）时
 	// 编排行为与现状逐字节一致（兼容回归锚点）。
 	Incremental *IncrementalContext
+	// TaskOrigin 可选：任务归属元数据（R7/TP17-T4）——task-service 快照处自任务
+	// 实体填充，编排透传给 runtime（baton 投影档案 envelope/spine 数据源）。
+	TaskOrigin *pb.TaskOrigin
+	// Agent 可选（切片 7）：任务级 Agent 选择（空=部署缺省 CODEAUDIT_AGENT/首条）
+	// ——编排透传 RunAIAnalysis，runtime 请求级覆盖装配。
+	Agent string
+	// GraphSpec 可选：图执行配置快照（切片 5+6 ADR-249）——pack execution=graph 的
+	// 任务由 task-service 启动时自钉死 revision 填充；非空即短路模式 switch 走
+	// runGraphTask（执行形态声明优先于 ScanMode 任务形态）。
+	GraphSpec *pb.GraphSpec
 }
 
 // Execute drives the full pipeline for the given scan mode and returns summary.
@@ -137,23 +148,29 @@ func (o *Orchestrator) Execute(ctx context.Context, r RunRequest) (map[string]in
 	}
 
 	var err error
-	switch r.ScanMode {
-	// ADR-186 五模式矩阵：A=纯SAST / B=纯AI / C=并行融合(默认推荐) /
-	// D=AI增强SAST / E=并行对比（ADR-182 前称"模式D"）
-	case pb.ScanMode_SCAN_MODE_SAST_ONLY:
-		err = o.runModeSastOnly(ctx, r, stage, summary)
-	case pb.ScanMode_SCAN_MODE_AI_ONLY:
-		err = o.runModeA(ctx, r, stage, summary)
-	case pb.ScanMode_SCAN_MODE_AI_ENHANCED_SAST:
-		err = o.runModeDEnhanced(ctx, r, stage, summary)
-	case pb.ScanMode_SCAN_MODE_PARALLEL, pb.ScanMode_SCAN_MODE_COMPARE:
-		err = o.runModeParallel(ctx, r, stage, summary)
-	case pb.ScanMode_SCAN_MODE_TRADITIONAL_FIRST:
-		err = o.runModeB(ctx, r, stage, summary) // 已弃用（ADR-182）：历史任务兼容分支
-	case pb.ScanMode_SCAN_MODE_SAST_REVIEW:
-		err = o.runModeD(ctx, r, stage, summary) // 已弃用（ADR-182）：历史任务兼容分支
-	default:
-		err = fmt.Errorf("unsupported scan_mode: %s (ADR-186 五模式)", r.ScanMode)
+	// 切片 5+6（ADR-249）：pack execution=graph 短路模式 switch——图执行是执行形态
+	// 声明（pack 权威），比 ScanMode 任务形态更根本；渗透/审计图任务的 ScanMode 无关。
+	if r.GraphSpec != nil {
+		err = o.runGraphTask(ctx, r, stage, summary)
+	} else {
+		switch r.ScanMode {
+		// ADR-186 五模式矩阵：A=纯SAST / B=纯AI / C=并行融合(默认推荐) /
+		// D=AI增强SAST / E=并行对比（ADR-182 前称"模式D"）
+		case pb.ScanMode_SCAN_MODE_SAST_ONLY:
+			err = o.runModeSastOnly(ctx, r, stage, summary)
+		case pb.ScanMode_SCAN_MODE_AI_ONLY:
+			err = o.runModeA(ctx, r, stage, summary)
+		case pb.ScanMode_SCAN_MODE_AI_ENHANCED_SAST:
+			err = o.runModeDEnhanced(ctx, r, stage, summary)
+		case pb.ScanMode_SCAN_MODE_PARALLEL, pb.ScanMode_SCAN_MODE_COMPARE:
+			err = o.runModeParallel(ctx, r, stage, summary)
+		case pb.ScanMode_SCAN_MODE_TRADITIONAL_FIRST:
+			err = o.runModeB(ctx, r, stage, summary) // 已弃用（ADR-182）：历史任务兼容分支
+		case pb.ScanMode_SCAN_MODE_SAST_REVIEW:
+			err = o.runModeD(ctx, r, stage, summary) // 已弃用（ADR-182）：历史任务兼容分支
+		default:
+			err = fmt.Errorf("unsupported scan_mode: %s (ADR-186 五模式)", r.ScanMode)
+		}
 	}
 	if err != nil {
 		// 04 §2 S8 失败补偿：删除本任务已落盘的发现（真实 gRPC 回滚，ADR-131）
@@ -246,7 +263,7 @@ func (o *Orchestrator) fuseAndSummarize(ctx context.Context, r RunRequest, stage
 
 // ---- 模式B（ADR-182 重排，原"模式A"流程不变）: 纯AI ----
 // 阶段2 AnalyzeCode → 阶段3 RunAIAnalysis（五Agent，LLM/RuleScan降级）→
-// 阶段4 落盘(dsh-runtime已直写) → 阶段5 报告(S9 Kafka主路径/gRPC降级)
+// 阶段4 落盘(runtime已直写) → 阶段5 报告(S9 Kafka主路径/gRPC降级)
 func (o *Orchestrator) runModeA(ctx context.Context, r RunRequest, stage StageRecorder, summary map[string]interface{}) error {
 	cpgPath, _ := o.analyzeCode(ctx, r, stage)
 	summary["cpg_storage_path"] = cpgPath
@@ -298,7 +315,7 @@ func (o *Orchestrator) runModeB(ctx context.Context, r RunRequest, stage StageRe
 	summary["sast_findings"] = len(sastIDs)
 	r.collect(sastIDs...)
 
-	// 4a 逐条验证（语义判据: 读代码→数据流→净化器→可达性；实际形态见 dsh-runtime:
+	// 4a 逐条验证（语义判据: 读代码→数据流→净化器→可达性；实际形态见 runtime:
 	// 沙箱内 DSH 整项目逐条审查（ADR-173），沙箱不可用如实降级 NEEDS_MANUAL（07 §10）
 	// — 04 §3.2 ★修订注 / ADR-176）
 	verifiedResp, err := o.verifySASTResults(ctx, r, sastIDs, stage)
@@ -307,12 +324,12 @@ func (o *Orchestrator) runModeB(ctx context.Context, r RunRequest, stage StageRe
 	}
 	tpFP := map[string]int{}
 	for _, v := range verifiedResp.GetVerified() {
-		key := v.GetVerdict().String()
+		key := v.GetDirection().String()
 		tpFP[key]++
 	}
 	summary["verified_by_verdict"] = tpFP
 
-	// 4b 漏报搜索（source_tool=ai_agent 新增发现；实体由 dsh-runtime 直写 result-service）
+	// 4b 漏报搜索（source_tool=ai_agent 新增发现；实体由 runtime 直写 result-service）
 	missed, err := o.searchMissedVulns(ctx, r, stage)
 	if err != nil {
 		return err
@@ -420,11 +437,11 @@ func (o *Orchestrator) runModeParallel(ctx context.Context, r RunRequest, stage 
 
 // ---- 模式D（ADR-186）：AI增强SAST ----
 // 依据: 04 §3.4（ADR-186 修订后）。SAST 多工具扫描（模式A 的内容来源段）→
-// VerifySASTResults 逐条沙箱验证（dsh-runtime 侧先做同文件同段去重：一组一轮沙箱，
+// VerifySASTResults 逐条沙箱验证（runtime 侧先做同文件同段去重：一组一轮沙箱，
 // 判定广播回同段全部发现，ADR-186）→ BatchUpdateVerdict 回写 AI 判定 →
 // FuseResults 汇总（误报过滤段此时已能吃到 ai_verdict）→ 报告。
 // 边界：不调 AnalyzeCode、不做漏报搜索（与旧模式B 的差异）；SAST 全部失败=任务失败
-// （唯一内容来源，模式A 口径）；沙箱不可用时 dsh-runtime 如实降级全批 NEEDS_MANUAL
+// （唯一内容来源，模式A 口径）；沙箱不可用时 runtime 如实降级全批 NEEDS_MANUAL
 // （07 §10），任务不失败。
 func (o *Orchestrator) runModeDEnhanced(ctx context.Context, r RunRequest, stage StageRecorder, summary map[string]interface{}) error {
 	sastIDs, allFailed := o.runMultipleScans(ctx, r, stage)
@@ -435,14 +452,14 @@ func (o *Orchestrator) runModeDEnhanced(ctx context.Context, r RunRequest, stage
 	summary["sast_findings"] = len(sastIDs)
 	r.collect(sastIDs...)
 
-	// 阶段3 逐条沙箱验证（同段去重在 dsh-runtime 侧执行，ADR-186）
+	// 阶段3 逐条沙箱验证（同段去重在 runtime 侧执行，ADR-186）
 	verifiedResp, err := o.verifySASTResults(ctx, r, sastIDs, stage)
 	if err != nil {
 		return err
 	}
 	tpFP := map[string]int{}
 	for _, v := range verifiedResp.GetVerified() {
-		key := v.GetVerdict().String()
+		key := v.GetDirection().String()
 		tpFP[key]++
 	}
 	summary["verified_by_verdict"] = tpFP
@@ -496,13 +513,13 @@ func (o *Orchestrator) runModeD(ctx context.Context, r RunRequest, stage StageRe
 
 // ================= 下游调用封装（09 §2 通信矩阵逐行对应） =================
 
-// analyzeCode — task→dsh-runtime CodeAnalysisService.AnalyzeCode（04 §3.x 阶段2b/模式A阶段2）。
+// analyzeCode — task→runtime CodeAnalysisService.AnalyzeCode（04 §3.x 阶段2b/模式A阶段2）。
 // 返回 (cpg路径, 是否降级)。04 §6 降级策略：CPG 失败→AST 降级语义，不阻断流程。
 func (o *Orchestrator) analyzeCode(ctx context.Context, r RunRequest, stage StageRecorder) (string, bool) {
 	stage("analyze", "submitting AnalyzeCode") // ADR-181: 阶段开始即 RUNNING（时间线中间态）
-	conn, closeFn, err := dial(o.cfg.DSHRuntimeAddr)
+	conn, closeFn, err := dial(o.cfg.RuntimeAddr)
 	if err != nil {
-		o.record(r.TaskID, "analyze", "dial dsh-runtime failed (degraded): "+err.Error())
+		o.record(r.TaskID, "analyze", "dial runtime failed (degraded): "+err.Error())
 		stage("done:analyze", "dial failed (degraded)")
 		return "", true
 	}
@@ -587,18 +604,18 @@ func (o *Orchestrator) runMultipleScans(ctx context.Context, r RunRequest, stage
 	return ids, allFailed
 }
 
-// runAIAnalysis — task→dsh-runtime RunAIAnalysis（04 §3.1 阶段3 / 3.3 阶段2b）。
-// 返回 (result, fix建议数, ai_finding_ids)。AI新增发现实体由 dsh-runtime 直写 result-service。
+// runAIAnalysis — task→runtime RunAIAnalysis（04 §3.1 阶段3 / 3.3 阶段2b）。
+// 返回 (result, fix建议数, ai_finding_ids)。AI新增发现实体由 runtime 直写 result-service。
 func (o *Orchestrator) runAIAnalysis(ctx context.Context, r RunRequest, extraIDs []string, stage StageRecorder) (*pb.AIInferenceResult, int, []string, error) {
-	conn, closeFn, err := dial(o.cfg.DSHRuntimeAddr)
+	conn, closeFn, err := dial(o.cfg.RuntimeAddr)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("dial dsh-runtime: %w", err)
+		return nil, 0, nil, fmt.Errorf("dial runtime: %w", err)
 	}
 	defer closeFn()
 
-	client := pb.NewDSHRuntimeServiceClient(conn)
+	client := pb.NewRuntimeServiceClient(conn)
 	// ADR-191：AI 审计回合不再设外层时限——深度分析
-	// （批量行号核验/补丁撰写）实测 30m 仍健康流式（实证：模型已在
+	// （批量行号核验/补丁撰写）实测 30m 仍健康流式（gw-9b602266 实证：模型已在
 	// "assembling and submitting findings"一步被 30m 网掐死→fail→auto-retry 从头
 	// 重跑，30 分钟分析全毁）。回合结束只认 DSH 沙箱流式显式信号
 	// （session.status=idle / turn/end / runtime.exit）；断流自愈=SSE streamErr→
@@ -612,6 +629,8 @@ func (o *Orchestrator) runAIAnalysis(ctx context.Context, r RunRequest, extraIDs
 		ProjectPath:    r.ProjectPath,
 		SastFindingIds: extraIDs,
 		ScanMode:       r.ScanMode,
+		TaskOrigin:     r.TaskOrigin, // R7/TP17-T4: baton 投影档案数据源
+		Agent:          r.Agent,      // 切片 7: 任务级 Agent（空=部署缺省）
 	}
 	// ADR-225 D3: AI 全量上下文 + 增量聚焦提示词——沙箱代码树仍为全量（tar 链路
 	// 不变），任务卡注入变更清单与 diff 节选（大 patch 由 dsh 落文件指路）。
@@ -636,18 +655,72 @@ func (o *Orchestrator) runAIAnalysis(ctx context.Context, r RunRequest, extraIDs
 	return res, len(resp.GetFixSuggestions()), res.GetAiFindingIds(), nil
 }
 
-// verifySASTResults — task→dsh-runtime VerifySASTResults（04 §3.2 阶段4a）
+// ErrGraphPaused — 图任务冻结定格（B4 换手窗口）：编排返回此哨兵时任务转 PAUSED
+// （R116 P2：此前 return nil 被终态迁移当成功→标 COMPLETED，与"按取消/换手链走"
+// 语义相悖，用户看到一个已完成但零图痕迹的任务）。errors.Is 判定。
+var ErrGraphPaused = errors.New("graph task paused (frozen; handoff/resume window)")
+
+// runGraphTask — 切片 5+6（ADR-249）：pack execution=graph 的任务走 runtime
+// GraphRunner 图执行。findings 由 executor 节点经既有 submit_findings 通道提交并随
+// mapSandboxFindings 落 result-service（4b 同构）——本编排只提交图任务与收口统计，
+// 不搬运 findings（响应只报图自身状态，域中立 C4）。
+func (o *Orchestrator) runGraphTask(ctx context.Context, r RunRequest, stage StageRecorder, summary map[string]interface{}) error {
+	conn, closeFn, err := dial(o.cfg.RuntimeAddr)
+	if err != nil {
+		return fmt.Errorf("dial runtime: %w", err)
+	}
+	defer closeFn()
+
+	client := pb.NewRuntimeServiceClient(conn)
+	// ADR-191 同型：图任务不设外层时限——节点级类型化超时（B3）是执法面，回合结束
+	// 只认显式信号；cancel 保留 no-op 以维持调用面不变。
+	gCtx, gCancel := ctx, context.CancelFunc(func() {})
+	defer gCancel()
+	stage("graph", "submitting RunGraphTask")
+	resp, err := client.RunGraphTask(gCtx, &pb.RunGraphTaskRequest{
+		Metadata:    md(r.RequestID + "-graph"),
+		TaskId:      r.TaskID,
+		ProjectPath: r.ProjectPath,
+		TaskOrigin:  r.TaskOrigin,
+		Graph:       r.GraphSpec,
+		Agent:       &r.Agent, // TP20 缺损批 B11：图路径任务级 agent（此前不消费；optional 指针面）
+	})
+	if err != nil {
+		return fmt.Errorf("RunGraphTask: %w", err)
+	}
+	summary["graph_nodes_total"] = resp.GetNodesTotal()
+	summary["graph_nodes_completed"] = resp.GetNodesCompleted()
+	summary["graph_nodes_failed"] = resp.GetNodesFailed()
+	summary["graph_nodes_rejected"] = resp.GetNodesRejected()
+	if resp.GetPaused() {
+		// B4 冻结定格：图挂起（换手窗口）——R116：返回哨兵（runOrchestration 转
+		// PAUSED，不再被 nil 语义标 COMPLETED）；summary 键照常携带（入 config）。
+		stage("graph", fmt.Sprintf("图任务挂起（graph.paused 定格：open 在途 %d）",
+			resp.GetNodesOpen()))
+		summary["graph_paused"] = true
+		return ErrGraphPaused
+	}
+	if !resp.GetConverged() {
+		return fmt.Errorf("graph task ended unconverged: nodes=%d completed=%d failed=%d rejected=%d",
+			resp.GetNodesTotal(), resp.GetNodesCompleted(), resp.GetNodesFailed(), resp.GetNodesRejected())
+	}
+	stage("done:graph", fmt.Sprintf("graph converged: nodes=%d completed=%d failed=%d rejected=%d",
+		resp.GetNodesTotal(), resp.GetNodesCompleted(), resp.GetNodesFailed(), resp.GetNodesRejected()))
+	return nil
+}
+
+// verifySASTResults — task→runtime VerifySASTResults（04 §3.2 阶段4a）
 func (o *Orchestrator) verifySASTResults(ctx context.Context, r RunRequest, ids []string, stage StageRecorder) (*pb.VerifySASTResultsResponse, error) {
 	if len(ids) == 0 {
 		stage("verify", "no SAST findings to verify (degraded side), skipping 4a")
 		return &pb.VerifySASTResultsResponse{}, nil
 	}
-	conn, closeFn, err := dial(o.cfg.DSHRuntimeAddr)
+	conn, closeFn, err := dial(o.cfg.RuntimeAddr)
 	if err != nil {
-		return nil, fmt.Errorf("dial dsh-runtime: %w", err)
+		return nil, fmt.Errorf("dial runtime: %w", err)
 	}
 	defer closeFn()
-	client := pb.NewDSHRuntimeServiceClient(conn)
+	client := pb.NewRuntimeServiceClient(conn)
 	vCtx, vCancel := ctx, context.CancelFunc(func() {})
 	defer vCancel()
 	stage("verify", fmt.Sprintf("submitting %d findings for sandbox review", len(ids))) // ADR-181: 4a 开始即 RUNNING
@@ -656,6 +729,8 @@ func (o *Orchestrator) verifySASTResults(ctx context.Context, r RunRequest, ids 
 		TaskId:      r.TaskID,
 		FindingIds:  ids,
 		ProjectPath: r.ProjectPath, // ADR-173: 沙箱内整项目审查
+		TaskOrigin:  r.TaskOrigin,  // R7/TP17-T4
+		Agent:       &r.Agent,      // TP20 缺损批 B11：任务级 agent 透传（4a 交叉验证）
 	})
 	if err != nil {
 		return nil, fmt.Errorf("VerifySASTResults: %w", err)
@@ -664,14 +739,14 @@ func (o *Orchestrator) verifySASTResults(ctx context.Context, r RunRequest, ids 
 	return resp, nil
 }
 
-// searchMissedVulns — task→dsh-runtime SearchMissedVulns（04 §3.2 阶段4b）
+// searchMissedVulns — task→runtime SearchMissedVulns（04 §3.2 阶段4b）
 func (o *Orchestrator) searchMissedVulns(ctx context.Context, r RunRequest, stage StageRecorder) (*pb.SearchMissedVulnsResponse, error) {
-	conn, closeFn, err := dial(o.cfg.DSHRuntimeAddr)
+	conn, closeFn, err := dial(o.cfg.RuntimeAddr)
 	if err != nil {
-		return nil, fmt.Errorf("dial dsh-runtime: %w", err)
+		return nil, fmt.Errorf("dial runtime: %w", err)
 	}
 	defer closeFn()
-	client := pb.NewDSHRuntimeServiceClient(conn)
+	client := pb.NewRuntimeServiceClient(conn)
 	mCtx, mCancel := ctx, context.CancelFunc(func() {})
 	defer mCancel()
 	stage("missed", "submitting full-project sandbox audit") // ADR-181: 4b 开始即 RUNNING
@@ -679,6 +754,8 @@ func (o *Orchestrator) searchMissedVulns(ctx context.Context, r RunRequest, stag
 		Metadata:    md(r.RequestID + "-missed"),
 		TaskId:      r.TaskID,
 		ProjectPath: r.ProjectPath, // ADR-165: 契约新增字段, 修复此前靠环境变量的断线
+		TaskOrigin:  r.TaskOrigin,  // R7/TP17-T4
+		Agent:       &r.Agent,      // TP20 缺损批 B11：任务级 agent 透传（4b 挖漏）
 	})
 	if err != nil {
 		return nil, fmt.Errorf("SearchMissedVulns: %w", err)
@@ -687,14 +764,14 @@ func (o *Orchestrator) searchMissedVulns(ctx context.Context, r RunRequest, stag
 	return resp, nil
 }
 
-// reviewSASTResults — task→dsh-runtime ReviewSASTResults（04 §3.4 阶段3）
+// reviewSASTResults — task→runtime ReviewSASTResults（04 §3.4 阶段3）
 func (o *Orchestrator) reviewSASTResults(ctx context.Context, r RunRequest, ids []string, stage StageRecorder) (*pb.ReviewSASTResultsResponse, error) {
-	conn, closeFn, err := dial(o.cfg.DSHRuntimeAddr)
+	conn, closeFn, err := dial(o.cfg.RuntimeAddr)
 	if err != nil {
-		return nil, fmt.Errorf("dial dsh-runtime: %w", err)
+		return nil, fmt.Errorf("dial runtime: %w", err)
 	}
 	defer closeFn()
-	client := pb.NewDSHRuntimeServiceClient(conn)
+	client := pb.NewRuntimeServiceClient(conn)
 	rCtx, rCancel := ctx, context.CancelFunc(func() {})
 	defer rCancel()
 	stage("review", fmt.Sprintf("submitting %d findings for review", len(ids))) // ADR-181: 审核开始即 RUNNING
@@ -703,6 +780,7 @@ func (o *Orchestrator) reviewSASTResults(ctx context.Context, r RunRequest, ids 
 		TaskId:         r.TaskID,
 		ProjectPath:    r.ProjectPath,
 		SastFindingIds: ids,
+		TaskOrigin:     r.TaskOrigin, // R7/TP17-T4
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ReviewSASTResults: %w", err)
@@ -783,15 +861,16 @@ func (o *Orchestrator) batchUpdateVerdict(ctx context.Context, r RunRequest, ver
 	defer closeFn()
 	client := pb.NewResultServiceClient(conn)
 
-	// proto BatchUpdateVerdictRequest 单值 verdict/confidence 语义 → 按 (verdict, confidence) 分组
+	// proto BatchUpdateVerdictRequest 单值 direction/confidence 语义 → 按 (direction, confidence) 分组
+	// 
 	type vkey struct {
-		v pb.AIVerdict
+		v pb.VerdictDirection
 		c float32
 	}
 	groups := map[vkey][]string{}
 	order := []vkey{}
 	for _, v := range verified {
-		k := vkey{v.GetVerdict(), v.GetConfidence()}
+		k := vkey{v.GetDirection(), v.GetConfidence()}
 		if _, ok := groups[k]; !ok {
 			order = append(order, k)
 		}
@@ -799,12 +878,10 @@ func (o *Orchestrator) batchUpdateVerdict(ctx context.Context, r RunRequest, ver
 	}
 	for _, k := range order {
 		ids := groups[k]
-		vvCtx, vvCancel := ctx, context.CancelFunc(func() {})
-		defer vvCancel()
-		_, err := client.BatchUpdateVerdict(vvCtx, &pb.BatchUpdateVerdictRequest{
+		_, err := client.BatchUpdateVerdict(ctx, &pb.BatchUpdateVerdictRequest{
 			Metadata:   md(fmt.Sprintf("%s-verdict-%s-%v", r.RequestID, k.v, k.c)),
 			FindingIds: ids,
-			Verdict:    k.v,
+			Direction:  k.v,
 			Confidence: k.c,
 		})
 		if err != nil {

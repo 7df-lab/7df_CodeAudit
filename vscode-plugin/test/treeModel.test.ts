@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import { verdictSuffix } from '../src/verdictSuffix';
 import { buildTree, findingDescription, findingLabel, pickFindingAtLine, rollbackPickItems } from '../src/treeModel';
 import type { UnifiedFinding } from '../src/types';
 
@@ -6,10 +7,19 @@ function f(id: string, over: Partial<UnifiedFinding> = {}): UnifiedFinding {
   return {
     finding_id: id, task_id: 't', project_id: 'p', source_tool: 'semgrep', source_rule_id: 'r',
     cwe_id: 'CWE-79', title: `T-${id}`, description: '', severity: 'SEVERITY_HIGH', confidence: 1,
-    ai_verdict: '', ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', diff_patch: '',
+    verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED', ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '', diff_patch: '',
     location: { file_path: 'src/a.ts', start_line: 1 }, dedup_group: '', is_unique: true, ...over,
   };
 }
+
+describe('verdictSuffix（两轴五态后缀：未判定不加，有结论加中文标签）', () => {
+  it('未判定 → 空后缀；(TRUE,DEFINITE) → 确认为真；脏档位防御', () => {
+    assert.strictEqual(verdictSuffix({ verdict_direction: '', verdict_tier: '' }), '');
+    assert.strictEqual(verdictSuffix({ verdict_direction: 'VERDICT_DIRECTION_TRUE', verdict_tier: 'VERDICT_TIER_DEFINITE' }), ' · 确认为真');
+    assert.strictEqual(verdictSuffix({ verdict_direction: 'VERDICT_DIRECTION_TRUE', verdict_tier: 'VERDICT_TIER_LIKELY' }), ' · 可能为真');
+    assert.strictEqual(verdictSuffix({ verdict_direction: '', verdict_tier: 'VERDICT_TIER_DEFINITE' }), ''); // 脏档位：方向未判定不外显
+  });
+});
 
 describe('treeModel', () => {
   it('文件分组 + 条目挂到对应文件；无位置发现归入“(无位置)”组', () => {
@@ -30,9 +40,9 @@ describe('treeModel', () => {
   });
 
   it('findingLabel/Description 展示严重级、CWE、工具与 AI 结论', () => {
-    const x = f('x', { ai_verdict: 'AI_VERDICT_CONFIRMED' });
+    const x = f('x', { verdict_direction: 'VERDICT_DIRECTION_TRUE', verdict_tier: 'VERDICT_TIER_DEFINITE' });
     assert.strictEqual(findingLabel(x), '高危 [CWE-79] T-x');
-    assert.strictEqual(findingDescription(x), 'semgrep · AI:AI_VERDICT_CONFIRMED');
+    assert.strictEqual(findingDescription(x), 'semgrep · 确认为真'); // 两轴五态后缀（2026-10-09，文案权威=web dict/verdict）
   });
 
   describe('pickFindingAtLine（QuickFix 反向映射，回归锁：绝不退化为同文件首条）', () => {
@@ -97,11 +107,11 @@ describe('treeModel', () => {
 
     it('无跟踪行号时回退扫描原始行号；AI 结论进 description', () => {
       const items = rollbackPickItems(
-        [f('fx', { location: { file_path: 'v.py', start_line: 3 }, ai_verdict: 'AI_VERDICT_CONFIRMED' })],
+        [f('fx', { location: { file_path: 'v.py', start_line: 3 }, verdict_direction: 'VERDICT_DIRECTION_TRUE', verdict_tier: 'VERDICT_TIER_DEFINITE' })],
         new Set(['fx']),
       );
       assert.strictEqual(items[0].label, 'v.py:3 · 高危');
-      assert.ok(items[0].description.includes('AI:AI_VERDICT_CONFIRMED'));
+      assert.ok(items[0].description.includes('确认为真'));
     });
 
     it('applied 集为空 / 发现集为空 → 无候选', () => {

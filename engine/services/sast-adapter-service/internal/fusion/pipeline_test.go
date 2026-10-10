@@ -103,10 +103,11 @@ func TestFusionPipeline_FilterFalsePositive(t *testing.T) {
 				FilePath:  "test.py",
 				StartLine: 10,
 			},
-			Severity:     pb.Severity_SEVERITY_LOW,
-			Confidence:   0.5,
-			AiVerdict:    pb.AIVerdict_AI_VERDICT_FALSE_POSITIVE, // AI判定为误报
-			AiConfidence: 0.9,                                    // 高置信度
+			Severity:         pb.Severity_SEVERITY_LOW,
+			Confidence:       0.5,
+			VerdictDirection: pb.VerdictDirection_VERDICT_DIRECTION_FALSE, // AI判定为误报（确定档）
+			VerdictTier:      pb.VerdictTier_VERDICT_TIER_DEFINITE,
+			AiConfidence:     0.9, // 高置信度
 		},
 	}
 

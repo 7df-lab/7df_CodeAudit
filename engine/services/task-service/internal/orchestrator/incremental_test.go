@@ -1,6 +1,6 @@
 package orchestrator
 
-// R60继承部分失败必须令编排失败走重试链——FailedCount 被吞没
+// R60：继承部分失败必须令编排失败走重试链——FailedCount 被吞没
 // 时缺继承行的任务照常 COMPLETED，违背"完整性优先"（incremental.go:52 注释）。
 
 import (

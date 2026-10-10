@@ -202,7 +202,7 @@ describe('progressModel：格式化辅助', () => {
     assert.strictEqual(taskStatusLabel('TASK_STATUS_CANCELLED'), '已取消');
   });
 
-  it('STATUS_LABELS / STAGE_LABELS 键集 golden：与 proto TaskStatus 11 键 / StageType 7 键全等（伞仓 parity 闸门同口径）', () => {
+  it('STATUS_LABELS / STAGE_LABELS 键集 golden：与 proto TaskStatus / StageType 全枚举全等（主仓库 parity 闸门同口径，B2-4；键数以 proto 当次为准）', () => {
     assert.deepStrictEqual(Object.keys(STATUS_LABELS), [
       'TASK_STATUS_UNSPECIFIED',
       'TASK_STATUS_CREATED',
@@ -232,8 +232,11 @@ describe('progressModel：格式化辅助', () => {
       'STAGE_TYPE_RESULT_FUSION',
       'STAGE_TYPE_REPORT_GENERATION',
       'STAGE_TYPE_AI_REVIEW',
+      'STAGE_TYPE_GRAPH',
     ]);
     assert.strictEqual(STAGE_LABELS.STAGE_TYPE_UNSPECIFIED, '未指定');
+    // 文案对齐 web/src/dict/index.ts STAGE_TYPE（web 为文案权威）
+    assert.strictEqual(STAGE_LABELS.STAGE_TYPE_GRAPH, '图执行');
   });
 });
 

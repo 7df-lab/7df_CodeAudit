@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/codeaudit/common-go/verdict"
 	pb "github.com/codeaudit/proto-gen"
 	"github.com/codeaudit/services/result-service/internal/model"
 	"github.com/codeaudit/services/result-service/internal/repository"
@@ -110,7 +112,7 @@ func (s *ReportServiceImpl) GenerateReport(ctx context.Context, req *pb.Generate
 		if err := s.repo.CreateReport(report); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to save report: %v", err)
 		}
-		// R66（2026-09-12 待办收尾）：FAILED 报告对调用方如实报错——此前 success 返回
+		// R66：FAILED 报告对调用方如实报错——此前 success 返回
 		// 令编排照发 done:report（阶段绿勾），与 R56 降级可感知精神相悖。FAILED 行仍
 		// 落库（重试同 ID 重建语义不变，R7）；FailedPrecondition 供编排/web 降级标注。
 		return nil, status.Errorf(codes.FailedPrecondition,
@@ -131,8 +133,8 @@ func (s *ReportServiceImpl) GenerateReport(ctx context.Context, req *pb.Generate
 	// 换成真实对象地址。降级诚实: storage 未配置/不可达时仅 WARN，报告本体仍在 PG。
 	if s.storageAddr != "" {
 		arcCtx, arcCancel := context.WithTimeout(ctx, 120*time.Second) // R63: 归档超时（原裸 ctx）
-	defer arcCancel()
-	if url, uerr := s.uploadReportToStorage(arcCtx, report); uerr != nil {
+		defer arcCancel()
+		if url, uerr := s.uploadReportToStorage(arcCtx, report); uerr != nil {
 			log.Printf("[report] storage archive FAILED for %s: %v (PG copy intact)", report.ID, uerr)
 		} else {
 			report.Url = url
@@ -219,23 +221,85 @@ func (s *ReportServiceImpl) ListReports(ctx context.Context, req *pb.ListReports
 
 	cursor := req.GetPagination().GetCursor()
 
-	reports, nextCursor, err := s.repo.ListReports(cursor, pageSize, req.GetTaskId())
+	// ADR-256：lastID 不透明游标 → offset 游标+total（任务/项目同款契约，
+	// 分页分母由合成变真实）；并落地服务端排序/筛选。旧客户端的 lastID 游标（非数字）
+	// 如实 InvalidArgument——契约迁移随 web 同批，不留静默错页。
+	offset := 0
+	if cursor != "" {
+		n, err := strconv.Atoi(cursor)
+		if err != nil || n < 0 {
+			return nil, status.Error(codes.InvalidArgument, "invalid cursor (03 §5)")
+		}
+		offset = n
+	}
+	sortBy, sortDesc, err := reportSortParams(req.GetSort())
+	if err != nil {
+		return nil, err
+	}
+	format, err := reportFormatFilter(req.GetFilter())
+	if err != nil {
+		return nil, err
+	}
+
+	reports, total, err := s.repo.ListReports(repository.ListReportsQuery{
+		Offset: offset, Limit: pageSize, TaskID: req.GetTaskId(),
+		Format: format, SortBy: sortBy, SortDesc: sortDesc,
+	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to list reports: %v", err)
 	}
 
 	resp := &pb.ListReportsResponse{
 		Reports: make([]*pb.Report, len(reports)),
-		Pagination: &pb.PaginationResponse{ // 依据: proto L230-L234
-			NextCursor: nextCursor,
-			HasNext:    nextCursor != "",
+		Pagination: &pb.PaginationResponse{
+			Total: int32(total),
 		},
+	}
+	if offset+pageSize < total {
+		resp.Pagination.NextCursor = strconv.Itoa(offset + pageSize)
+		resp.Pagination.HasNext = true
 	}
 	for i, r := range reports {
 		resp.Reports[i] = s.modelToProto(r)
 	}
 
 	return resp, nil
+}
+
+// reportSortParams — 排序白名单（fail-loud：未知键/空序拒绝——排序键直通 SQL 列名，
+// 白名单是注入面防线，不可静默忽略未知值假装无排序）。
+func reportSortParams(sort *pb.SortRequest) (string, bool, error) {
+	if sort == nil || sort.GetField() == "" {
+		return "report_id", true, nil // 旧口径缺省：id DESC
+	}
+	switch sort.GetField() {
+	case "report_id", "task_id", "format", "generated_at":
+	default:
+		return "", false, status.Errorf(codes.InvalidArgument, "unsupported sort field: %s", sort.GetField())
+	}
+	desc := sort.GetOrder() != pb.SortOrder_SORT_ORDER_ASC // UNSPECIFIED=DESC（与缺省同向）
+	return sort.GetField(), desc, nil
+}
+
+// reportFormatFilter — 筛选白名单：仅 format EQ + AND 语义（OR 不支持即拒，不假装）。
+func reportFormatFilter(f *pb.FilterRequest) (string, error) {
+	if f == nil {
+		return "", nil
+	}
+	if f.GetOperator() == pb.LogicalOperator_LOGICAL_OPERATOR_OR { // 显式 OR 信号即拒（零条件也不含糊）
+		return "", status.Error(codes.InvalidArgument, "filter operator OR unsupported (AND only)")
+	}
+	if len(f.GetConditions()) == 0 {
+		return "", nil
+	}
+	format := ""
+	for _, c := range f.GetConditions() {
+		if c.GetField() != "format" || c.GetOperator() != pb.FilterOperator_FILTER_OPERATOR_EQ {
+			return "", status.Errorf(codes.InvalidArgument, "unsupported filter (only format EQ): %s %s", c.GetField(), c.GetOperator())
+		}
+		format = c.GetValue()
+	}
+	return format, nil
 }
 
 // ListTemplates - 依据: codeaudit_common.proto L946 + L1266-L1268
@@ -334,8 +398,10 @@ func (s *ReportServiceImpl) HandleTaskCompleted(ctx context.Context, event *Task
 func (s *ReportServiceImpl) generateReportContent(taskID string, templateName string) (string, error) {
 	log.Printf("Generating report for task %s with template %s", taskID, templateName)
 
-	// 真实聚合: 从仓储分页拉全本任务 findings（03 §5 cursor 分页），按 verdict 统计。
+	// 真实聚合: 从仓储分页拉全本任务 findings（03 §5 cursor 分页），按判定两轴统计。
 	// 无注入数据源时保持空报告（不臆造数字）。
+	// 桶口径单源=libs/common-go/verdict（2026-10-09 重构——原七值 switch 在此、
+	// 发现页 reviewed 线、模式D 融合三处各切一线的漂移根治）。
 	summary := map[string]int{
 		"total_findings": 0, "true_positives": 0, "false_positives": 0, "not_reviewed": 0,
 	}
@@ -343,16 +409,18 @@ func (s *ReportServiceImpl) generateReportContent(taskID string, templateName st
 	if s.findings != nil {
 		lastID := ""
 		for {
-			page, next, err := s.findings.List(lastID, 100, taskID, "")
+			page, next, err := s.findings.List(lastID, 100, taskID, "", "")
 			if err != nil {
 				return "", fmt.Errorf("aggregate findings for report: %w", err)
 			}
 			for _, f := range page {
 				summary["total_findings"]++
-				switch strings.ToUpper(f.Verdict) {
-				case "AI_VERDICT_TRUE_POSITIVE", "AI_VERDICT_CONFIRMED":
+				d := pb.VerdictDirection(pb.VerdictDirection_value[f.VerdictDirection])
+				t := pb.VerdictTier(pb.VerdictTier_value[f.VerdictTier])
+				switch {
+				case verdict.IsConfirmedTrue(d, t):
 					summary["true_positives"]++
-				case "AI_VERDICT_FALSE_POSITIVE":
+				case verdict.IsConfirmedFalse(d, t):
 					summary["false_positives"]++
 				default:
 					summary["not_reviewed"]++
@@ -360,7 +428,7 @@ func (s *ReportServiceImpl) generateReportContent(taskID string, templateName st
 				items = append(items, map[string]interface{}{
 					"finding_id": f.ID, "rule_id": f.RuleID, "cwe": f.CWE,
 					"severity": f.Severity, "file": f.FilePath,
-					"line": f.LineNumber, "verdict": f.Verdict,
+					"line": f.LineNumber, "verdict_direction": f.VerdictDirection, "verdict_tier": f.VerdictTier,
 					"title": f.Message, "source_raw": f.SourceRaw,
 				})
 			}
@@ -390,7 +458,7 @@ func (s *ReportServiceImpl) generateReportContent(taskID string, templateName st
 }
 
 // renderHTMLReport — 服务端 HTML 报告（手写拼接，逐字段 htmlEsc 转义）。
-// 内容全部来自真实聚合；含代码片段列（ADR-141）——code 字段来自被扫源码
+// 内容全部来自真实聚合（P4）；含代码片段列（ADR-141）——code 字段来自被扫源码
 // （攻击者可控），漏转义即存储型 XSS（web 报告窗口渲染，R42）。
 func renderHTMLReport(payload map[string]interface{}, items []map[string]interface{}) string {
 	var b strings.Builder
@@ -420,7 +488,8 @@ func renderHTMLReport(payload map[string]interface{}, items []map[string]interfa
 		b.WriteString(fmt.Sprintf("<td>%s</td>", htmlEsc(strOf(it["cwe"]))))
 		b.WriteString(fmt.Sprintf("<td>%s</td>", htmlEsc(strOf(it["rule_id"]))))
 		b.WriteString(fmt.Sprintf("<td>%s:%v</td>", htmlEsc(strOf(it["file"])), it["line"]))
-		b.WriteString(fmt.Sprintf("<td>%s</td>", htmlEsc(strOf(it["verdict"]))))
+		// 结论列=两轴组合中文标签
+		b.WriteString(fmt.Sprintf("<td>%s</td>", htmlEsc(verdictLabelZh(strOf(it["verdict_direction"]), strOf(it["verdict_tier"])))))
 		b.WriteString(fmt.Sprintf("<td>%s</td>", htmlEsc(strOf(it["title"]))))
 		snippet := snippetOf(it)
 		b.WriteString(fmt.Sprintf("<td><pre>%s</pre></td>", htmlEsc(snippet)))
@@ -435,6 +504,23 @@ func strOf(v interface{}) string {
 		return s
 	}
 	return ""
+}
+
+// verdictLabelZh — 两轴枚举名 → 组合中文标签（HTML 报告"结论"列；与 web
+// dict/verdict 组合口径一致）。未知/空=未判定。
+func verdictLabelZh(direction, tier string) string {
+	switch {
+	case strings.HasSuffix(direction, "_TRUE") && strings.HasSuffix(tier, "_DEFINITE"):
+		return "确认为真"
+	case strings.HasSuffix(direction, "_FALSE") && strings.HasSuffix(tier, "_DEFINITE"):
+		return "误报"
+	case strings.HasSuffix(direction, "_TRUE"):
+		return "可能为真"
+	case strings.HasSuffix(direction, "_FALSE"):
+		return "可能误报"
+	default:
+		return "未判定"
+	}
 }
 
 func templateOf(payload map[string]interface{}) string {
@@ -468,7 +554,7 @@ func (s *ReportServiceImpl) modelToProto(r *model.Report) *pb.Report {
 		ReportId:    r.ID,
 		TaskId:      r.TaskID,
 		Format:      pb.ReportFormat(pb.ReportFormat_value[r.Format]), // ADR-142: 回读持久化格式
-		Url:         reportURL(r), // R44: 已归档用真实 Url，未归档回落伪协议（内容经 DownloadReport）
+		Url:         reportURL(r),                                     // R44: 已归档用真实 Url，未归档回落伪协议（内容经 DownloadReport）
 		GeneratedAt: timestamppb.New(r.CreatedAt),
 	}
 }

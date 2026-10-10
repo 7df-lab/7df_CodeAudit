@@ -2,6 +2,7 @@
 //
 // 依据: 09 §1 storage = Redis(缓存/消息域)；通知与幂等键必须跨重启存活（生产口径）。
 // 键域: ca:notif:<id>=JSON；ca:notif:idx:<user_id>=ZSET(score=created_at UnixNano)；
+//
 //	ca:idem:<request_id>=JSON{body_hash}（TTL 24h 防重放窗口）。
 //	ADR-210: 前缀 am:→ca:（auditmind→codeaudit）；存量 am:* 不迁移——幂等键 24h 自灭，
 //	通知为可再生数据，部署后一次性 SCAN am:* 清理。

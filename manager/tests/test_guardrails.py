@@ -12,7 +12,8 @@
    （2026-09-06 实测 OUT_OF_RANGE；调大分块 = 上传全链 502）；
 5. 静态红线：token 比较必须走 hmac.compare_digest（时序侧信道）；
 6. JSON body 上限 20 MiB 是对外契约（网关/引擎按此预算请求体）；
-7. vendored SDK 子树在库（fresh clone 构建输入，1e02c20 教训）；
+7. openshell/ SDK 包在库（fresh clone 构建输入，1e02c20 教训；2026-09-15
+   起为服务根顶层包，R31）；
 8. REGRESSIONS.md 引用的锁定测试必须真实存在（档案不腐烂）。
 
 本文件不依赖网络/SDK，纯离线。
@@ -34,7 +35,9 @@ from openshell_manager.api import create_app, require_token  # noqa: E402
 README_ROW = re.compile(r"^\|\s*`([A-Z]+)\s+(/[^\s`]+)`\s*\|", re.M)
 
 # 路由面快照（2026-09-07，d662aeb 基线 + 字符串字段收口；同日增 provider
-# DELETE 路由）。改动这里 = 接口面变化：必须同 commit 同步 README「API 面」表
+# DELETE 路由；2026-09-18 切片3前半增 route DELETE；bundle 有意缺席——R32，
+# GetInferenceBundle 是沙箱主体专享 RPC，manager bearer 调用必被拒）。
+# 改动这里 = 接口面变化：必须同 commit 同步 README「API 面」表
 # + docs/api-external.md。
 EXPECTED_ROUTES = {
     ("GET", "/healthz"),
@@ -53,10 +56,14 @@ EXPECTED_ROUTES = {
     ("DELETE", "/api/v1/sandboxes/{name}/services/{service}"),
     ("GET", "/api/v1/inference/route"),
     ("PUT", "/api/v1/inference/route"),
+    ("DELETE", "/api/v1/inference/route"),
     ("GET", "/api/v1/inference/providers"),
     ("GET", "/api/v1/inference/providers/{name}"),
     ("PUT", "/api/v1/inference/providers"),
     ("DELETE", "/api/v1/inference/providers/{name}"),
+    ("GET", "/api/v1/workspaces"),
+    ("POST", "/api/v1/workspaces"),
+    ("DELETE", "/api/v1/workspaces/{name}"),
 }
 
 
@@ -122,6 +129,74 @@ def test_upload_chunk_within_gateway_receive_ceiling():
         f"base64 chunk {encoded} leaves no headroom under the 1MiB gateway ceiling"
 
 
+def test_async_routes_offload_southbound_calls():
+    """R34/P1-1 结构守门：async def 端点体（自身缩进层）内的南向 facade 调用
+    必须经 run_in_threadpool——R33 切片漏拷 B3-1 纪律（workspaces 建区同步
+    gRPC 裸跑事件循环，网关慢时 /healthz 被卡最长 60s）靠单请求测试拦不住，
+    须源码断言。嵌套同步函数体内（更深缩进，如上传链的 work()——整体经
+    run_in_threadpool(work) 下放）不属违规。"""
+    import re as _re
+    api_src = (SERVICE_ROOT / "openshell_manager" / "api.py").read_text(encoding="utf-8")
+    lines = api_src.split("\n")
+
+    def logical_statements(block_lines, base_indent):
+        """按括号配平切逻辑语句；产出 (indent, text)。"""
+        stmt, depth = [], 0
+        for ln in block_lines:
+            stmt.append(ln)
+            depth += ln.count("(") + ln.count("[") + ln.count("{") \
+                - ln.count(")") - ln.count("]") - ln.count("}")
+            if depth <= 0 and (ln.rstrip().endswith((":", "\\")) is False):
+                text = "\n".join(stmt)
+                indent = len(stmt[0]) - len(stmt[0].lstrip())
+                yield indent, text
+                stmt, depth = [], 0
+            elif depth <= 0:
+                # def/if 等复合语句头：本身即一个语句（体在后续行、缩进更深）
+                text = "\n".join(stmt)
+                indent = len(stmt[0]) - len(stmt[0].lstrip())
+                yield indent, text
+                stmt, depth = [], 0
+        if stmt:
+            yield len(stmt[0]) - len(stmt[0].lstrip()), "\n".join(stmt)
+
+    for i, ln in enumerate(lines):
+        m = _re.match(r"(\s*)async def (\w+)\(", ln)
+        if not m:
+            continue
+        base = len(m.group(1))
+        name = m.group(2)
+        # 函数体 = 后续行直到缩进 <= base 的 def/async def/@ 装饰器/顶层语句
+        body = []
+        for nxt in lines[i + 1:]:
+            if nxt.strip() == "":
+                body.append(nxt)
+                continue
+            ind = len(nxt) - len(nxt.lstrip())
+            if ind <= base and nxt.lstrip().startswith(
+                    ("def ", "async def ", "@", "class ")):
+                break
+            if ind < base:
+                break
+            body.append(nxt)
+        body_base = None
+        for bl in body:
+            if bl.strip():
+                body_base = len(bl) - len(bl.lstrip())
+                break
+        if body_base is None:
+            continue
+        for indent, text in logical_statements(body, body_base):
+            if indent != body_base:
+                continue  # 嵌套函数/分支体内——由其自身的下放调用或非路由层负责
+            if "facade." in text and "run_in_threadpool" not in text \
+                    and not text.lstrip().startswith(("def ", "\"", "#")):
+                first = text.strip().split("\n")[0]
+                raise AssertionError(
+                    f"async 端点 {name} 直接调用 {first!r}——"
+                    "同步 gRPC 裸跑事件循环（B3-1/R34 纪律：必须 run_in_threadpool）")
+
+
 def test_token_comparison_is_constant_time():
     api_src = (SERVICE_ROOT / "openshell_manager" / "api.py").read_text(encoding="utf-8")
     fn = api_src.split("async def require_token", 1)[1].split("\nasync def", 1)[0]
@@ -135,30 +210,13 @@ def test_json_body_cap_is_20mib():
 
 
 def test_vendored_sdk_tree_present():
-    """Dockerfile COPY 输入：python 子树必须是真实入库文件而非嵌套仓残影
-    （fresh clone 无此目录 = 镜像必败，1e02c20 教训）。"""
-    pkg = SERVICE_ROOT / "libs" / "OpenShell" / "python" / "openshell"
+    """镜像 COPY 输入：openshell/ SDK 包必须是真实入库文件（fresh clone 无此
+    目录 = 镜像必败，1e02c20 教训）。2026-09-15 起并包至服务根顶层（R31），
+    按普通包对待——锁定的是 fresh-clone 完整性语义，不是旧 vendor 布局。"""
+    pkg = SERVICE_ROOT / "openshell"
     assert (pkg / "__init__.py").is_file(), \
-        f"vendored SDK missing at {pkg} — fresh-clone image build would break"
+        f"openshell SDK missing at {pkg} — fresh-clone image build would break"
     assert (pkg / "_proto").is_dir(), "SDK proto modules missing (dict→proto boundary)"
-
-
-def test_root_dockerfile_discipline():
-    """根 Dockerfile（离线 2.0.0 叠加路径）
-    纪律——①最终阶段必须非 root 运行（曾切 root 装依赖后漏切回，产物
-    root 运行；对齐 deploy/Dockerfile.manager 的 65534 纪律）；②必须自带
-    "产物携带基础镜像 .token、禁止外发"警示与 build/wheels 的 pip download
-    重建指引（REGRESSIONS「已知未覆盖缺口」预告的静态断言落地）。"""
-    src = (SERVICE_ROOT / "Dockerfile").read_text(encoding="utf-8")
-    user_lines = [ln.strip() for ln in src.splitlines()
-                  if ln.strip().upper().startswith("USER ")]
-    assert user_lines, "Dockerfile must declare its runtime USER"
-    assert user_lines[-1].upper() == "USER 65534:65534", \
-        f"final USER must be non-root 65534:65534, got: {user_lines[-1]!r}"
-    assert ".token" in src and "禁止" in src, \
-        "Dockerfile must warn the product carries the base image .token (never publish)"
-    assert "pip download" in src, \
-        "Dockerfile must document the build/wheels rebuild command (fresh-clone discipline)"
 
 
 def test_regressions_index_points_at_real_tests():

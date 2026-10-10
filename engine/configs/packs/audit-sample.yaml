@@ -1,0 +1,30 @@
+# audit-sample — 第一份 workload pack（审计回填，dogfood；切片 2 §4）。
+# 依据: 主仓库 docs/designs/platform-slice2-pack-schema.md §2/§4（回填映射表）；ADR-245。
+#
+# 抽取映射（§4）：codeaudit.yaml runtime.sandbox.image → spec.image；
+# sandbox_assignmentModeA/Incremental 模板 → seeds.template_ref（锚定 @frozen——模板
+# 本体在 engine sandbox.go，漂移即新 pack 修订）；ADR-184 submit_findings/patches →
+# results.schema_ref + parser；模式 A-E 的 prompt/解析差异不进 pack（编排属 kernel）。
+# 过渡期双轨：codeaudit.yaml 被抽取键保留为缺省覆盖位，本 pack 值与其同源=行为等价。
+apiVersion: codeaudit.pack/v0
+kind: WorkloadPack
+name: audit-sample
+description: 代码审计示例负载（产品方示例 #1；自 codeaudit.yaml 负载参数抽取回填）
+spec:
+  image: dsh-pentest-sse:latest      # 沙箱镜像（人类指令 2026-09-06：不钉版本一律最新）
+  dialect: dsh-sse                   # 引用切片 1 方言注册表（configs/agent_providers.yaml）
+  network:
+    profile: restricted              # egress 仅 inference.local+回调；授权目标网段=task 资源字段
+  seeds:
+    brief_renderer: baton-brief      # 复用 baton brief（恒定种子契约）
+    render_target: task-card-prefix  # DSH=任务卡前置段
+    template_ref: assignmentTemplate@frozen   # 任务卡模板引用（锚定，防漂移）
+  results:
+    schema_ref: findings/submit_findings@v1   # ADR-184 结构化提交 schema 引用
+    parser: codeaudit-submit
+  timeouts:
+    per_turn: default                # 档位引用（移交包档位体系；档位注册表随编排面）
+    task_total: audit-default
+  constraints_schema:                # 本 pack 接受哪些 task 级约束键（校验用）
+    - severity_threshold
+    - language_hint

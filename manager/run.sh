@@ -4,7 +4,7 @@
 #   OPENSHELL_MANAGER_TOKEN=... ./run.sh
 #
 # Env: OPENSHELL_MANAGER_BIND / _PORT / _TOKEN,
-#      OPENSHELL_GATEWAY_ENDPOINT, OPENSHELL_LIB_PATH (see config.py).
+#      OPENSHELL_GATEWAY_ENDPOINT (see config.py).
 set -euo pipefail
 cd "$(dirname "$0")"
 exec python3 -m openshell_manager

@@ -1,0 +1,45 @@
+# audit-graph — 代码审计图模式 pack。
+# 依据: 主仓库 docs/designs/platform-slice5-6-graph-engine.md（B3 三权=任务类型；
+# 引擎域中立——pack 级扩面即审计图模式，引擎零改动）+
+# docs/designs/graph-reseed-task-handoff.md（重派种子链直接服务审计重派节点）。
+# 与 audit-sample 的关系：audit-sample=session 双轨等价锚（不改）；本 pack=图编排
+# 形态——planner 审计面规划 / executor 逐审计面深度审计（submit_findings 提交）/
+# verifier 复核。网络 restricted（审计无外联需求——egress 仅推理+回调）。
+# 靶标/上传件沿任务面（代码树=任务上传件；无授权目标需求——与 pentest 分界）。
+apiVersion: codeaudit.pack/v0
+kind: WorkloadPack
+name: audit-graph
+description: 代码审计图模式（planner 审计面规划 / executor 逐面深度审计 / verifier 复核；findings 走 submit_findings 标准通道）
+spec:
+  image: dsh-pentest-sse:latest      # 沙箱镜像（人类指令 2026-09-06：不钉版本一律最新）
+  dialect: dsh-sse                   # 引用切片 1 方言注册表（configs/agent_providers.yaml）
+  network:
+    profile: restricted              # 审计无外联需求：egress 仅 inference.local+回调
+  execution: graph                   # 图编排（ADR-249）：审计面拆解→逐面执行→复核
+  seeds:
+    brief_renderer: baton-brief      # 重派种子契约（R122：失败要点 lesson 注入重派节点）
+    render_target: task-card-prefix
+    template_ref: assignmentTemplate@frozen
+  results:
+    schema_ref: findings/submit_findings@v1   # 审计标准提交通道（发现落库→web 发现页）
+    parser: codeaudit-submit
+  timeouts:
+    per_turn: default
+    task_total: audit-default
+  constraints_schema:
+    - severity_threshold
+    - language_hint
+  graph:                             # execution=graph 必填（设计 §5）
+    seed_intents:                    # 审计面拆解（三面覆盖典型 OWASP 风险族）
+      - 危险模式全库审计：SQL 注入/命令注入/硬编码凭据（按实际语言与框架适配）
+      - 输入处理与外部交互面审计：反序列化/SSRF/路径拼接/文件操作
+      - 认证与会话链路审计：口令处理/令牌生成/越权检查点
+    constraints:
+      max_nodes: 12
+      allowed_types: [planner, executor, verifier]
+      max_planner_replans: 3
+      max_attempts_per_node: 2
+    timeouts:                        # 秒（B3 类型化：executor 审计面给足深度）
+      planner: 180
+      executor: 900
+      verifier: 300

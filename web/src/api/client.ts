@@ -3,7 +3,8 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { API_ERROR_EVENT, API_OK_EVENT } from './apiEvents';
 import type {
-  InferenceProvider, InferenceRoute, ListProjectsResponse, Project,
+  AgentProviderInfo, CreateInviteCodeBody, ReportRow, InferenceProvider, InferenceRoute, InviteCode, InviteCodesListResp,
+  ListProjectsResponse, OrchestrationInfo, Project, RegistrationPolicy, ScanTask,
   SetInferenceRouteResponse, ToolInfo, UpsertInferenceProviderResponse,
 } from './types';
 
@@ -118,7 +119,9 @@ api.interceptors.response.use(
       return api.request(cfg);
     }
     const isAuth = cfg?.url?.includes('/v1/auth/');
-    if ((status === 403 || status === 501 || status === 503) && cfg && !isAuth
+    // ADR-257: 403 不再进全局错误层（旧形态=全屏遮罩毁导航壳，非 admin 死局根因之一）——
+    // 页面级 403 由 RequireAdmin/页内空态承接，操作级 403 由各 mutation onError toast。
+    if ((status === 501 || status === 503) && cfg && !isAuth
         && typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent(API_ERROR_EVENT, { detail: status }));
     }
@@ -156,10 +159,19 @@ function refreshAuthDead(err: unknown): boolean {
   return err instanceof Error && err.message.includes('no refresh token');
 }
 
-// axios 错误 → HTTP 状态码（mutation onError 文案统一携带状态码；
+// axios 错误 → HTTP 状态码（审计 B3-3：mutation onError 文案统一携带状态码；
 // 403/503 等另有全局事件总线横幅，此处只补页面级即时反馈）
 export function errStatus(e: unknown): number | undefined {
   return (e as { response?: { status?: number } } | undefined)?.response?.status;
+}
+
+// axios 错误 → 网关 {error} 原文优先的可读信息（交互审计 Top4-④ 推广：
+// 非法状态转换/策略拒绝等服务端具体原因曾被 axios 通用文案
+// "Request failed with status code 409" 吞掉；与 errStatus 组合成
+// "失败（HTTP x）：详情" 统一口径）
+export function apiErrorMessage(e: unknown): string {
+  const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+  return detail || (e as Error)?.message || '未知错误';
 }
 
 // 代码压缩包上限 100MB（2026-09-08 用户指令）：与 gateway uploadMaxBytes（100MB）/
@@ -181,7 +193,7 @@ export async function uploadArchive(file: File): Promise<UploadArchiveResponse> 
   fd.append('file', file);
   const resp = await api.post('/v1/uploads/archive', fd, {
     headers: { 'Content-Type': 'multipart/form-data' },
-    // 120s→300s——大包（接近 100MB 上限）在慢速上行链路（家庭宽带/移动网络）
+    // B4-3：120s→300s——大包（接近 100MB 上限）在慢速上行链路（家庭宽带/移动网络）
     // 120s 内传不完，axios 客户端侧超时先于网关 300s 读写窗掐断，用户只见"上传失败"。
     // 与 nginx proxy_read/send_timeout 300s 对齐。
     timeout: 300_000,
@@ -195,23 +207,54 @@ export async function uploadArchive(file: File): Promise<UploadArchiveResponse> 
 // 页面禁止 `.data as {手写形状}`——此前 20 处散落 as-cast 是臆造空间（ProjectsPage res.dir 死链路
 // 存活三个版本的实证）；形状漂移由 verify.sh G3 的 tsc 红在消费点，而非等 GUI 事故揭发。
 
-export async function getProjects(pagination?: { page_size: number; cursor?: string }): Promise<ListProjectsResponse> {
-  const params = pagination
-    ? { pagination: { page_size: pagination.page_size, cursor: pagination.cursor ?? '' } }
-    : undefined;
-  return (await api.get('/v1/projects', params ? { params } : undefined)).data;
+// ADR-256: 服务端排序/筛选透传（filter=白名单 name CONTAINS / default_scan_mode EQ；
+// sort 键白名单 name|created_at）。
+export interface ServerListParams {
+  pagination?: { page_size: number; cursor?: string };
+  filter?: { field: string; operator: string; value: string };
+  sort?: { field: string; order: 'SORT_ORDER_ASC' | 'SORT_ORDER_DESC' };
+}
+
+export async function getProjects(p?: ServerListParams): Promise<ListProjectsResponse> {
+  const params: Record<string, unknown> = {};
+  if (p?.pagination) params.pagination = { ...p.pagination, cursor: p.pagination.cursor ?? '' }; // E-12 契约：空游标显式保留
+  if (p?.filter) params.filter = { conditions: [p.filter] };
+  if (p?.sort) params.sort = p.sort;
+  return (await api.get('/v1/projects', Object.keys(params).length ? { params } : undefined)).data;
 }
 
 // B5-P2-7: 下拉/索引用途的全量项目——循环翻页直到 has_next=false。
 // 服务端 project handler 恒发精确 pagination（has_next 精确 + 数字偏移游标），循环可靠
-// 终止；上限 10 页（=1000 项目）防异常 has_next 恒真打爆。此前下拉调 getProjects() 缺省页
-// 只拿最新 20 条（服务端缺省 pageSize=20），项目 >20 后旧项目在下拉/筛选/深链预选不可达。
+// 终止；上限 10 页（=1000 项目）防异常 has_next 恒真打爆。此前下拉调 getProjects() 默认页
+// 只拿最新 20 条（服务端默认 pageSize=20），项目 >20 后旧项目在下拉/筛选/深链预选不可达。
 export async function listAllProjects(): Promise<Project[]> {
   const out: Project[] = [];
   let cursor = '';
   for (let i = 0; i < 10; i++) {
-    const resp = await getProjects({ page_size: 100, cursor });
+    const resp = await getProjects({ pagination: { page_size: 100, cursor } });
     out.push(...resp.projects);
+    if (!resp.pagination?.has_next || !resp.pagination.next_cursor) break;
+    cursor = resp.pagination.next_cursor;
+  }
+  return out;
+}
+
+// 任务域全量（2026-10-08 统计冒充总数修复）：服务端按 proto 契约钳 page_size 上限
+// 100（"默认20，最大100"），此前前端一次请求 200 被静默截到 100、再拿页长冒充总数
+// （107 实录：总数 569 显示 100、状态分布只描述最近 100 条）。走 offset 游标翻全量
+// （同 listAllProjects 口径；排序键=created_at 不可变，R68，页间稳定）。护栏 30 页
+// （=3000 条）：超限计数口径退化为"最近 3000 条"——护栏是防异常 has_next 恒真打爆，
+// 不是常态路径。task_service 仅在有下页时才填 Pagination（B5-P1-2 同源），末页
+// 无 pagination 键=循环天然终止。
+export const MAX_TASK_WALK_PAGES = 30;
+export async function listAllTasks(): Promise<ScanTask[]> {
+  const out: ScanTask[] = [];
+  let cursor = '0';
+  for (let i = 0; i < MAX_TASK_WALK_PAGES; i++) {
+    const resp = (await api.get('/v1/tasks', {
+      params: { pagination: { page_size: 100, cursor } },
+    })).data as { tasks: ScanTask[]; pagination?: { has_next?: boolean; next_cursor?: string } };
+    out.push(...resp.tasks);
     if (!resp.pagination?.has_next || !resp.pagination.next_cursor) break;
     cursor = resp.pagination.next_cursor;
   }
@@ -236,8 +279,18 @@ export async function getProjectConfig(projectId: string): Promise<ProjectConfig
 // proto L849/L1156/L1158: UpdateProjectConfigRequest{config: ProjectConfig}——双层包装
 // （ProjectConfig{project_id, config map<string,string>}）；扁平体会被 protojson 丢字段
 // → project-service "project  not found"（E2E 实证后修正）
+// 注意：服务端 config 存储为整 map 替换（Upsert 整记录，无键级合并）——"只改一键"必须
+// GET 现状后带全量键回写，漏带的键会被清掉。
 export async function updateProjectConfig(projectId: string, config: Record<string, string>): Promise<ProjectConfigResponse> {
   return (await api.put(`/v1/projects/${projectId}/config`, { config: { project_id: projectId, config } })).data;
+}
+
+// proto L872/L1380: UpdateProject → PUT /v1/projects/:id，body=UpdateProjectRequest{project}。
+// 服务端整体替换（project-service Update 无字段合并）——调用方必须 GET 全量读回后改字段
+// 整对象提交，漏带字段会被清零；gateway 钉死 body.project.project_id=URL 路径段（R73/R91
+// 错位防线），repo_url 过服务端安全白名单（危险 scheme 400）。
+export async function updateProject(projectId: string, project: Project): Promise<Project> {
+  return (await api.put(`/v1/projects/${projectId}`, { project: { ...project, project_id: projectId } })).data;
 }
 
 // gateway transcode.go tools(): 手写 JSON {tools: [{tool_id,name,supported_languages,output_format,valid,errors}]}
@@ -262,10 +315,58 @@ export interface CreateTaskPayload {
   scan_mode: string;
   sast_tools: string[];
   config: Record<string, string>;
+  agent?: string; // 切片 7：任务级 Agent（空/默认=不发——部署默认 dsh）
 }
 
 export async function createTask(payload: CreateTaskPayload): Promise<{ task_id: string }> {
   return (await api.post('/v1/tasks', payload)).data;
+}
+
+// ===== 编排（负载 pack）生命周期（编排 CRUD 批 2026-09-21）=====
+// append-only 修订语义：update=append 新修订；deprecate=停用标记（可恢复）。
+// spec 以全量 YAML 传输（服务端 Validate 校验，错误带字段路径回显）。
+
+export async function listOrchestrations(params: { include_deprecated?: boolean; include_history?: boolean }): Promise<{ orchestrations: OrchestrationInfo[] }> {
+  return (await api.get('/v1/orchestrations', { params })).data;
+}
+
+export async function createOrchestration(name: string, specYAML: string): Promise<OrchestrationInfo> {
+  return (await api.post('/v1/orchestrations', { name, spec_yaml: specYAML })).data;
+}
+
+export async function updateOrchestration(name: string, specYAML: string): Promise<OrchestrationInfo> {
+  return (await api.put(`/v1/orchestrations/${encodeURIComponent(name)}`, { name, spec_yaml: specYAML })).data;
+}
+
+export async function deprecateOrchestration(name: string, undePrecate = false): Promise<OrchestrationInfo> {
+  return (
+    await api.delete(`/v1/orchestrations/${encodeURIComponent(name)}`, {
+      // unde_precate 拼写来自 proto 字段 UndePrecate（历史固化，改名=契约破坏）；
+      // 网关 query 解析与 engine DeprecateOrchestration.UndePrecate 同名消费。
+      params: undePrecate ? { unde_precate: true } : {},
+    })
+  ).data;
+}
+
+// ===== 图节点人机共编辑（v0.5，graph-engine-v0.5-blackboard-hoc.md §4/§2.1）=====
+// 追加消息=回合边界生效（bridge 排队，不打断当回合）；claim=human 占住节点
+// （调度跳过，TTL 租约）；release=释放回 open。（端点未登记 external-interfaces E-锚——
+// 图批次遗留补档缺口，原注释误称 E-57..E-60 实为他端点锚，2026-10-04 撞号清偿时纠正）
+
+export async function injectGraphNodeMessage(taskId: string, nodeId: string, message: string): Promise<{ accepted: boolean; node_status: string; event_seq?: number }> {
+  return (await api.post(`/v1/tasks/${taskId}/graph/nodes/${encodeURIComponent(nodeId)}/message`, { message })).data;
+}
+
+export async function claimGraphNode(taskId: string, nodeId: string): Promise<{ accepted: boolean; holder: string; lease_until: string }> {
+  return (await api.post(`/v1/tasks/${taskId}/graph/nodes/${encodeURIComponent(nodeId)}/claim`, {})).data;
+}
+
+export async function releaseGraphNode(taskId: string, nodeId: string): Promise<{ accepted: boolean; node_status: string }> {
+  return (await api.delete(`/v1/tasks/${taskId}/graph/nodes/${encodeURIComponent(nodeId)}/claim`)).data;
+}
+
+export async function reopenGraphNode(taskId: string, nodeId: string, reason: string): Promise<{ accepted: boolean; node_status: string }> {
+  return (await api.post(`/v1/tasks/${taskId}/graph/nodes/${encodeURIComponent(nodeId)}/reopen`, { reason })).data;
 }
 
 // 启动续签（ADR-145 补全）：页面刷新后用 refresh_token 静默恢复 access（14号 §2.1 Q3 口径）。
@@ -284,8 +385,42 @@ export async function bootRefresh(): Promise<string | null> {
 // ===== 推理 provider/路由管理（ADR-217；engine gateway /v1/inference/*，admin 面）=====
 // 凭据只进不出：credentials 仅出现在 upsert/update 请求体；读端点类型无该字段。
 
-export async function getInferenceProviders(): Promise<{ providers: InferenceProvider[] }> {
-  return (await api.get('/v1/inference/providers')).data;
+// wsQ — workspace 查询参数后缀（空串=全局默认 default；切片3b team 上车）。
+// engine 转码对六个推理端点统一认 ?workspace=（PUT/POST 上 query 覆盖 body 同名
+// 字段——路径名权威同型），故统一走 query 最简。
+const wsQ = (ws?: string) => (ws ? `?workspace=${encodeURIComponent(ws)}` : '');
+
+// workspace 清单（切片3b：Provider 页工作区选择器数据源；admin 面）
+export interface WorkspaceInfo {
+  name: string;
+  phase: string;
+  labels: Record<string, string>;
+}
+export async function getWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {
+  return (await api.get('/v1/workspaces')).data;
+}
+
+// 建区/删区（admin；409 重名/资源守卫的 {error} 原文比 axios 文案可行动——透出）
+export async function createWorkspace(payload: { name: string }): Promise<WorkspaceInfo> {
+  try {
+    return (await api.post('/v1/workspaces', payload)).data;
+  } catch (e) {
+    const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+    throw new Error(detail || (e as Error).message);
+  }
+}
+
+export async function deleteWorkspace(name: string): Promise<{ name: string; deleted: boolean }> {
+  try {
+    return (await api.delete(`/v1/workspaces/${encodeURIComponent(name)}`)).data;
+  } catch (e) {
+    const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+    throw new Error(detail || (e as Error).message);
+  }
+}
+
+export async function getInferenceProviders(ws?: string): Promise<{ providers: InferenceProvider[] }> {
+  return (await api.get('/v1/inference/providers' + wsQ(ws))).data;
 }
 
 export interface InferenceProviderPayload {
@@ -294,35 +429,49 @@ export interface InferenceProviderPayload {
   config: Record<string, string>;
 }
 
-// POST（upsert 语义，created 标识走 Create 还是 Update——manager 判存在性）
-export async function createInferenceProvider(
-  name: string, payload: InferenceProviderPayload,
+// POST（upsert 语义，created 标识走 Create 还是 Update——manager 判存在性）。
+// 错误详情透出：engine R55 键约定守卫/manager INVALID_ARGUMENT 400（类型不支持/
+// 类型不可改）的 {error} 原文比 axios 通用文案可读——同 setInferenceRoute 口径
+//（2026-09-17 UI 实测：R55 拒别名键曾被吞成 "Request failed with status code 400"）。
+async function inferenceProviderCall(
+  run: () => Promise<{ data: UpsertInferenceProviderResponse }>,
 ): Promise<UpsertInferenceProviderResponse> {
-  return (await api.post('/v1/inference/providers', { name, ...payload })).data;
+  try {
+    return (await run()).data;
+  } catch (e) {
+    const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+    throw new Error(detail || (e as Error).message);
+  }
+}
+
+export async function createInferenceProvider(
+  name: string, payload: InferenceProviderPayload, ws?: string,
+): Promise<UpsertInferenceProviderResponse> {
+  return inferenceProviderCall(() => api.post('/v1/inference/providers' + wsQ(ws), { name, ...payload }));
 }
 
 // PUT /providers/{name}：路径名权威（engine transcode 用路径覆盖 body 同名字段）
 export async function updateInferenceProvider(
-  name: string, payload: InferenceProviderPayload,
+  name: string, payload: InferenceProviderPayload, ws?: string,
 ): Promise<UpsertInferenceProviderResponse> {
-  return (await api.put(`/v1/inference/providers/${encodeURIComponent(name)}`, payload)).data;
+  return inferenceProviderCall(() => api.put(`/v1/inference/providers/${encodeURIComponent(name)}` + wsQ(ws), payload));
 }
 
-export async function deleteInferenceProvider(name: string): Promise<{ deleted: boolean }> {
-  return (await api.delete(`/v1/inference/providers/${encodeURIComponent(name)}`)).data;
+export async function deleteInferenceProvider(name: string, ws?: string): Promise<{ deleted: boolean }> {
+  return (await api.delete(`/v1/inference/providers/${encodeURIComponent(name)}` + wsQ(ws))).data;
 }
 
-export async function getInferenceRoute(): Promise<InferenceRoute> {
-  return (await api.get('/v1/inference/route')).data;
+export async function getInferenceRoute(ws?: string): Promise<InferenceRoute> {
+  return (await api.get('/v1/inference/route' + wsQ(ws))).data;
 }
 
-// 切路由：no_verify 缺省 false = 网关连通性验证，回执带 validated_endpoints。
+// 切路由：no_verify 默认 false = 网关连通性验证，回执带 validated_endpoints。
 // 验证失败的服务端 {error} 详情比 axios 通用文案可读（连通性诊断直出），同 getSourceFile 口径。
 export async function setInferenceRoute(
-  payload: { provider: string; model: string; no_verify?: boolean },
+  payload: { provider: string; model: string; no_verify?: boolean }, ws?: string,
 ): Promise<SetInferenceRouteResponse> {
   try {
-    return (await api.put('/v1/inference/route', payload)).data;
+    return (await api.put('/v1/inference/route' + wsQ(ws), payload)).data;
   } catch (e) {
     const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
     throw new Error(detail || (e as Error).message);
@@ -333,18 +482,22 @@ export async function setInferenceRoute(
 // 供任务详情页内联渲染"报告初步判断"，免去 报告中心→在线查看 的绕行。
 export async function getReportContent(reportId: string): Promise<{ format: string; content: string }> {
   const resp = await api.get(`/v1/reports/${reportId}/download`, { responseType: 'text', transformResponse: [(d) => d] });
-  const content = String(resp.data ?? '');
-  const format = content.trimStart().startsWith('<') ? 'html' : 'json';
-  return { format, content };
+  // 真实 axios 的 responseType:'text' 恒产字符串；Blob 兜底：mock 台/未来网关变体可能
+  // 直给 Blob 载荷（jsdom 之外 .text() 可用）——[object Blob] 冒充正文是静默错数据
+  const data = resp.data as string | Blob;
+  const content = typeof data === 'string' ? data : await data.text();
+  const text = String(content ?? '');
+  const format = text.trimStart().startsWith('<') ? 'html' : 'json';
+  return { format, content: text };
 }
 
-// 报告窗口 CSP meta（纵深防御·双保险第一层）：报告 HTML 仅内联样式、无脚本——
+// 报告窗口 CSP meta（审计 B3-2，纵深防御·双保险第一层）：报告 HTML 仅内联样式、无脚本——
 // 写入报告窗口前先注入此 meta（必须先于任何内容写入），default-src 'none' 全灭脚本/
 // 外链资源，style-src 'unsafe-inline' 保内联样式活。
 export const REPORT_WINDOW_CSP_META =
   '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'">';
 
-// (P3-a)：meta 插入位置 doctype 感知——后端报告首字节是 <!doctype html>，旧实现把
+// B5(P3-a)：meta 插入位置 doctype 感知——后端报告首字节是 <!doctype html>，旧实现把
 // meta 拼在最前会把 doctype 挤到非首位 → 文档落 quirks 模式（表格/行高随样式演进漂移）。
 // 有 doctype 时插到其后（CSP meta 在 head 前同样生效），无 doctype 维持首字节前置。
 export function withReportCspMeta(content: string): string {
@@ -355,7 +508,7 @@ export function withReportCspMeta(content: string): string {
     : REPORT_WINDOW_CSP_META + content;
 }
 
-// 报告窗口渲染：打开 about:blank 宿主窗，
+// 报告窗口渲染（fix-plan-0911 §14 升级，双保险第二层·更硬）：打开 about:blank 宿主窗，
 // 在其中插入 <iframe sandbox src=blob:> 携带报告内容——sandbox 空 token 不含
 // allow-scripts / allow-same-origin，iframe 内脚本与同源权限全灭（纯渲染不需要任何
 // 能力，比 meta CSP 更硬）；同时 CSP meta 由本函数统一前置于 blob 内容，即便
@@ -373,7 +526,7 @@ export function openReportWindow(content: string, mime: 'text/html' | 'text/plai
   iframe.setAttribute('title', '报告内容');
   iframe.setAttribute('style', 'border:0;width:100%;height:100vh;display:block');
   w.document.body.appendChild(iframe);
-  // (P3-a)：blob URL 生命周期回收——宿主窗卸载（用户关闭报告窗）即 revoke。此前每次
+  // B5(P3-a)：blob URL 生命周期回收——宿主窗卸载（用户关闭报告窗）即 revoke。此前每次
   // "在线查看"泄漏一份报告正文的 blob 引用直至宿主文档卸载。不在 iframe load 即 revoke：
   // 窗口开着期间 blob 须保持可取（ui_check 等外部校验 fetch(blob:) 与其兼容），关闭即释放。
   // 复审 R：beforeunload 在未交互 about:blank 窗口的触发语义跨浏览器不保证——加 opener 侧
@@ -388,7 +541,7 @@ export function openReportWindow(content: string, mime: 'text/html' | 'text/plai
   return w;
 }
 
-// 重新生成报告（ 接线，D4 裁定）：POST /v1/tasks/{task_id}/report →
+// 重新生成报告（审计 B3-5 接线，D4 裁定）：POST /v1/tasks/{task_id}/report →
 // ReportService/GenerateReport（幂等，网关生成幂等键；旧报告保留，新报告入列后经
 // ['reports'] 失效刷新）。报告中心"重新生成"按钮消费。
 export async function regenerateReport(taskId: string): Promise<{ result?: { report_id: string } }> {
@@ -434,4 +587,65 @@ export async function probeSourceFile(taskId: string, path: string): Promise<Sou
     if (status === 404 && detail.includes('file not found in project')) return 'missing';
     return 'unknown';
   }
+}
+
+// ---- Agent 清单与切换（TP20-T2 切换 Agent 收口；伞仓计划 §3.1）----
+
+// GET /v1/agents：登录可读；创建页与切换 Modal 同源（硬编码清单退役）。
+// 端点失败=调用方降级（入口禁用/锁定默认）——不回落硬编码（计划 §0 裁决）。
+export async function listAgents(): Promise<{ agents: AgentProviderInfo[] }> {
+  return (await api.get('/v1/agents')).data;
+}
+
+// POST /v1/tasks/{id}/agent：PAUSED/QUEUED 态切换。RUNNING 态由调用方
+// （AgentSwitchModal）直发 pause?agent= 回合边界换手——dispatchAction 的动作面
+// 不带 agent 参数（stateMachine ALLOWED_ACTIONS 不动=计划 §3 裁决，切换是带
+// 语义的暂停而非通用动作参数化）。
+export async function switchTaskAgent(taskId: string, agent: string): Promise<unknown> {
+  return (await api.post(`/v1/tasks/${encodeURIComponent(taskId)}/agent`, { agent })).data;
+}
+
+// ---- V2.2 邀请码管理（ADR-255）：形状单点锚定于此（ADR-203，页面禁手写形状）----
+
+// GET /v1/invites：管理端列表（?include_terminal= 默认仅有效码；config 注入码只读随行）。
+export async function listInviteCodes(opts?: { includeTerminal?: boolean; cursor?: string }): Promise<InviteCodesListResp> {
+  const pagination = opts?.cursor ? { cursor: opts.cursor } : undefined;
+  return (await api.get('/v1/invites', {
+    params: { include_terminal: opts?.includeTerminal || undefined, pagination },
+  })).data;
+}
+
+// POST /v1/invites：生成（created_by 由网关注入 JWT sub，body 不传）。
+export async function createInviteCode(body: CreateInviteCodeBody): Promise<InviteCode> {
+  return (await api.post('/v1/invites', body)).data;
+}
+
+// POST /v1/invites/:id/revoke：状态翻转（幂等，活跃码唯一下线通道）。
+export async function revokeInviteCode(id: string): Promise<InviteCode> {
+  return (await api.post(`/v1/invites/${id}/revoke`, {})).data;
+}
+
+// DELETE /v1/invites/:id：仅终态码（Q14 两步走，后端护栏）。
+export async function deleteInviteCode(id: string): Promise<void> {
+  await api.delete(`/v1/invites/${id}`);
+}
+
+// GET /v1/auth/registration-policy：公开读（/v1/auth 链免 JWT），仅 mode 三值。
+export async function getRegistrationPolicy(): Promise<RegistrationPolicy> {
+  return (await api.get('/v1/auth/registration-policy')).data;
+}
+
+// GET /v1/reports（ADR-256：offset 游标+total 契约 + 服务端排序/筛选；filter 仅 format EQ）。
+export interface ReportsListResp {
+  reports: ReportRow[];
+  pagination?: { next_cursor?: string; has_next?: boolean; total?: number };
+}
+
+export async function listReports(p?: ServerListParams & { task_id?: string }): Promise<ReportsListResp> {
+  const params: Record<string, unknown> = {};
+  if (p?.task_id) params.task_id = p.task_id;
+  if (p?.pagination) params.pagination = { ...p.pagination, cursor: p.pagination.cursor ?? '' };
+  if (p?.filter) params.filter = { conditions: [p.filter] };
+  if (p?.sort) params.sort = p.sort;
+  return (await api.get('/v1/reports', Object.keys(params).length ? { params } : undefined)).data;
 }

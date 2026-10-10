@@ -1,5 +1,6 @@
 // 纯逻辑：findings → 树节点模型（文件分组 → 漏洞条目），供 TreeDataProvider 消费。
 import type { UnifiedFinding } from './types';
+import { verdictSuffix } from './verdictSuffix';
 import { SEVERITY_LABEL, severityRank } from './diagnosticsMapper';
 
 export type TreeNode =
@@ -45,7 +46,7 @@ export function findingLabel(f: UnifiedFinding): string {
 export function findingDescription(f: UnifiedFinding): string {
   // ADR-225：继承项角标（inherited_from_task_id 非空——双视图的来源标记在树视图的呈现）
   const inherited = f.inherited_from_task_id ? ' · 继承' : '';
-  return f.source_tool + (f.ai_verdict ? ` · AI:${f.ai_verdict}` : '') + inherited;
+  return f.source_tool + verdictSuffix(f) + inherited;
 }
 
 /**
@@ -109,7 +110,7 @@ export function rollbackPickItems(
     const sev = SEVERITY_LABEL[f.severity] ?? f.severity;
     const line = trackedLines?.[f.finding_id] ?? f.location?.start_line;
     const loc = f.location?.file_path ? `${f.location.file_path}${line ? `:${line}` : ''} · ` : '';
-    const verdict = f.ai_verdict ? ` · AI:${f.ai_verdict}` : '';
+    const verdict = verdictSuffix(f);
     items.push({
       label: `${loc}${sev}`,
       description: `${f.title || f.finding_id}${verdict} · 已修复（可回滚）`,

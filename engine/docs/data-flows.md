@@ -1,6 +1,6 @@
 # engine 数据流转与代码交互 — 接口之外的链路
 
-> 事实源（以代码为准，逐项核对于 2026-09-07，基线 commit `5bc736fd`）。覆盖两份接口文档
+> 事实源。覆盖两份接口文档
 > （docs/api-external.md、docs/api-internal.md）之外的全部端到端数据流：任务生命周期、
 > 文件管道、沙箱执行、SAST 融合、报告/通知、存储布局、配置体系、后台任务。
 > 端口总表由守门测试 `tests/test_guardrails.py` 与 `configs/codeaudit.yaml` 比对看护。
@@ -20,7 +20,7 @@ Kafka task.completed ──> result-service(自动 GenerateReport, 幂等键 kaf
                     └──> storage-service(通知 COMPLETED/FAILED/DEAD→收件人 created_by)
 ```
 
-### 1.1 源码来源解析链（ADR-209 顺序，低档不得覆盖高档）
+### 1.1 源码来源解析链（顺序，低档不得覆盖高档）
 
 1. 任务 `config.project_path` 直用；
 2. 任务 `config.upload_file_id` → storage 拉包闭包；
@@ -39,7 +39,7 @@ Kafka task.completed ──> result-service(自动 GenerateReport, 幂等键 kaf
 | E COMPARE | 并行后 CompareResults（不合并） |
 | 旧 B/D（TRADITIONAL_FIRST/SAST_REVIEW） | 历史兼容路径 |
 
-### 1.2a 增量扫描流（ADR-225；`config.incremental="true"` 触发， Prepare 内解析）
+### 1.2a 增量扫描流（；`config.incremental="true"` 触发， Prepare 内解析）
 
 ```
 新树就位（§1.1 解析链产出，包装层 incremental.go）
@@ -62,7 +62,7 @@ WARN，changed/deleted 恒以服务端内容 diff 为准（D5：权威可自证�
 
 ### 1.3 阶段上报与进度流
 
-- 启动按模式预注册 stages（Metadata 就地初始化——ADR-212① nil map panic 教训）。
+- 启动按模式预注册 stages（Metadata 就地初始化——① nil map panic 教训）。
 - 编排器事件 → stageRecorder 实时置 COMPLETED；外部经 ReportStageComplete/Failed（幂等三态）。
 - 进度 = 完成阶段/总阶段；快照推送 = StreamTaskSnapshot（hub 订阅者 + proto.Equal 变化检测 +
   2s 兜底 ticker；终态帧 settled=true 关流）。日志环形缓存 500 条/任务，log_id 全局单调。
@@ -72,8 +72,8 @@ WARN，changed/deleted 恒以服务端内容 diff 为准（D5：权威可自证�
 - Pause：先 dsh PauseAnalysis（回合闸门先扣）再 RUNNING→PAUSED；Resume 反序。
   模型流不可中途暂停，回合边界生效（当前回合跑完才挂起）。
 - 超时对账 reconciler：1h ticker 扫 RUNNING，30m 阈值；**活跃度 = updated_at ∪ AI 交互日志
-  mtime**（ADR-196：成功结果落地前 3 秒曾因纯 updated_at 被误杀）——依赖"同宿主同 CWD 部署"
-  假设直接读 dsh-runtime 的落盘文件。
+  mtime**（成功结果落地前 3 秒曾因纯 updated_at 被误杀）——依赖"同宿主同 CWD 部署"
+  假设直接读 runtime 的落盘文件。
 
 ## 2. 文件上传与任务源树管道
 
@@ -88,7 +88,7 @@ StartTask(config.upload_file_id) ──> task-service FetchUploadArchive:
 - 解包防护：safeJoin 穿越/软链拒绝、500MB/10 万文件上限；解压失败 → 任务 FAILED
   （错误文案带"压缩包下载/解压失败"阶段语义）。
 - **共享卷 `agent_repos` → `/data/repos`**：task-service（写：解包/clone）、gateway
-  （读：source-file）、dsh-runtime（读：沙箱上传前）三方共用同一任务源树。
+  （读：source-file）、runtime（读：沙箱上传前）三方共用同一任务源树。
 - **剥壳双实现**：task-service `archive.go ResolveProjectRoot` 与 gateway `sourcefile.go
   resolveProjectRoot` 是跨 Go module 复制件，语义必须同步（口径漂移会让 fixpatch 校验与
   source-file 解析再度根错位——gw-f6a3523）。
@@ -97,10 +97,10 @@ StartTask(config.upload_file_id) ──> task-service FetchUploadArchive:
   project_path 位于 uploads_dir 内）③project config project_path ④唯一内容回退（mtime 最新，
   覆盖无链接存量任务）。文件解析 exact > suffix > basename；5MiB/二进制/穿越/软链拒绝。
 
-## 3. 扫描执行流（dsh-runtime ↔ openshell-manager 沙箱）
+## 3. 扫描执行流（runtime ↔ openshell-manager 沙箱）
 
 ```
-dsh-runtime ──HTTP/JSON──> openshell-manager(:18800, LXC107) ──> dsh-pentest-sse 沙箱容器
+runtime ──HTTP/JSON──> openshell-manager(:18800, LXC107) ──> dsh-pentest-sse 沙箱容器
                                                                   └─ bridge.mjs(:8080)
                                                                        │ SSE /events 回推
                                                                        │ JSON-RPC 下行
@@ -108,26 +108,26 @@ dsh-runtime ──HTTP/JSON──> openshell-manager(:18800, LXC107) ──> dsh
                                                               推理网关 inference.local(沙箱内 egress)
 ```
 
-- **端点解析**：env `OPENSHELL_MANAGER_URL/TOKEN` > yaml `dsh_runtime.sandbox.manager_url/
+- **端点解析**：env `OPENSHELL_MANAGER_URL/TOKEN` > yaml `runtime.sandbox.manager_url/
   manager_token` > 共享 `../openshell-manager/config.json`（tokenFile）> 默认 127.0.0.1:18800。
 - **沙箱生命周期**：沙箱名 `ca-<hex12>`（≤15 字符，网关路由限制）→ 创建（spec 含
-  environment.DSH_TASK_ID/image/归属标签 openshell.io/managed-by=codeaudit-dsh-runtime）→
+  environment.DSH_TASK_ID/image/归属标签 openshell.io/managed-by=codeaudit-runtime）→
   wait-ready → exec 拉起 bridge（`DSH_MAX_TOKENS`=32768、`DSH_PERMISSION_MODE=danger-full-access`、
   `DEEPSEEK_BASE_URL=https://inference.local/v1`）→ ExposeService(bridge:8080) → 订阅 SSE。
-  进程级 activeSandboxes 注册表：注册先于创建（防对账竞态）、创建失败必须注销（ADR-212⑪）、
+  进程级 activeSandboxes 注册表：注册先于创建（防对账竞态）、创建失败必须注销（⑪）、
   teardown 注销。
 - **孤儿回收**：SandboxReconciler 启动 2min 后首轮、每 30min；判据=名字正则 `^(am|ca)-[hex12]`
-  或归属标签，且不在活跃注册表（ADR-212⑫：标签键值曾混用致第二重圈定恒不命中）。
+  或归属标签，且不在活跃注册表（⑫：标签键值曾混用致第二重圈定恒不命中）。
   `CODEAUDIT_SANDBOX_RECONCILE=off` 可关。
 - **项目上传**：tar.gz（排除 .git/node_modules）→ manager files 端点（Content-Length 必带）→
   沙箱内 `/sandbox/project`；100MB 上限。
-- **回合语义**：收敛只认主会话 idle（子任务 idle 不算，ADR-190）；瞬态断流续跑 ≤2 轮
-  （ADR-192）；submit_findings 分批提交跨回合累积、按补丁体量分层（无 diff ≤8 条/批、含 diff
-  ≤4 条/批、多文件大补丁 1 条/批，ADR-194/211/220）；空列表=合法零发现（干净审计不误判报废）。
-- **沙箱服务路由**：沙箱内 bridge 经 `gateway_dial_addr`(gateway.internal:8080) 直拨 + Host 头
+- **回合语义**：收敛只认主会话 idle（子任务 idle 不算，）；瞬态断流续跑 ≤2 轮
+  ；submit_findings 分批提交跨回合累积、按补丁体量分层（无 diff ≤8 条/批、含 diff
+  ≤4 条/批、多文件大补丁 1 条/批，/211/220）；空列表=合法零发现（干净审计不误判报废）。
+- **沙箱服务路由**：沙箱内 bridge 经 `gateway_dial_addr`(192.0.2.122:8080) 直拨 + Host 头
   路由（沙箱服务域无 DNS 通配）。
 - **AI 交互日志**：人性化中文流 → 内存条目 + `.ai.log`；原始 SSE 帧 → 仅 `.sse.log`；回调接线
-  必须先于 runner 构造（runner 拷贝 cfg，ADR-215 回归）；内存 LRU 双上限 64 条/256MB，单任务
+  必须先于 runner 构造（runner 拷贝 cfg，回归）；内存 LRU 双上限 64 条/256MB，单任务
   16MB 截断；淘汰后读路径落磁盘兜底。
 
 ## 4. SAST 工具集成与融合流（sast-adapter）
@@ -144,17 +144,19 @@ FuseResults 五阶段: ①FP过滤(ai_verdict=FP 且 conf>0.8) ②位置合并(f
 ```
 
 - conflict/confidence 两阶段成员索引**必须取全量 FilteredSAST+FilteredAI**（dedup 后
-  FusedFindings 只剩 primary，AI 成员被移除——ADR-214：原实现索引建自 FusedFindings 致两阶段
+  FusedFindings 只剩 primary，AI 成员被移除——原实现索引建自 FusedFindings 致两阶段
   恒空转）。
 - 融合失败 → buildFallbackResult 未融合降级（原始结果保留）；fusion 内部 panic → error
-  （nil ctx 零值兜底，ADR-212③）。
+  （nil ctx 零值兜底，③）。
 - 工具执行映射在 yaml `sast_adapter.tools`（argv 占位符 {project}/{rules}；bandit 有
-  python_module 兜底）。opengrep=semgrep 分叉替代（ADR-158），默认导出 dataflow_trace。
+  python_module 兜底）。opengrep=semgrep 分叉替代，默认导出 dataflow_trace。
 
 ## 5. 结果、报告与通知流
 
-- **findings 落盘**：三个写方汇聚 result-service——dsh-runtime（AI/沙箱/RuleScan 发现，键
-  `<request_id>-store`）、sast-adapter（SAST 扫描，键 `<reqID>-multi/-<tool>`）、task 编排
+- **findings 落盘**：三个写方汇聚 result-service——runtime（AI/沙箱/RuleScan 发现，键
+  `<request_id>-store`；沙箱侧内容稳定 ID `taskID-sbx-digest12`+`ON CONFLICT (id) DO
+  NOTHING`=跨纪元重报幂等 no-op，R135）、sast-adapter（SAST 扫描，键 `<reqID>-multi/-
+  <tool>`；failed_count>0 视同落库失败不进幂等缓存，R137）、task 编排
   （BatchUpdateVerdict，键 `-verdict-<v>-<c>-`）。
 - **报告双路径**：Kafka 主路径（task.completed → result 消费 → GenerateReport 键
   `kafka_<task_id>`）+ gRPC 降级路径（Kafka 不可达时 task 编排直调，失败不阻断任务）。
@@ -164,7 +166,7 @@ FuseResults 五阶段: ①FP过滤(ai_verdict=FP 且 conf>0.8) ②位置合并(f
 
 | topic | 生产者 | 消费者 |
 |---|---|---|
-| task.created | task-service（消息带 event_type 头——ADR-212⑤：缺头=消费端全丢） | storage（通知） |
+| task.created | task-service（消息带 event_type 头——⑤：缺头=消费端全丢） | storage（通知） |
 | task.completed | task-service（CompleteTask 链+DEAD 终态） | result（报告）+ storage（通知） |
 | finding.verdict.updated | result-service（verdict 变化时） | storage（仅记录） |
 | task.stage.completed | —（无生产者） | storage（仅记录） |
@@ -177,26 +179,29 @@ FuseResults 五阶段: ①FP过滤(ai_verdict=FP 且 conf>0.8) ②位置合并(f
 
 ## 6. 存储布局总表
 
-### PostgreSQL（唯一持久化属 result-service；`CODEAUDIT_PG_DSN`，`CODEAUDIT_STORE=memory` 降级）
+### PostgreSQL（持久化两属：result-service 与 task-service（R-31）；result 走 `CODEAUDIT_PG_DSN`/`CODEAUDIT_STORE=memory` 降级，task 走 `CODEAUDIT_TASK_PG_DSN` 空=纯内存）
 
 | 库 | 表 | 说明 |
 |---|---|---|
 | codeaudit_result | findings | UNIQUE(task_id,tool_name,rule_id,file_path,line_number) |
 | codeaudit_result | finding_feedback | 反馈 |
 | codeaudit_result | reports / report_templates | 报告+3 内置模板 |
-| codeaudit_project / codeaudit_task | **无表** | project/task 均内存态（init-db.sql 只建库） |
+| codeaudit_task | tasks / task_usage | task 实体 PG 持久化（R-31：`task_store_pg.go` protojson payload 写穿+启动 `hydrateTasks` 回放，表自建 ）；task_usage=终态补归集（usage_collector，事务全量重算） |
+| codeaudit_task | pack_revisions / pack_deprecated | 负载 pack 注册表写穿镜像 |
+| codeaudit_project | projects / project_configs / project_stats / project_members / users / revoked_tokens / session_epochs / idempotency | HA P1-a：project-service 内存权威+PG 写穿镜像+读回落（`CODEAUDIT_PROJECT_PG_DSN`，compose 默认开；mirror_pg 建表，含用户/黑名单/纪元/幂等四族）；无 DSN 时纯内存 |
 
-### Redis（仅 storage-service；前缀 ca:，ADR-210 am:→ca:）
+### Redis（仅 storage-service；前缀 ca:，am:→ca:）
 
 `ca:notif:<id>`=JSON（无 TTL）· `ca:notif:idx:<user_id>`=ZSET(score=UnixNano) ·
-`ca:idem:<request_id>`=幂等体（TTL 24h）。project-service 幂等为内存 map。
+`ca:idem:<request_id>`=幂等体（TTL 24h）。project-service 幂等：PG 档=idempotency 表
+（写穿+回放），无 DSN 时回落内存 map。
 
 ### MinIO（仅 storage-service）
 
 桶=默认桶 + reports/cpg/sast-raw/uploads/trees（启动自动建）。键规范：数据 `files/<file_id>`（域桶
 按 FilePath 前缀分派）；元数据 `meta/files/<file_id>`（恒默认桶）；上传原件 `uploads/up-<hex><ext>`；
 报告 `reports/<report_id>.json`；导出 `exports/findings-<task_id>.json`；源码树 tar
-`trees/<task_id>.tar.gz`（ADR-225 D6：剥壳根快照，file_id 回写 task.config.tree_tar_file_id，
+`trees/<task_id>.tar.gz`（D6：剥壳根快照，file_id 回写 task.config.tree_tar_file_id，
 为 gateway ⑤流重物化与卷缓存 GC 删除前提的锚点）。
 
 ### 本地文件系统（隐性跨服务契约，无 proto 承载）
@@ -205,20 +210,27 @@ FuseResults 五阶段: ①FP过滤(ai_verdict=FP 且 conf>0.8) ②位置合并(f
 |---|---|---|
 | `<repos_dir>/<task_id>/`（repo clone） | task | gateway(source-file)、dsh(沙箱上传前) |
 | `<repos_dir>/uploads-<task_id>/unpacked/`（拉包解包+剥壳） | task | 同上 |
-| `<interaction_dir>/<task>.ai.log/.sse.log`（yaml 相对=本地；容器=`CODEAUDIT_INTERACTION_DIR`=/data/repos/ai-interaction 共享卷，R36——两容器 CWD 相对路径互不可见曾致探针恒 miss 误判 TIMEOUT） | dsh-runtime | gateway(ai-log 兜底)、**task reconciler（mtime 判活）** |
-| `<project>/.codeaudit/cpg.json` | dsh-runtime(AnalyzeCode) | dsh-runtime(QueryCPG) |
+| `<interaction_dir>/<task>.ai.log/.sse.log`（yaml 相对=本地；容器=`CODEAUDIT_INTERACTION_DIR`=/data/repos/ai-interaction 共享卷，R36——两容器 CWD 相对路径互不可见曾致探针恒 miss 误判 TIMEOUT） | runtime | gateway(ai-log 兜底)、**task reconciler（mtime 判活）** |
+| `<interaction_dir>/<task>.graph.log`（同上共享卷；图事件族 {type,seq,time,data} 信封，切片5+6） | runtime（graphEmitter，R117 全量校验+fsync） | **task-service（GetTaskGraph 视图回放折叠，task_id 白名单消毒同 R53）**、baton（跨仓投影，时点形状快照断言） |
+| `<tasklog>/<taskID>/maka-events.jsonl` | runtime（makaSession 回合收束导出，teardown 前） | **baton（`project -maka` 转译投影**——九族映射+金丝雀 park，maka 适配器批） |
+| `<project>/.codeaudit/cpg.json` | runtime(AnalyzeCode) | runtime(QueryCPG) |
 | `.agent/evidence/exports/` | result(ExportFindings) | 运维 |
 
 ## 7. 配置体系与端口
 
-- **唯一配置文件** `configs/codeaudit.yaml`（ADR-137）：全部可调值承载于此，代码无业务缺省，
-  env `CODEAUDIT_*` 覆盖，缺键 fail-fast；密钥只记"读哪个 env"（ADR-115）。
+- **唯一配置文件** `configs/codeaudit.yaml`：全部可调值承载于此，代码无业务缺省，
+  env `CODEAUDIT_*` 覆盖，缺键 fail-fast；密钥只记"读哪个 env"。
 - **加载机制**（libs/go-config）：`CODEAUDIT_CONFIG` 精确路径，否则 CWD 逐级向上找
   `configs/codeaudit.yaml`——**服务必须在仓库根或设 env 启动**。
 - 各段消费方：ports.\*→全部服务；addresses.\*→gateway/task/dsh/sast 拨号；gateway.\*→网关；
   task.\*→task；result.\*→result（含 kafka/分页/导出）；sast_adapter.\*→sast（工具 argv）；
-  dsh_runtime.\*→dsh（会话 TTL/超时/沙箱/交互日志目录）；fusion.\*→sast 融合参数；
+  runtime.\*→dsh（会话 TTL/超时/沙箱/交互日志目录）；fusion.\*→sast 融合参数；
   webhook.\*→配置承载（出站订阅现空）；auth.\*→project-service 注册策略。
+  **例外 env 直读键**（不走 yaml，`os.Getenv` 缺省兜底）：`CODEAUDIT_MAKA_TURN_BUDGET_S`
+  （maka 回合总预算秒，缺省 1800=30m，非法值回落；附录 C4 cfg 化——突破单次 exec
+  600s 钳制，maka_session.go）、`CODEAUDIT_SOURCEFILE_CACHE_MAX_BYTES`（gateway
+  source-file 重物化缓存上限，缺省 2GiB；sourcefile_rehydrate.go——值在配置
+  的第二个例外键，R137 第四轮审计补录）。
 
 ### 端口总表
 
@@ -229,14 +241,14 @@ FuseResults 五阶段: ①FP过滤(ai_verdict=FP 且 conf>0.8) ②位置合并(f
 | project（gRPC） | 50052 | ports.project |
 | task（gRPC） | 50054 | ports.task |
 | storage（gRPC） | 50055 | ports.storage |
-| dsh-runtime（gRPC） | 50057 | ports.dsh_runtime |
+| runtime（gRPC） | 50057 | ports.runtime |
 | result（gRPC） | 50058 | ports.result |
 | PostgreSQL | 5432 | compose |
 | Redis | 6379 | compose |
 | MinIO API / Console | 9000 / 9001 | compose |
-| Kafka PLAINTEXT / controller | 9092 / 9093 | compose（advertised 默认 gateway.internal） |
-| openshell-manager | 18800 | dsh_runtime.sandbox.manager_url |
-| 沙箱 bridge 服务路由 | 8080（gateway Host 头） | dsh_runtime.sandbox.gateway_dial_addr |
+| Kafka PLAINTEXT / controller | 9092 / 9093 | compose（advertised 默认 192.0.2.122） |
+| openshell-manager | 18800 | runtime.sandbox.manager_url |
+| 沙箱 bridge 服务路由 | 8080（gateway Host 头） | runtime.sandbox.gateway_dial_addr |
 
 ## 8. 后台任务 / 定时器 / 缓存
 
@@ -247,7 +259,7 @@ FuseResults 五阶段: ①FP过滤(ai_verdict=FP 且 conf>0.8) ②位置合并(f
 | 孤儿沙箱对账 | 2min 延迟首轮，30m 周期 | dsh sandbox/reconciler.go |
 | dsh 会话 janitor | TTL 1800s/ratio 6=300s | dsh session/ |
 | sharedAILogs LRU | 64 条 / 256MB / 单任务 16MB | dsh ai_interaction_log.go |
-| gateway taskwatch | 合并窗 50ms / ping 20s / 轮询 250ms / 读闲 90s / 寿命 6h / AI 宽限 3s | gateway taskwatch.go |
+| gateway taskwatch | 合并窗 50ms / ping 20s / **静默保活帧 30s（A3/R134）/ AI 重臂 2s（R132）** / 轮询 250ms / 读闲 90s / 寿命 6h / AI 宽限 3s | gateway taskwatch.go |
 | AI 流订阅等待 | 500ms | dsh dsh_agent.go |
 | Kafka 消费退避 | storage 指数 3s→60s；result 固定 3s | 两 consumer |
 | 优雅停机 | gateway Shutdown(15s)；task/result GracefulStop(10s)；sast/dsh/project/storage 无信号处理 | 各 main.go |
@@ -255,47 +267,47 @@ FuseResults 五阶段: ①FP过滤(ai_verdict=FP 且 conf>0.8) ②位置合并(f
 ## 9. compose 拓扑与已知错位
 
 - 依赖链：gateway→{project,task,storage}(started)；project→{postgres,redis}(healthy)；
-  storage→{minio,kafka,redis}(healthy)；task→{result,dsh-runtime,sast-adapter}(started)；
-  sast-adapter→result；result→{postgres,kafka}(healthy)；dsh-runtime 无应用依赖。
+  storage→{minio,kafka,redis}(healthy)；task→{result,runtime,sast-adapter}(started)；
+  sast-adapter→result；result→{postgres,kafka}(healthy)；runtime 无应用依赖。
 - 应用 healthcheck：仅 gateway 真实探活（wget /health）；其余占位恒过。
 - **已知错位（以代码为准）**：engine 本仓 docker-compose.yml 给 storage 传
   `CODEAUDIT_MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY`，而代码读 `CODEAUDIT_S3_ENDPOINT/S3_BUCKET/
   S3_ACCESS_KEY/S3_SECRET_KEY/S3_SECURE` 且需 `CODEAUDIT_STORE=s3`——本仓 compose 直起时
-  storage 实际跑 **memory 档**。生产/模拟栈由伞仓 deploy/ 的 compose 与 env 承担（另有
+  storage 实际跑 **memory 档**。生产/模拟栈由主仓库 deploy/ 的 compose 与 env 承担（另有
   `CODEAUDIT_STORE=s3` 注入，不受此错位影响）。project-service 的 `CODEAUDIT_DB_*` env 亦
-  无代码消费（内存 store）。修复需同步伞仓 deploy/ 配方，未裁决前如实记录。
+  无代码消费（内存 store）。修复需同步主仓库 deploy/ 配方，未裁决前如实记录。
 
-## 10. dsh-runtime 执行日志上报（dsh→task 尽力而为）
+## 10. runtime 执行日志上报（dsh→task 尽力而为）
 
-`emitTaskLog`：懒连接共享 gRPC conn 调 `TaskService.AppendTaskLog`（source=sandbox/dsh-runtime）；
+`emitTaskLog`：懒连接共享 gRPC conn 调 `TaskService.AppendTaskLog`（source=sandbox/runtime）；
 失败吞错留 stdout——日志是观测辅助，不构成数据面（丢日志不影响任务结果）。
 
-## 11. 推理 provider/路由管理流（ADR-217，/v1/inference/*）
+## 11. 推理 provider/路由管理流（/v1/inference/*）
 
 ```
 浏览器(web) ──同源 /v1/inference/*──> gateway(requireAdmin)
-   ──gRPC──> DSHRuntimeService 推理管理面 6 RPC
+   ──gRPC──> RuntimeService 推理管理面 6 RPC
    ──HTTP/JSON+Bearer──> openshell-manager /api/v1/inference/{providers,route}
    ──gRPC──> OpenShell 网关（权威存储 gateway.db，凭据加密；网关按引用向沙箱注入）
 ```
 
-- **纯管道链**：引擎零 provider 状态。workspace 由 dsh-runtime 从全局配置
-  `dsh_runtime.sandbox.workspace` 注入（对外 REST 面不暴露 workspace 概念）。
+- **纯管道链**：引擎零 provider 状态。workspace 由 runtime 从全局配置
+  `runtime.sandbox.workspace` 注入（对外 REST 面不暴露 workspace 概念）。
 - **凭据单向流**：credentials 仅存在于写请求（POST/PUT providers）经 manager →
   网关加密存储；一切读路径（list/get/route）不回流凭据（manager 按省略脱敏）。
 - **生效路径不变**：provider/路由变更影响的是**下一个任务**的 AI 阶段——沙箱启动时
-  引擎按当前路由类型注入 LLM env（ADR-227）：openai 兼容族 → `DEEPSEEK_BASE_URL=
+  引擎按当前路由类型注入 LLM env：openai 兼容族 → `DEEPSEEK_BASE_URL=
   https://inference.local/v1` + 引用凭据（网关对标准路由请求体改写 model 字段，
   缺省模型名即可）；anthropic 型 → `DSH_PROVIDER=anthropic-relay DSH_MODEL=<路由
   真实模型名> ANTHROPIC_API_KEY=openshell-injected`——bridge 在 $DSH_HOME/
   settings.yaml 烘焙 llm-pi-ai 的 anthropic-messages 路由（baseURL=inference.local，
-  L7 对 anthropic 协议原生直通，2026-09-12 sim 实测 200 流式/非流式；直通路径网关
+
   不改写 model，故模型名必须与路由一致）。运行中任务不受影响；路由读取失败按缺省
   deepseek env 拉起 + warn（诚实降级）。
 - **连通性验证**：PUT /v1/inference/route（no_verify=false 缺省）→ 网关实测推理端点，
   回执 validation_performed/validated_endpoints 逐层透传至前端；验证失败按 manager
-  错误原样透出（切换不生效，诚实失败）。anthropic 型验证走 BASE_URL 指定端点的
-  `/v1/messages`（anthropic_messages 协议；2026-09-12 智谱 anthropic 端点实测
+  错误原样透出（切换不生效，诚实失败）。anthropic 型验证走 ANTHROPIC_BASE_URL 指定端点的
+
   validated_endpoints=[https://open.bigmodel.cn/api/anthropic/v1/messages]）。
-  已知边界：BASE_URL 为明文 http:// 时网关验证层回落官方 api.anthropic.com
-  （区域 403）——anthropic 型 BASE_URL 须 https。
+  已知边界：ANTHROPIC_BASE_URL 为明文 http:// 时网关验证层回落官方
+  api.anthropic.com（区域 403）——anthropic 型 ANTHROPIC_BASE_URL 须 https。

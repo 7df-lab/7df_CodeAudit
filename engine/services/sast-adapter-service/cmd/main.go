@@ -10,6 +10,8 @@ import (
 	pb "github.com/codeaudit/proto-gen"
 	"github.com/codeaudit/services/sast-adapter-service/internal/handler"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 func main() {
@@ -39,18 +41,24 @@ func main() {
 		grpc.ChainStreamInterceptor(grpcrecover.StreamServerInterceptor()),
 	)
 
-	// SASTAdapterService — 实体存储与 fusion 共享（同部署单元，01 §4.2）
-	// 依据: codeaudit_common.proto L1022-L1031 + L1047-L1059
+	// SASTAdapterService — HA P2（ADR-250 Q7a 拆桥）：ShareStore 同进程桥已删
+	// （多副本下 fusion/adapter 独立扩缩；解析主路径=result-service 权威存储）。
 	adapterHandler := handler.NewSASTAdapterHandler(resultAddr)
 
 	fusionHandler := handler.NewSASTFusionHandler(resultAddr)
-	handler.ShareStore(fusionHandler, adapterHandler)
 
 	pb.RegisterSASTAdapterServiceServer(s, adapterHandler)
 
 	// Register SASTFusionService
 	// 依据: codeaudit_common.proto L1047-L1059
 	pb.RegisterSASTFusionServiceServer(s, fusionHandler)
+
+	// P0 探针补面：gRPC health 注册
+	// （此前缺失——compose 探针只测 TCP；消费面=k8s 原生 grpc probe+gateway /health 聚合）。
+	healthServer := health.NewServer()
+	grpc_health_v1.RegisterHealthServer(s, healthServer)
+	healthServer.SetServingStatus("SASTAdapterService", grpc_health_v1.HealthCheckResponse_SERVING)
+	healthServer.SetServingStatus("SASTFusionService", grpc_health_v1.HealthCheckResponse_SERVING)
 
 	log.Printf("Starting sast-adapter-service on :%d", port)
 	if err := s.Serve(lis); err != nil {

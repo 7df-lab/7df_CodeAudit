@@ -12,6 +12,7 @@ import (
 	pb "github.com/codeaudit/proto-gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"log"
 )
 
 // logCapPerTask — 单任务日志条目上限（环形丢弃最旧；实现细节，ADR-167）。
@@ -29,11 +30,11 @@ func (s *TaskServiceImpl) AppendTaskLog(ctx context.Context, req *pb.AppendTaskL
 		return nil, status.Error(codes.InvalidArgument, "message is required")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.tasks[req.GetTaskId()]; !ok {
+	if _, ok := s.taskByIDRW(req.GetTaskId()); !ok { // HA P1-c 读回落（他副本任务的追加面）
 		return nil, status.Errorf(codes.NotFound, "task %s not found", req.GetTaskId())
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if id, ok := s.logIdem[req.GetMetadata().GetRequestId()]; ok {
 		if e, ok := s.logByID(req.GetTaskId(), id); ok {
 			return &pb.AppendTaskLogResponse{Entry: e}, nil // 同键回放
@@ -41,13 +42,24 @@ func (s *TaskServiceImpl) AppendTaskLog(ctx context.Context, req *pb.AppendTaskL
 		// R50: 幂等键在而原条目已被环形丢弃——回空壳回执（原 log_id），不再回落追加新条目
 		return &pb.AppendTaskLogResponse{Entry: &pb.TaskLogEntry{LogId: id, TaskId: req.GetTaskId()}}, nil
 	}
-	entry := s.appendLogLocked(req.GetTaskId(), req.GetLevel(), req.GetSource(), req.GetMessage())
+	// P2-4（R139）：跨副本/重启重放——本副本 logIdem 无此键时查 PG（request_id 落
+	// PG+回放查接线；此前 insertLog 的 requestID 恒空串=唯一索引永不命中、
+	// logByRequest 零调用，副本 B 重放同键会重复追加一条日志）。
+	if s.pgStore != nil {
+		if prior, lerr := s.pgStore.logByRequest(req.GetMetadata().GetRequestId()); lerr == nil && prior != nil {
+			s.logIdem[req.GetMetadata().GetRequestId()] = prior.GetLogId()
+			return &pb.AppendTaskLogResponse{Entry: prior}, nil
+		}
+	}
+	entry := s.appendLogLocked(req.GetTaskId(), req.GetLevel(), req.GetSource(), req.GetMessage(), req.GetMetadata().GetRequestId())
 	s.logIdem[req.GetMetadata().GetRequestId()] = entry.GetLogId()
 	return &pb.AppendTaskLogResponse{Entry: entry}, nil
 }
 
 // appendLogLocked — 持写锁前提下的追加核心（状态机流转/内部事件复用；调用方持锁）。
-func (s *TaskServiceImpl) appendLogLocked(taskID string, level pb.TaskLogLevel, source, msg string) *pb.TaskLogEntry {
+// requestID：仅外部 AppendTaskLog 幂等面传实值；内部事件传 ""（无幂等键，
+// PG ON CONFLICT DO NOTHING 对空串视为可重复）。
+func (s *TaskServiceImpl) appendLogLocked(taskID string, level pb.TaskLogLevel, source, msg, requestID string) *pb.TaskLogEntry {
 	s.logSeq++
 	entry := &pb.TaskLogEntry{
 		LogId:   strconv.FormatInt(s.logSeq, 10),
@@ -63,7 +75,12 @@ func (s *TaskServiceImpl) appendLogLocked(taskID string, level pb.TaskLogLevel, 
 		logs = logs[len(logs)-logCapPerTask:]
 	}
 	s.logs[taskID] = logs
-	s.hub.notify(taskID) // ADR-189：订阅流即时唤醒（非阻塞信号）
+	s.hub.notify(taskID)  // ADR-189：订阅流即时唤醒（非阻塞信号）
+	if s.pgStore != nil { // HA P1-c 日志双写（best-effort）
+		if err := s.pgStore.insertLog(entry, requestID); err != nil {
+			log.Printf("[task %s] 日志 PG 双写失败（本副本可见）: %v", taskID, err)
+		}
+	}
 	return entry
 }
 
@@ -80,11 +97,22 @@ func (s *TaskServiceImpl) GetTaskLogs(ctx context.Context, req *pb.GetTaskLogsRe
 		}
 		after = v
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if _, ok := s.tasks[req.GetTaskId()]; !ok {
+	if _, ok := s.taskByIDRW(req.GetTaskId()); !ok { // HA P1-c 读回落
 		return nil, status.Errorf(codes.NotFound, "task %s not found", req.GetTaskId())
 	}
+	s.mu.RLock()
+	_, buffered := s.logs[req.GetTaskId()]
+	s.mu.RUnlock()
+	if !buffered && s.pgStore != nil { // 内存无环形缓存（他副本任务/重启后）——PG 尾查回落
+		logs, err := s.pgStore.tailLogs(req.GetTaskId(), after, req.GetLimit())
+		if err != nil {
+			log.Printf("[task %s] PG 日志回落失败: %v", req.GetTaskId(), err)
+		} else if logs != nil {
+			return &pb.GetTaskLogsResponse{Logs: logs}, nil
+		}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return &pb.GetTaskLogsResponse{Logs: s.logsAfterLocked(req.GetTaskId(), after, int(req.GetLimit()))}, nil
 }
 

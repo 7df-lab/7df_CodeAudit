@@ -46,9 +46,9 @@ const routes: Record<string, unknown> = {
 const gateway = useFakeGateway(routes);
 
 function renderDetail() {
-  // 镜像生产 QueryClient 全局缺省（main.tsx: retry 1 + refetchOnWindowFocus false）——
+  // 镜像生产 QueryClient 全局默认（main.tsx: retry 1 + refetchOnWindowFocus false）——
   // 此前只覆写 retry, focus/reconnect 重取保持 react-query 默认 true, 批量并发下
-  // 挂载中的旧实例会被偶发重取翻页（flaky 根因, 2026-09-09）
+  // 挂载中的旧实例会被偶发重取翻页
   const qc = new QueryClient({
     defaultOptions: {
       queries: { retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false },
@@ -89,7 +89,7 @@ describe('E-20/I-90 快照增量吸收（轮询与 WS 共用路径，P-06）', (
   });
 
   it('404 → 「任务不存在或已被清除」专页（内存存储重启语义）；非 404 → 「加载失败（500）」+ 重试', async () => {
-    // flaky 根因修复（2026-09-09）：此前 v1（404 页）挂载存活时就翻转全局 snapHandler
+    // flaky 根因修复：此前 v1（404 页）挂载存活时就翻转全局 snapHandler
     // 再挂 v2——v1 的任何一次重取都会把它翻成 500 页（自带"重试"），而 RTL 视图查询
     // 以 body 为界, v2.getByRole 便命中两个"重试"。改为先卸 v1 再翻 handler, 两实例
     // 生命周期不交叠, 断言确定性成立。
@@ -106,7 +106,7 @@ describe('E-20/I-90 快照增量吸收（轮询与 WS 共用路径，P-06）', (
   });
 });
 
-// (P3-b)：AI 增量按任意字节偏移切块（服务端 256KB maxBytes 截断），多字节 UTF-8
+// B5(P3-b)：AI 增量按任意字节偏移切块（服务端 256KB maxBytes 截断），多字节 UTF-8
 // 字符可跨块边界——每帧独立 TextDecoder 会把残余字节解成 U+FFFD 乱码并随 aiText
 // 持久化（下载完整日志亦带出）。流式解码（stream:true）必须把残余字节留待下一帧。
 describe('B5: AI 文本流式解码（多字节跨块边界）', () => {
@@ -139,6 +139,8 @@ describe('E-21/I-44 动作分发（I-40 状态机镜像→端点）', () => {
     expect(screen.queryByRole('button', { name: /启\s*动/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /人工\s*重\s*试/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /取\s*消/ }));
+    // 交互审计 Top4-①：取消须 Popconfirm 二次确认——确认（默认英文 OK，本文件未包 zhCN）后才发请求
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }));
     await waitFor(() =>
       expect(gateway.requests.some((r) => r.method === 'POST' && r.url === '/v1/tasks/t-9/cancel')).toBe(true),
     );
@@ -181,7 +183,7 @@ describe('E-23 WS 帧路径（250ms 聚合推帧与轮询同构吸收；live 徽
   });
 });
 
-// 收束即补拉（报障回归锁）：终态帧早于发现落库的异常序列下（长任务被
+// 收束即补拉（gw-d331089f 报障回归锁）：终态帧早于发现落库的异常序列下（长任务被
 // 对账器误判超时后阶段仍收敛），发现列表以空结果入缓存且不再触发——终态+AI 收束
 // 帧到达时必须失效一次 findings/fusion/review 查询，晚到数据不再需要手动刷新页面。
 describe('收束即补拉（终态+AI 收束 → 失效产出类查询，一次性）', () => {
@@ -222,7 +224,9 @@ describe('布局改版：上卡精简 + 时间线横排 + 产出框内滚动', (
     });
     renderDetail();
     await waitFor(() => expect(screen.getByText(/任务 t-9/)).toBeTruthy());
-    await waitFor(() => expect(document.body.querySelector('.ant-steps-horizontal')).toBeTruthy());
+    // 2026-10-09 信息栏重设计：antd Steps → TaskStageRail 单行点轨（横排语义不变）
+    await waitFor(() => expect(document.body.querySelector('.task-stage-rail')).toBeTruthy());
+    expect(screen.getByText('SAST 扫描')).toBeTruthy(); // 阶段名在轨上渲染
     expect(screen.queryByText('重试次数')).toBeNull();
     expect(screen.queryByText('进度')).toBeNull();
     expect(screen.queryByRole('button', { name: '重新生成报告' })).toBeNull();

@@ -64,7 +64,7 @@ def _start_fixture_server(port: int):
     import codeaudit_common_pb2_grpc as pb2_grpc
     from fixture_server import (
         TaskServiceServicer, ProjectServiceServicer, UserServiceServicer,
-        ResultServiceServicer, ReportServiceServicer, DSHRuntimeServiceServicer,
+        ResultServiceServicer, ReportServiceServicer, RuntimeServiceServicer,
         CodeAnalysisServiceServicer,
         SASTAdapterServiceServicer, SASTFusionServiceServicer,
         StorageServiceServicer, NotificationServiceServicer,
@@ -80,7 +80,7 @@ def _start_fixture_server(port: int):
         'UserService': UserServiceServicer,
         'ResultService': ResultServiceServicer,
         'ReportService': ReportServiceServicer,
-        'DSHRuntimeService': DSHRuntimeServiceServicer,
+        'RuntimeService': RuntimeServiceServicer,
         'CodeAnalysisService': CodeAnalysisServiceServicer,
         'SASTAdapterService': SASTAdapterServiceServicer,
         'SASTFusionService': SASTFusionServiceServicer,

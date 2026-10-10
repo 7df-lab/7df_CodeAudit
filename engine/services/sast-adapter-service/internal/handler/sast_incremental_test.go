@@ -1,7 +1,7 @@
 package handler
 
 // ADR-225 增量文件清单模式锁定测试：argv 模板展开（{files}/{rules}）/ 占位缺失
-// 诚实报错 / {project} 不得混入文件模式。依据=伞仓验收文档 F6。
+// 诚实报错 / {project} 不得混入文件模式。依据=主仓库验收文档 F6。
 
 import (
 	"strings"

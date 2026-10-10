@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// ResolveProjectRoot 回归锁（实证）：压缩包顶层壳目录不剥时，
+// ResolveProjectRoot 回归锁（gw-f6a3523 实证）：压缩包顶层壳目录不剥时，
 // fixpatch 校验/source-file 解析/沙箱视角三方根错位——7/7 补丁被误杀、
 // 发现详情源码全文 404。剥壳语义 = "唯一子目录则降入"，封顶 3 层。
 
@@ -35,7 +35,7 @@ func TestResolveProjectRoot(t *testing.T) {
 	cases := []struct {
 		name string
 		tree []string // 相对临时根的布局；目录以 / 结尾
-		want string    // 相对临时根的期望结果；"" = 原样返回
+		want string   // 相对临时根的期望结果；"" = 原样返回
 	}{
 		{"GitHub 式单壳目录", []string{"mica-mqtt-master/", "mica-mqtt-master/pom.xml", "mica-mqtt-master/src/App.java"}, "mica-mqtt-master"},
 		{"双层壳逐层降入", []string{"outer/", "outer/inner/", "outer/inner/a.py"}, "outer/inner"},

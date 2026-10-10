@@ -13,7 +13,9 @@ type ReportRepository interface {
 	CreateReport(report *model.Report) error
 	GetReportByID(id string) (*model.Report, error)
 	GetReportByRequestID(requestID string) (*model.Report, error)
-	ListReports(lastID string, limit int, taskID string) ([]*model.Report, string, error)
+	// ListReportsQuery — 2026-10-04 ADR-256：lastID 游标迁移 offset+total，并携带
+	// 服务端排序/筛选（排序键已在 service 层白名单校验后传入，repo 不再二次解析）。
+	ListReports(q ListReportsQuery) ([]*model.Report, int, error)
 	ListTemplates(limit int) ([]*model.ReportTemplate, error)
 	GetTemplateByID(id string) (*model.ReportTemplate, error)
 	UpdateReport(report *model.Report) error // ADR-199: 归档 URL 回写
@@ -145,83 +147,83 @@ func (r *PostgresReportRepository) GetReportByRequestID(requestID string) (*mode
 	return report, nil
 }
 
-func (r *PostgresReportRepository) ListReports(lastID string, limit int, taskID string) ([]*model.Report, string, error) {
-	var query string
-	var args []interface{}
-
-	if lastID == "" {
-		if taskID != "" {
-			// ADR-164: 报告中心"最新生成优先"（ADR-142/149 同口径）——DESC + lastID 向更旧翻页
-			query = `
-				SELECT id, task_id, template_id, format, url, status, content, error_message, created_at, updated_at, completed_at, request_id
-				FROM reports
-				WHERE task_id = $1
-				ORDER BY id DESC
-				LIMIT $2
-			`
-			args = []interface{}{taskID, limit + 1}
-		} else {
-			query = `
-				SELECT id, task_id, template_id, format, url, status, content, error_message, created_at, updated_at, completed_at, request_id
-				FROM reports
-				ORDER BY id DESC
-				LIMIT $1
-			`
-			args = []interface{}{limit + 1}
-		}
-	} else {
-		if taskID != "" {
-			query = `
-				SELECT id, task_id, template_id, format, url, status, content, error_message, created_at, updated_at, completed_at, request_id
-				FROM reports
-				WHERE id < $1 AND task_id = $2
-				ORDER BY id DESC
-				LIMIT $3
-			`
-			args = []interface{}{lastID, taskID, limit + 1}
-		} else {
-			query = `
-				SELECT id, task_id, template_id, format, url, status, content, error_message, created_at, updated_at, completed_at, request_id
-				FROM reports
-				WHERE id < $1
-				ORDER BY id DESC
-				LIMIT $2
-			`
-			args = []interface{}{lastID, limit + 1}
-		}
+func (r *PostgresReportRepository) ListReports(q ListReportsQuery) ([]*model.Report, int, error) {
+	// ADR-256：offset 分页 + 服务端排序（列名映射白名单，见 reportColumns）+ 筛选；
+	// total=过滤后总数（真实分母）。旧行为（sort 缺省 report_id DESC）字节兼容。
+	col, ok := reportSortColumns[q.SortBy]
+	if !ok {
+		return nil, 0, fmt.Errorf("invalid sort field: %s", q.SortBy)
 	}
+	dir := "ASC"
+	if q.SortDesc {
+		dir = "DESC"
+	}
+	where := ""
+	args := []interface{}{}
+	if q.TaskID != "" {
+		where = "WHERE task_id = $1"
+		args = append(args, q.TaskID)
+	}
+	if q.Format != "" {
+		if where != "" {
+			where += fmt.Sprintf(" AND format = $%d", len(args)+1)
+		} else {
+			where = fmt.Sprintf("WHERE format = $%d", len(args)+1)
+		}
+		args = append(args, q.Format)
+	}
+	order := fmt.Sprintf(" ORDER BY %s %s, id %s ", col, dir, dir)
 
-	rows, err := r.db.Query(query, args...)
+	var total int
+	if err := r.db.QueryRow("SELECT count(*) FROM reports "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	listArgs := append(append([]interface{}{}, args...), q.Limit, q.Offset)
+	rows, err := r.db.Query(`
+		SELECT id, task_id, template_id, format, url, status, content, error_message, created_at, updated_at, completed_at, request_id
+		FROM reports `+where+order+`LIMIT $`+fmt.Sprint(len(args)+1)+` OFFSET $`+fmt.Sprint(len(args)+2),
+		listArgs...)
 	if err != nil {
-		return nil, "", err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
 	var reports []*model.Report
 	for rows.Next() {
 		r := &model.Report{}
-		err := rows.Scan(
+		if err := rows.Scan(
 			&r.ID, &r.TaskID, &r.Template, &r.Format, &r.Url, &r.Status,
 			&r.Content, &r.ErrorMessage, &r.CreatedAt, &r.UpdatedAt,
 			&r.CompletedAt, &r.RequestID,
-		)
-		if err != nil {
-			return nil, "", err
+		); err != nil {
+			return nil, 0, err
 		}
 		reports = append(reports, r)
 	}
-	// ADR-212: 迭代中途网络错误此前被静默吞掉，截断页冒充完整页
+	// ADR-212 同款：迭代错误不静默吞掉（截断页不冒充完整页）
 	if err := rows.Err(); err != nil {
-		return nil, "", err
+		return nil, 0, err
 	}
+	return reports, total, nil
+}
 
-	nextCursor := ""
-	if len(reports) > limit {
-		reports = reports[:limit]
-		nextCursor = reports[len(reports)-1].ID
-	}
+// ListReportsQuery — offset/limit + 过滤（TaskID/Format EQ）+ 排序（键白名单后列名）。
+type ListReportsQuery struct {
+	Offset   int
+	Limit    int
+	TaskID   string
+	Format   string
+	SortBy   string // repo 层仅认 reportSortColumns 键；空=report_id
+	SortDesc bool
+}
 
-	return reports, nextCursor, nil
+// reportSortColumns — 排序键→列名白名单（防任意列名拼接；generated_at=created_at 列，
+// proto 语义名与库列名解耦）。
+var reportSortColumns = map[string]string{
+	"report_id":    "id",
+	"task_id":      "task_id",
+	"format":       "format",
+	"generated_at": "created_at",
 }
 
 func (r *PostgresReportRepository) ListTemplates(limit int) ([]*model.ReportTemplate, error) {

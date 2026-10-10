@@ -11,8 +11,7 @@ with the engine repo (its ``openshell_manager_client`` reads the same file for
       "bind":            "127.0.0.1",                # what the service binds
       "port":            18800,
       "tokenFile":       ".token",                   # relative to service root
-      "gatewayEndpoint": "host.docker.internal:8080",
-      "libPath":         "libs/OpenShell/python"     # relative to service root
+      "gatewayEndpoint": "host.docker.internal:8080"
     }
 
 The service is a thin transport over the OpenShell Gateway SDK: it adds no
@@ -28,9 +27,9 @@ import time
 from pathlib import Path
 
 SERVICE_ROOT = Path(__file__).resolve().parent.parent
-# 中性缺省(经 hosts 别名解析, 零 DNS 依赖); 有自定义域名时 env/config 覆盖(2026-09-08 内网域清中性)
+# 中性缺省(经 hosts 别名解析, 零 DNS 依赖); 有自定义域名时 env/config 覆盖
 DEFAULT_GATEWAY_ENDPOINT = "host.docker.internal:8080"
-# 审计修复：上传上限缺省 2 GiB（原 0=不限，防误操作上限形同虚设）。
+# B3-3 审计修复：上传上限缺省 2 GiB（原 0=不限，防误操作上限形同虚设）。
 # 上传是流式转发（内存恒定 <1 MiB），上限纯防"误指 50GB 归档"类误操作。
 DEFAULT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2147483648
 
@@ -87,18 +86,18 @@ class TokenFileError(RuntimeError):
 
     区别于"文件不存在"（= 未配置 token，按无鉴权放行维持现状）：文件在
     而读不到 = 鉴权材料不可得，require_token 必须拒绝请求（503）而不是
-    吞掉异常当无 token 静默放行。"""
+    吞掉异常当无 token 静默放行（B3-2 审计修复）。"""
 
 
 class TokenFileEmptyError(TokenFileError):
     """tokenFile 存在但内容为空（R24 审计修复）——这是配置错误而非未配置：
-    只对"读失败"fail-closed，空文件曾静默当无 token 整面放行（非
+    B3-2 只对"读失败"fail-closed，空文件曾静默当无 token 整面放行（非
     loopback bind 的轮换窗口即裸奔）。运行时一律 503 fail-closed；
     validate() 分治——loopback 放行启动但 /api/* 持续 503（stderr 告警
     指明删除或补全 token 文件），非 loopback 拒启。"""
 
 
-# 文件解析结果 5s 缓存（env 分支不缓存——直读内存无 IO 且优先级
+# B3-2：文件解析结果 5s 缓存（env 分支不缓存——直读内存无 IO 且优先级
 # 需实时生效）。require_token 是 async 依赖，无缓存时每请求一次阻塞磁盘
 # 读。TokenFileError 不落缓存：权限恢复后下一个请求即自动恢复。
 _TOKEN_CACHE_TTL_SECONDS = 5.0
@@ -156,37 +155,6 @@ def gateway_endpoint() -> str:
             or DEFAULT_GATEWAY_ENDPOINT)
 
 
-def openshell_lib_path() -> Path:
-    """Directory holding the vendored ``openshell`` Python SDK.
-
-    Resolution: $OPENSHELL_LIB_PATH > config ``libPath`` (relative to the
-    service root) > this service's own ``libs/OpenShell/python``. The python
-    vendor subtree has been git-tracked since 2026-09-05, so a fresh clone
-    always carries it; the pre-rename engine-checkout fallback paths
-    (four-direction-pentest-engine / docs) are dead in the ADR-208 world and
-    were removed (LESSONS #2).
-    """
-    env = os.environ.get("OPENSHELL_LIB_PATH", "").strip()
-    if env:
-        candidate = Path(env)
-        if not (candidate / "openshell").is_dir():
-            raise RuntimeError(
-                f"OPENSHELL_LIB_PATH={env} has no openshell/ package inside")
-        return candidate
-    configured = _cfg("libPath")
-    candidates = []
-    if configured:
-        path = Path(configured)
-        candidates.append(path if path.is_absolute() else SERVICE_ROOT / path)
-    candidates.append(SERVICE_ROOT / "libs" / "OpenShell" / "python")
-    for candidate in candidates:
-        if (candidate / "openshell").is_dir():
-            return candidate
-    raise RuntimeError(
-        "openshell SDK not found: set OPENSHELL_LIB_PATH or config libPath "
-        "to the vendored libs/OpenShell/python directory")
-
-
 def max_upload_bytes() -> int:
     """Policy cap for streamed file uploads, in bytes. 0 = unlimited.
 
@@ -195,7 +163,7 @@ def max_upload_bytes() -> int:
     streams, so manager memory stays constant regardless of file size.
 
     Priority: $OPENSHELL_MANAGER_MAX_UPLOAD_BYTES > config ``maxUploadBytes``
-    > DEFAULT_MAX_UPLOAD_BYTES (2 GiB, — the old default of 0/unlimited
+    > DEFAULT_MAX_UPLOAD_BYTES (2 GiB, B3-3 — the old default of 0/unlimited
     left the guard disarmed).
     """
     return _int_setting("OPENSHELL_MANAGER_MAX_UPLOAD_BYTES",

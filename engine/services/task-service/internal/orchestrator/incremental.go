@@ -1,10 +1,11 @@
 // incremental.go — 增量扫描编排传导（ADR-225）。
 //
-// 设计依据: 伞仓 docs/designs/incremental-scan.md §3/§4.5/§4.6/§4.7——
+// 设计依据: 主仓库 docs/designs/incremental-scan.md §3/§4.5/§4.6/§4.7——
 // task-service 在 Prepare 阶段完成基线选定与内容 diff 后，经本上下文向编排各阶段传导：
 //   - Execute 前置: result-service InheritFindings（未变更文件 findings 物化继承）
 //   - runMultipleScans: changed_files → sast-adapter（仅扫变更文件）
-//   - runAIAnalysis: 变更清单 + incremental_diff → dsh-runtime（增量聚焦提示词）
+//   - runAIAnalysis: 变更清单 + incremental_diff → runtime（增量聚焦提示词）
+//
 // 降级口径: task-service 侧已把"无基线/diff 失败"降级为全量（inc 不激活），编排零感知。
 package orchestrator
 
@@ -74,7 +75,7 @@ func (o *Orchestrator) runIncrementalInherit(ctx context.Context, r RunRequest, 
 	if err != nil {
 		return fmt.Errorf("InheritFindings: %w", err)
 	}
-	// R60部分失败必须失败——FailedCount 被吞没时缺继承行的任务
+	// R60：部分失败必须失败——FailedCount 被吞没时缺继承行的任务
 	// 照常 COMPLETED，"完整视图"是假完整；走既有 FAILED→QUEUED 重试链（幂等重放
 	// 跳过已继承行，重试只补缺）。
 	if n := resp.GetFailedCount(); n > 0 {

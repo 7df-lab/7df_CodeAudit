@@ -1,12 +1,7 @@
-# libs 整树曾因 7.2G Rust target/ 构建产物整体忽略；镜像只需要
-# libs/OpenShell/python（vendored SDK，920K）——2026-09-05 起纳管该子树：
-# 它是 Dockerfile.manager 的 COPY 输入，gitignored 会让 fresh clone 必败
-# （LESSONS #3）。新增 vendored 内容时注意维护下面的白名单链。
-libs/*
-!libs/OpenShell/
-libs/OpenShell/*
-!libs/OpenShell/python/
+# openshell/ SDK 已并入仓根（2026-09-15，原 libs/OpenShell/python/openshell，
+# git mv 保历史）——按普通包对待，无白名单链。
 .token
+.env
 manager.log
 __pycache__/
 *.pyc
@@ -18,6 +13,5 @@ sp/
 sp.tgz
 deploy/env
 
-# .agent/ 会话工作区（账本/证据）不入库
-.agent/
-
+.agent/*
+!.agent/*.sh

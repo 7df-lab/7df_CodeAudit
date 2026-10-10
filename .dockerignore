@@ -1,0 +1,23 @@
+# 安装器镜像构建上下文防线（2026-09-16，沿 engine ADR-233 教训：.gitignore 挡不住
+# build context 打包）。context=主仓库根（deploy/Dockerfile），不挡则本机大件全进 daemon。
+.git
+**/.git
+.agent
+**/.agent
+.node_modules
+node_modules
+**/node_modules
+.toolchain
+**/.toolchain
+**/__pycache__
+**/dist
+**/out
+**/out-test
+**/.pytest_cache
+**/tsconfig.tsbuildinfo
+dsh-pentest-sse/sandbox-artifacts/pdtools
+dsh-pentest-sse/sandbox-artifacts/nuclei-templates
+dsh-pentest-sse/sandbox-artifacts/agent-tools
+engine/tests/samples
+*.log
+*.vsix

@@ -28,7 +28,7 @@ func decodeJSONBody(t *testing.T, resp *http.Response) map[string]any {
 
 // inferenceCaptureBackend — 捕获 6 RPC 实收请求的进程内后端。
 type inferenceCaptureBackend struct {
-	pb.UnimplementedDSHRuntimeServiceServer
+	pb.UnimplementedRuntimeServiceServer
 	addr string
 	srv  *grpc.Server
 	mu   sync.Mutex
@@ -38,6 +38,10 @@ type inferenceCaptureBackend struct {
 	upsertHasMD bool
 	deleteName  string
 	routeSet    *pb.SetInferenceRouteRequest
+	listWS      string // ADR-247: workspace 透传捕获
+	upsertWS    string
+	deleteWS    string
+	getRouteWS  string
 }
 
 func startInferenceBackend(t *testing.T) *inferenceCaptureBackend {
@@ -47,13 +51,16 @@ func startInferenceBackend(t *testing.T) *inferenceCaptureBackend {
 		t.Fatalf("listen: %v", err)
 	}
 	b := &inferenceCaptureBackend{addr: lis.Addr().String(), srv: grpc.NewServer()}
-	pb.RegisterDSHRuntimeServiceServer(b.srv, b)
+	pb.RegisterRuntimeServiceServer(b.srv, b)
 	go func() { _ = b.srv.Serve(lis) }()
 	t.Cleanup(b.srv.Stop)
 	return b
 }
 
-func (b *inferenceCaptureBackend) ListInferenceProviders(ctx context.Context, _ *pb.ListInferenceProvidersRequest) (*pb.ListInferenceProvidersResponse, error) {
+func (b *inferenceCaptureBackend) ListInferenceProviders(ctx context.Context, req *pb.ListInferenceProvidersRequest) (*pb.ListInferenceProvidersResponse, error) {
+	b.mu.Lock()
+	b.listWS = req.GetWorkspace()
+	b.mu.Unlock()
 	return &pb.ListInferenceProvidersResponse{Providers: []*pb.InferenceProviderInfo{{
 		Name: "prov-a", Type: "openai", Config: map[string]string{"base_url": "https://x/v1"},
 	}}}, nil
@@ -65,6 +72,7 @@ func (b *inferenceCaptureBackend) UpsertInferenceProvider(ctx context.Context, r
 	b.upsertName = req.GetName()
 	b.upsertCreds = req.GetCredentials()
 	b.upsertHasMD = req.GetMetadata().GetRequestId() != ""
+	b.upsertWS = req.GetWorkspace()
 	return &pb.UpsertInferenceProviderResponse{Name: req.GetName(), Created: true}, nil
 }
 
@@ -72,10 +80,14 @@ func (b *inferenceCaptureBackend) DeleteInferenceProvider(ctx context.Context, r
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.deleteName = req.GetName()
+	b.deleteWS = req.GetWorkspace()
 	return &pb.DeleteInferenceProviderResponse{Deleted: true}, nil
 }
 
-func (b *inferenceCaptureBackend) GetInferenceRoute(ctx context.Context, _ *pb.GetInferenceRouteRequest) (*pb.InferenceRouteInfo, error) {
+func (b *inferenceCaptureBackend) GetInferenceRoute(ctx context.Context, req *pb.GetInferenceRouteRequest) (*pb.InferenceRouteInfo, error) {
+	b.mu.Lock()
+	b.getRouteWS = req.GetWorkspace()
+	b.mu.Unlock()
 	return &pb.InferenceRouteInfo{Provider: "prov-a", Model: "m-1", Version: 4}, nil
 }
 
@@ -99,7 +111,7 @@ func httpJSONAsAdmin(t *testing.T, tr *Transcoder, method, path, body string) (i
 // TestInference_AdminGate — 无 admin role 的任何 inference 路由 → 403（不触达后端）。
 func TestInference_AdminGate(t *testing.T) {
 	b := startInferenceBackend(t)
-	tr := NewTranscoder(BackendAddrs{DSHRuntimeAddr: b.addr, CallTimeoutS: 5})
+	tr := NewTranscoder(BackendAddrs{RuntimeAddr: b.addr, CallTimeoutS: 5})
 	defer tr.Close()
 
 	for _, path := range []string{"/v1/inference/providers", "/v1/inference/route"} {
@@ -123,7 +135,7 @@ func TestInference_AdminGate(t *testing.T) {
 // 凭据透传、验证回执字段、未知子路径 404。
 func TestInference_ProviderCRUDAndRoute(t *testing.T) {
 	b := startInferenceBackend(t)
-	tr := NewTranscoder(BackendAddrs{DSHRuntimeAddr: b.addr, CallTimeoutS: 5})
+	tr := NewTranscoder(BackendAddrs{RuntimeAddr: b.addr, CallTimeoutS: 5})
 	defer tr.Close()
 
 	code, out := httpJSONAsAdmin(t, tr, "GET", "/v1/inference/providers", "")
@@ -192,5 +204,55 @@ func TestInference_ProviderCRUDAndRoute(t *testing.T) {
 	code, _ = httpJSONAsAdmin(t, tr, "GET", "/v1/inference/nope", "")
 	if code != http.StatusNotFound {
 		t.Fatalf("unknown subpath: want 404, got %d", code)
+	}
+}
+
+// TestInference_WorkspaceParam — ADR-247（切片3后半）：per-team 命名空间配置入口。
+// GET/DELETE 经 ?workspace= query；POST/PUT 经 body 字段（query 非空时覆盖 body）；
+// 不带参数=空串（runtime 回落全局缺省——两侧解耦：网关只透传不持省缺）。
+func TestInference_WorkspaceParam(t *testing.T) {
+	b := startInferenceBackend(t)
+	tr := NewTranscoder(BackendAddrs{RuntimeAddr: b.addr, CallTimeoutS: 5})
+	defer tr.Close()
+
+	// GET providers?workspace=team-a
+	if code, _ := httpJSONAsAdmin(t, tr, "GET", "/v1/inference/providers?workspace=team-a", ""); code != http.StatusOK {
+		t.Fatalf("list ws: %d", code)
+	}
+	// PUT route：query 覆盖 body（与路径名权威同型）
+	if code, _ := httpJSONAsAdmin(t, tr, "PUT", "/v1/inference/route?workspace=team-a",
+		`{"provider":"prov-a","model":"m-1"}`); code != http.StatusOK {
+		t.Fatalf("set route ws: %d", code)
+	}
+	// POST providers：仅 body 字段
+	if code, _ := httpJSONAsAdmin(t, tr, "POST", "/v1/inference/providers",
+		`{"name":"prov-t","type":"openai","workspace":"team-b"}`); code != http.StatusOK {
+		t.Fatalf("create ws-body: %d", code)
+	}
+	// DELETE providers/{name}?workspace=team-c
+	if code, _ := httpJSONAsAdmin(t, tr, "DELETE", "/v1/inference/providers/prov-t?workspace=team-c", ""); code != http.StatusOK {
+		t.Fatalf("delete ws: %d", code)
+	}
+	// GET route?workspace=team-d
+	if code, _ := httpJSONAsAdmin(t, tr, "GET", "/v1/inference/route?workspace=team-d", ""); code != http.StatusOK {
+		t.Fatalf("get route ws: %d", code)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.listWS != "team-a" {
+		t.Fatalf("list workspace: want team-a, got %q", b.listWS)
+	}
+	if b.routeSet.GetWorkspace() != "team-a" {
+		t.Fatalf("set route workspace (query over body): want team-a, got %q", b.routeSet.GetWorkspace())
+	}
+	if b.upsertWS != "team-b" {
+		t.Fatalf("upsert workspace (body): want team-b, got %q", b.upsertWS)
+	}
+	if b.deleteWS != "team-c" {
+		t.Fatalf("delete workspace: want team-c, got %q", b.deleteWS)
+	}
+	if b.getRouteWS != "team-d" {
+		t.Fatalf("get route workspace: want team-d, got %q", b.getRouteWS)
 	}
 }

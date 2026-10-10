@@ -1,6 +1,6 @@
 package fusion
 
-// R38 回归（2026-09-09 用户报障"同一文件同一行的漏洞显示成两个风险"）：
+// R38 回归：
 // SAST（opengrep）产出的 location.file_path 是沙箱绝对路径，AI（ai_agent）结论引用
 // 的是裸文件名/相对路径——MergeStage 此前按 file_path 字符串精确相等建索引匹配，
 // 两者永不命中 → 同文件同行漏洞 SAST+AI 各出一条（is_unique 双真）。
@@ -53,7 +53,7 @@ func TestMergeStage_PathSuffixAlignment_MergesSameVuln(t *testing.T) {
 			if len(out.Groups) != 1 {
 				t.Fatalf("same-vuln finding must merge into one group, got %d (pre-fix: exact-string match never hits)", len(out.Groups))
 			}
-			if sast.GetAiVerdict() != pb.AIVerdict_AI_VERDICT_UNSPECIFIED {
+			if sast.GetVerdictDirection() != pb.VerdictDirection_VERDICT_DIRECTION_UNSPECIFIED {
 				t.Fatalf("unexpected verdict writeback")
 			}
 			found := false

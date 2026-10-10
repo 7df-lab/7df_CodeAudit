@@ -34,7 +34,7 @@ beforeEach(() => {
     finding_id: 'f-1', task_id: 't1', source_tool: 'bandit', source_rule_id: 'B105',
     cwe_id: 'CWE-259', title: 'hardcoded password', description: 'desc',
     severity: 'SEVERITY_MEDIUM', confidence: 0.8,
-    ai_verdict: 'AI_VERDICT_NEEDS_MANUAL', ai_confidence: 0,
+    verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED', ai_confidence: 0,
     ai_reasoning: '', ai_fix_suggestion: '',
     location: { file_path: 'app.py', start_line: 12 },
     source_raw: SOURCE_RAW,
@@ -74,7 +74,7 @@ describe('人工复核内容条件（ADR-141；全文端点失败降级回片段
     detailPayload = {
       finding_id: 'f-3', task_id: 't1', source_tool: 'bandit', source_rule_id: 'B105',
       cwe_id: '', title: 't2', description: '', severity: 'SEVERITY_HIGH', confidence: 0.8,
-      ai_verdict: '', ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '',
+      verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED', ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '',
       location: { file_path: '/repo/app.py', start_line: 12 },
       source_raw: btoa(full),
     };
@@ -86,7 +86,7 @@ describe('人工复核内容条件（ADR-141；全文端点失败降级回片段
     detailPayload = {
       finding_id: 'f-2', task_id: 't1', source_tool: 'ai_agent', source_rule_id: '',
       cwe_id: '', title: 't', description: '', severity: 'SEVERITY_LOW', confidence: 0,
-      ai_verdict: '', ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '',
+      verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED', ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '',
       location: null,
       source_raw: '',
     };
@@ -104,7 +104,7 @@ describe('人工复核内容条件（ADR-141；全文端点失败降级回片段
       finding_id: 'f-4', task_id: 't1', source_tool: 'bandit', source_rule_id: 'B608',
       cwe_id: 'CWE-89', title: 'SQL 注入', description: '拼接 SQL',
       severity: 'SEVERITY_HIGH', confidence: 0.8,
-      ai_verdict: '', ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '',
+      verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED', ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '',
       location: { file_path: 'app.py', start_line: 15 },
       // btoa 只收 Latin-1 → 先经 UTF-8 字节层编码（与后端 Go 存储行为对齐）
       source_raw: btoa(String.fromCharCode(...new TextEncoder().encode(zh))),
@@ -137,7 +137,7 @@ describe('源码全文滚动视图（ADR-195）', () => {
     detailPayload = {
       finding_id: 'f-9', task_id: 't1', source_tool: 'ai_agent', source_rule_id: '',
       cwe_id: 'CWE-306', title: 'HTTP API 无认证', description: '', severity: 'SEVERITY_HIGH', confidence: 0.9,
-      ai_verdict: 'AI_VERDICT_LIKELY_TRUE', ai_confidence: 0.9, ai_fix_suggestion: '',
+      verdict_direction: 'VERDICT_DIRECTION_TRUE', verdict_tier: 'VERDICT_TIER_LIKELY', ai_confidence: 0.9, ai_fix_suggestion: '',
       ai_reasoning: '[DSH-sandbox] Listener.java:49 authFilter 默认 null；而 Api.java 暴露的端点：publish（153-167）。',
       location: { file_path: 'src/main/Listener.java', start_line: 49 },
       source_raw: '',
@@ -160,7 +160,7 @@ describe('源码全文滚动视图（ADR-195）', () => {
   });
 });
 
-// ---- 两阶段存在性校验（2026-09-13 误挂接根治，gw-7c26f71c1771c76444baddd0-sbx-14 实证）----
+// ---- 两阶段存在性校验----
 // AI 原文反复出现 C++ 成员表达式 new_size.x（形似文件名），裸行引用 (line 86)/(lines 213-218)
 // 旧解析误挂其上 → 指向不存在文件的 chip + 全文 404 黄条。根治后：resolve_only 探测判存，
 // 假文件 token 摘除、裸行引用重挂 RafDecoder.cpp 并标 *；显式幻觉引用保留标（未定位）。
@@ -176,7 +176,7 @@ describe('链路 chip 存在性校验（两阶段解析）', () => {
     return {
       finding_id: 'f-sbx', task_id: 't1', source_tool: 'ai_agent', source_rule_id: '',
       cwe_id: '', title: 'Fuji rotate OOB', description: '', severity: 'SEVERITY_HIGH', confidence: 0.9,
-      ai_verdict: 'AI_VERDICT_LIKELY_TRUE', ai_confidence: 0.9, ai_fix_suggestion: '',
+      verdict_direction: 'VERDICT_DIRECTION_TRUE', verdict_tier: 'VERDICT_TIER_LIKELY', ai_confidence: 0.9, ai_fix_suggestion: '',
       ai_reasoning: SBX14_REASONING,
       location: { file_path: 'RafDecoder.cpp', start_line: 258 },
       source_raw: '',
@@ -269,7 +269,7 @@ it('taint 发现携带 dataflow_trace 时渲染 SOURCE/传播/SINK 变量级链�
     finding_id: 'f-5', task_id: 't1', source_tool: 'opengrep',
     source_rule_id: 'codeaudit-sql-taint-user-param',
     cwe_id: 'CWE-89', title: 'SQL 注入', description: '', severity: 'SEVERITY_ERROR', confidence: 0.9,
-    ai_verdict: '', ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '',
+    verdict_direction: 'VERDICT_DIRECTION_UNSPECIFIED', verdict_tier: 'VERDICT_TIER_UNSPECIFIED', ai_confidence: 0, ai_reasoning: '', ai_fix_suggestion: '',
     location: { file_path: 'app.py', start_line: 6 },
     source_raw: btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(trace)))),
   };

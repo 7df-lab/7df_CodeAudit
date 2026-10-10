@@ -15,7 +15,7 @@ type fakeClock struct{ t time.Time }
 func (c *fakeClock) Now() time.Time          { return c.t }
 func (c *fakeClock) Advance(d time.Duration) { c.t = c.t.Add(d) }
 
-func newTestStore() (*Store, *fakeClock) {
+func newTestStore() (*MemoryStore, *fakeClock) {
 	clock := &fakeClock{t: time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)}
 	s := New()
 	s.now = clock.Now

@@ -1,4 +1,4 @@
-// 全站统一 加载/空/错 状态（2026-09-13）：此前"加载中…"纯文本 ×6、
+// 全站统一 加载/空/错 状态：此前"加载中…"纯文本 ×6、
 // Table loading、Spin ×2、"会话恢复中…"四种形态并存；6 处 emptyText 文案风格不一；
 // FusionView/ReviewView 查询失败无错误分支（永远停在加载文案）。
 import { Alert, Button, Empty, Skeleton, Spin, Typography } from 'antd';

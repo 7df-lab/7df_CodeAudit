@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // SASTFusionHandler implements SASTFusionService gRPC interface.
@@ -32,20 +33,21 @@ type SASTFusionHandler struct {
 	idempotencyStore sync.Map
 	idemCount        atomic.Int64 // R81/R69: 缓存容量护栏（此前完全无上界，键为客户端可控 request_id）
 
-	// Finding存储 (in-memory for now)
+	// Finding缓存（resolveFindings 快路径；权威存储=result-service）
 	findingStore sync.Map
-
-	// externalResolver — 跨子域实体补全（ShareStore 注入；ADR-121）
-	// 本地 store 未命中时从 SASTAdapterHandler 的扫描存储解析（同一部署单元）。
-	externalResolver func(ids []string) []*pb.UnifiedFinding
+	// R138（第四轮审计 P2-3）：findingStore 只进不出=无界增长（长生命周期 OOM 向量）。
+	// FIFO 容量护栏（同 R69 byTask 纪律）；驱逐后 miss 走 fetchFromResult 兜底。
+	findingMu    sync.Mutex
+	findingOrder []string
 
 	// resultAddr — result-service 地址：实体权威存储（09 §2）。
-	// ADR-133: 本地与 adapter 扫描存储都未命中时，从 result-service GetFinding 兜底，
-	// 保证 dsh-runtime 直写的 AI findings 也能被融合/对比解析到。
+	// HA P2（ADR-250，Q7a 拆桥）：ShareStore 同进程桥已删（隐含单副本同部署假设——
+	// 多副本下 fusion 与 adapter 落不同副本时桥恒 miss）；解析主路径=result-service
+	// （ADR-133 兜底链扶正），本地 findingStore 降级为纯缓存（快路径）。
 	resultAddr string
 }
 
-// resolveFindings — 本地 → adapter 扫描存储（ADR-121）→ result-service（09 §2 权威存储）。
+// resolveFindings — 本地缓存 → result-service（09 §2 权威存储；HA P2 拆桥后主路径）。
 // 返回 (解析到的findings, 缺失ID列表)。调用方对缺失 ID 必须显式报错而非静默缩小集合（ADR-133）。
 func (h *SASTFusionHandler) resolveFindings(ids []string) ([]*pb.UnifiedFinding, []string) {
 	out := make([]*pb.UnifiedFinding, 0, len(ids))
@@ -57,24 +59,38 @@ func (h *SASTFusionHandler) resolveFindings(ids []string) ([]*pb.UnifiedFinding,
 		}
 		seen[id] = true
 		if f, ok := h.findingStore.Load(id); ok {
-			out = append(out, f.(*pb.UnifiedFinding))
+			// 第四轮审计 P1：返回克隆而非缓存共享指针——fusion 各 stage（merge/
+			// conflict/dedup/confidence）原地改写 message 字段与 slice append，共享
+			// 指针=跨请求并发读写竞争 + 缓存被首轮污染后二次融合不可复现（R48/ADR-128
+			// 同类）。缓存自身恒存未污染原件。
+			out = append(out, proto.Clone(f.(*pb.UnifiedFinding)).(*pb.UnifiedFinding))
 			continue
 		}
-		if h.externalResolver != nil {
-			if found := h.externalResolver([]string{id}); len(found) > 0 && found[0] != nil {
-				h.findingStore.Store(id, found[0])
-				out = append(out, found[0])
-				continue
-			}
-		}
 		if f := h.fetchFromResult(id); f != nil {
-			h.findingStore.Store(id, f)
-			out = append(out, f)
+			h.findingCachePut(id, f)
+			out = append(out, proto.Clone(f).(*pb.UnifiedFinding))
 			continue
 		}
 		missing = append(missing, id)
 	}
 	return out, missing
+}
+
+// findingCachePut — 入缓存并执行 FIFO 驱逐（R138：容量护栏，超限逐最旧）。
+const findingCacheCap = 2000 // R138：缓存容量上限（同 R69 量级；miss 走权威存储兜底）
+
+func (h *SASTFusionHandler) findingCachePut(id string, f *pb.UnifiedFinding) {
+	if _, loaded := h.findingStore.LoadOrStore(id, f); loaded {
+		return
+	}
+	h.findingMu.Lock()
+	defer h.findingMu.Unlock()
+	h.findingOrder = append(h.findingOrder, id)
+	if len(h.findingOrder) > findingCacheCap {
+		evict := h.findingOrder[0]
+		h.findingOrder = h.findingOrder[1:]
+		h.findingStore.Delete(evict)
+	}
 }
 
 // fetchFromResult — result-service GetFinding 兜底（ADR-133）。

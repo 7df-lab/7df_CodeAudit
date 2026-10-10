@@ -1,0 +1,23 @@
+# 构建上下文 = 仓根。镜像只需要
+# openshell_manager/ openshell/ config.json requirements.txt——其余全部
+# 挡在上下文外，重点是密钥(.token/deploy/env)与过程文件不入镜像。
+.git
+.token
+.env
+deploy/env
+deploy/env.template
+manager.log
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.agent
+tests
+docs
+REGRESSIONS.md
+README.md
+run.sh
+build
+sp
+sp.tgz
+.zcode

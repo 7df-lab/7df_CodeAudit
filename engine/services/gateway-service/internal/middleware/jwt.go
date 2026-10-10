@@ -21,6 +21,11 @@ const (
 type JWTClaims struct {
 	UserID string `json:"user_id"`
 	Role   string `json:"role"`
+	// Type 令牌类型（access|refresh，签发面 user.go 一律携带）——依据: 03 §4。
+	// 第四轮审计 P1：refresh(7d) 与 access 同为 HS256、仅 type 可辨；不校验则
+	// refresh 可直接作 Bearer 打全部业务路由，且绕过 R87 纪元/R88 撤销集
+	// （两者只掐 access 的刷新链路）——被盗 refresh 至多可用 7 天。
+	Type string `json:"type,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -76,6 +81,13 @@ func JWTMiddleware(secret string, next http.Handler) http.Handler {
 		claims, ok := token.Claims.(*JWTClaims)
 		if !ok || !token.Valid {
 			http.Error(w, `{"error": "invalid token claims"}`, http.StatusUnauthorized)
+			return
+		}
+
+		// 第四轮审计 P1：只接受 access 型（签发面两类令牌恒带 type；缺省即异常来源，
+		// fail-closed 拒绝）——refresh 仅许走 /v1/auth/refresh（skipAuth 链）。
+		if claims.Type != "access" {
+			http.Error(w, `{"error": "invalid token type"}`, http.StatusUnauthorized)
 			return
 		}
 

@@ -1,12 +1,12 @@
 // ADR-195 回归锁：AI 结论 Source→Sink 链路普适解析器。
-// 主用例=真实实例原文（gw-0fb985799a00ab4ba3995b98-sbx-1 ai_reasoning，逐字）。
+// 主用例=实例原文（gw-0fb985799a00ab4ba3995b98-sbx-1 ai_reasoning，逐字）。
 import { describe, expect, it } from 'vitest';
 import { baseName, parseChain } from '../findings/chainParser';
 
 const USER_CASE =
   '[DSH-sandbox] MqttHttpApiListener.java:49 `private final HttpFilter authFilter;` 由 Builder 传入且默认 null；config() 第 93-95 行 `if (authFilter != null) { httpRouter.filter(authFilter); }` —— 为 null 时整个 router 无任何认证。MqttServerCreator.java:594-596 `enableMqttHttpApi()` 使用 `MqttHttpApiListener.Builder::build`，不设置 authFilter；starter/mica-mqtt-server-spring-boot-starter MqttServerProperties.java:261-265 `HttpBasicAuth.enable` 默认 false，MqttServerConfiguration.java:172-174 仅在 enable 时调用 `builder.basicAuth(...)`。而 MqttHttpApi.java 暴露的端点可直接操纵 broker：publish（153-167）、deleteClients 踢人（379-389）、subscribe 注入订阅（222-241）、getClients 列出全部客户端（365-369）。';
 
-describe('parseChain——真实实例原文', () => {
+describe('parseChain——人类指令实例原文', () => {
   const r = parseChain(USER_CASE);
 
   it('hops 按原文顺序：file:line → 中文行引用 → 括号区间（挂接最近文件）', () => {
@@ -77,7 +77,7 @@ describe('parseChain——普适形态', () => {
 
   it('行引用先于任何文件提及时丢弃（无挂接对象）；IP/版本号不是文件', () => {
     expect(parseChain('第 5 行有问题').hops).toEqual([]);
-    const r = parseChain('升级到 1.2.1 后访问 gateway.internal:8080 出错，App.go:9 崩溃');
+    const r = parseChain('升级到 1.2.1 后访问 192.0.2.122:8080 出错，App.go:9 崩溃');
     expect(r.files).toEqual(['App.go']);
     expect(r.hops).toEqual([expect.objectContaining({ line: 9 })]);
   });
@@ -100,7 +100,7 @@ describe('baseName', () => {
   });
 });
 
-// ---- 两阶段·存在性校验（2026-09-13 误挂接根治，gw-7c26f71c1771c76444baddd0-sbx-14 实证）----
+// ---- 两阶段·存在性校验----
 // 真实语料：AI 原文反复出现 C++ 成员表达式 new_size.x（形似文件名），且对真实文件
 // RafDecoder.cpp 写裸行引用 (line 86)/(lines 213-218)——旧解析把裸行引用挂到 new_size.x
 // 上，产出指向不存在文件的 chip（全文复核 404 降级）。

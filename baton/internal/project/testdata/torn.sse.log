@@ -1,0 +1,19 @@
+event: bridge.hello
+data: {"provider":"dsh","model":"deepseek-chat-v3.2"}
+
+: ts 2026-09-17T11:00:03.000000001Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"turn/start","data":{"turn":1}}}
+
+: ts 2026-09-17T11:00:04.000000002Z
+event: session.event
+data: {"sessionId":"main","event":{"type":"user/message","data":{"content":[{"type":"text","text":"任务卡：验证中断语义。"}]}}}
+
+event: session.event
+data: {"sessionId":"main","event":{"type":"assistant/chunk","data":{"chunk":{"type":"text-delta","text":"正在分析……"}}}}
+
+event: session.event
+data: {"sessionId":"main","event":{"type":"tool/call","data":{"name":"submit_findings","arguments":"{\"findings\":[]}"}}}
+
+event: session.event
+data: {"sessionId":"main","event":{"ty

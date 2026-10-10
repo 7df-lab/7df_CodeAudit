@@ -48,13 +48,14 @@ func TestPublishVerdictUpdated(t *testing.T) {
 	}
 
 	finding := &model.Finding{
-		ID:        "finding-1",
-		TaskID:    "task-1",
-		Verdict:   "AI_VERDICT_TRUE_POSITIVE",
-		UpdatedAt: time.Now(),
+		ID:               "finding-1",
+		TaskID:           "task-1",
+		VerdictDirection: "VERDICT_DIRECTION_TRUE",
+		VerdictTier:      "VERDICT_TIER_DEFINITE",
+		UpdatedAt:        time.Now(),
 	}
 
-	err := producer.PublishVerdictUpdated(context.Background(), finding, "AI_VERDICT_UNSPECIFIED", "user-1")
+	err := producer.PublishVerdictUpdated(context.Background(), finding, "VERDICT_DIRECTION_UNSPECIFIED", "VERDICT_TIER_UNSPECIFIED", "user-1")
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
@@ -72,11 +73,11 @@ func TestPublishVerdictUpdated(t *testing.T) {
 	if event.TaskID != "task-1" {
 		t.Errorf("Expected task ID 'task-1', got '%s'", event.TaskID)
 	}
-	if event.OldVerdict != "AI_VERDICT_UNSPECIFIED" {
-		t.Errorf("Expected old verdict 'AI_VERDICT_UNSPECIFIED', got '%s'", event.OldVerdict)
+	if event.OldDirection != "VERDICT_DIRECTION_UNSPECIFIED" {
+		t.Errorf("Expected old direction unspecified, got '%s'", event.OldDirection)
 	}
-	if event.NewVerdict != "AI_VERDICT_TRUE_POSITIVE" {
-		t.Errorf("Expected new verdict 'AI_VERDICT_TRUE_POSITIVE', got '%s'", event.NewVerdict)
+	if event.NewDirection != "VERDICT_DIRECTION_TRUE" {
+		t.Errorf("Expected new direction TRUE, got '%s'", event.NewDirection)
 	}
 	if event.UpdatedBy != "user-1" {
 		t.Errorf("Expected updated by 'user-1', got '%s'", event.UpdatedBy)
@@ -99,13 +100,14 @@ func TestPublishVerdictUpdatedError(t *testing.T) {
 	}
 
 	finding := &model.Finding{
-		ID:        "finding-1",
-		TaskID:    "task-1",
-		Verdict:   "AI_VERDICT_TRUE_POSITIVE",
-		UpdatedAt: time.Now(),
+		ID:               "finding-1",
+		TaskID:           "task-1",
+		VerdictDirection: "VERDICT_DIRECTION_TRUE",
+		VerdictTier:      "VERDICT_TIER_DEFINITE",
+		UpdatedAt:        time.Now(),
 	}
 
-	err := producer.PublishVerdictUpdated(context.Background(), finding, "AI_VERDICT_UNSPECIFIED", "user-1")
+	err := producer.PublishVerdictUpdated(context.Background(), finding, "VERDICT_DIRECTION_UNSPECIFIED", "VERDICT_TIER_UNSPECIFIED", "user-1")
 
 	if err == nil {
 		t.Error("Expected error, got nil")

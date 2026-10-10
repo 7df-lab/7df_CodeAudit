@@ -38,24 +38,29 @@ func NewEventProducer(kafkaBrokers []string, topic string) *EventProducer {
 }
 
 // FindingVerdictUpdatedEvent - 依据: codeaudit_common.proto finding.verdict.updated
+// 
 type FindingVerdictUpdatedEvent struct {
-	FindingID  string `json:"finding_id"`
-	TaskID     string `json:"task_id"`
-	OldVerdict string `json:"old_verdict"`
-	NewVerdict string `json:"new_verdict"`
-	UpdatedBy  string `json:"updated_by"`
-	UpdatedAt  int64  `json:"updated_at"`
+	FindingID    string `json:"finding_id"`
+	TaskID       string `json:"task_id"`
+	OldDirection string `json:"old_direction"`
+	OldTier      string `json:"old_tier"`
+	NewDirection string `json:"new_direction"`
+	NewTier      string `json:"new_tier"`
+	UpdatedBy    string `json:"updated_by"`
+	UpdatedAt    int64  `json:"updated_at"`
 }
 
 // PublishVerdictUpdated - 依据: ADR-006 异步路径
-func (p *EventProducer) PublishVerdictUpdated(ctx context.Context, finding *model.Finding, oldVerdict string, updatedBy string) error {
+func (p *EventProducer) PublishVerdictUpdated(ctx context.Context, finding *model.Finding, oldDirection string, oldTier string, updatedBy string) error {
 	event := FindingVerdictUpdatedEvent{
-		FindingID:  finding.ID,
-		TaskID:     finding.TaskID,
-		OldVerdict: oldVerdict,
-		NewVerdict: finding.Verdict,
-		UpdatedBy:  updatedBy,
-		UpdatedAt:  time.Now().Unix(),
+		FindingID:    finding.ID,
+		TaskID:       finding.TaskID,
+		OldDirection: oldDirection,
+		OldTier:      oldTier,
+		NewDirection: finding.VerdictDirection,
+		NewTier:      finding.VerdictTier,
+		UpdatedBy:    updatedBy,
+		UpdatedAt:    time.Now().Unix(),
 	}
 
 	eventBytes, err := json.Marshal(event)

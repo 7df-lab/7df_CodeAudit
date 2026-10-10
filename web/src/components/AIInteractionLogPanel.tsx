@@ -1,5 +1,5 @@
 // AI 交互日志面板（ADR-168 补遗②；ADR-170 受控展示组件；ADR-173 时间线风格；ADR-181 交互重做；
-// ADR-188：内联时间线为主视图，占据任务详情页左侧一半——不再默认折叠）。
+// ADR-188 人类指令 2026-09-03：内联时间线为主视图，占据任务详情页左侧一半——不再默认折叠）。
 // 沙箱内 DSH↔模型 bridge 交互的人性化渲染。后端按 ADR-181 过滤机器噪音（模型路由/
 // 审批策略/系统上下文/用量/tool-call 静默）并按 sessionId 分流（主会话流式渲染、
 // 子任务只出骨架行），前端把标记行解析为时间线条目；解析纯前端，磁盘日志格式不变。
@@ -10,145 +10,24 @@
 //   ④ "前面还有 N 条未显示"改为可继续加载（每次 +400 / 一键全部），不只靠下载；
 //   ⑤ 整页 Modal 保留为辅入口（"整页查看"按钮）。
 import { EyeOutlined } from '@ant-design/icons';
+import type { Granularity } from '../utils/graphChannels';
 import { Button, Card, Modal, Tag, Tooltip, Typography } from 'antd';
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { KIND_STYLE, ReasoningBody, FoldableBody, TimelineEntry, WINDOW_STEP, parseTimeline, FONT, LINE_HEIGHT, TITLE_FONT } from './aiTimeline';
 import { MONO_FONT } from '../dict/tokens';
 import { EVIDENCE } from '../theme/evidence';
 
 // 2026-09-12 用户指令：面板内所有字体统一调大 2px（正文 12→14、卡片标题 16→18），
 // 行高按 1.5 比例同步（18→21）；范围=左侧 AI 交互日志面板全部文字（含标签/按钮/空态）。
-const FONT = 14;
-const TITLE_FONT = 18;
-const LINE_HEIGHT = '21px';
-
-type EntryKind = 'turn' | 'meta' | 'reasoning' | 'assistant' | 'task' | 'agent';
-
-interface TimelineEntry {
-  kind: EntryKind;
-  label: string;
-  body: string;
-}
-
-const KIND_STYLE: Record<EntryKind, { border: string; label: string; labelColor: string; bodyColor: string }> = {
-  turn: { border: EVIDENCE.link, label: '回合', labelColor: EVIDENCE.link, bodyColor: EVIDENCE.text },
-  meta: { border: EVIDENCE.border, label: '事件', labelColor: EVIDENCE.textMuted, bodyColor: EVIDENCE.textMuted },
-  reasoning: { border: EVIDENCE.ai, label: '模型思考', labelColor: EVIDENCE.ai, bodyColor: EVIDENCE.textMuted },
-  assistant: { border: EVIDENCE.ok, label: '模型回复', labelColor: EVIDENCE.ok, bodyColor: EVIDENCE.text },
-  task: { border: EVIDENCE.system, label: '任务', labelColor: EVIDENCE.system, bodyColor: EVIDENCE.text },
-  agent: { border: EVIDENCE.accent, label: '子任务', labelColor: EVIDENCE.accent, bodyColor: EVIDENCE.text },
-};
-
-const WINDOW_STEP = 400; // 大日志渐进回看步长（ADR-181：提供继续显示方式，不只靠下载）
-
-// 元信息行（══ 会话开始 / ── 第 N 轮 / ── 回合结束 / ■ 收束 / ⚠ 退出）→ meta 条目
-function metaLine(line: string): boolean {
-  return (
-    line.startsWith('══') ||
-    line.startsWith('──') ||
-    line.startsWith('■') ||
-    line.startsWith('⚠') ||
-    line.startsWith('▶')
-  );
-}
-
-function startKind(line: string): { kind: EntryKind; label: string } | null {
-  if (line.startsWith('💭 [思考]')) return { kind: 'reasoning', label: '模型思考' };
-  if (line.startsWith('✍ [输出]')) return { kind: 'assistant', label: '模型回复' };
-  // 任务下发/子任务回报：保留字节数入标签（折叠态摘要可见，ADR-181 补遗）
-  const task = line.match(/^📋 \[(任务下发|子任务回报)\]（(\d+) 字节）$/);
-  if (task) return { kind: 'task', label: `${task[1]}（${task[2]} 字节）` };
-  if (line.startsWith('🤖 [子任务')) {
-    // 骨架行两种："[子任务 xxxx] 启动"=单行事件；"[子任务 xxxx] 任务（N 字节）"=带正文块
-    if (/^🤖 \[子任务 [^\]]+\] 启动$/.test(line)) return { kind: 'meta', label: line };
-    return { kind: 'agent', label: line };
-  }
-  if (/^── 第 \d+ 轮开始 ──$/.test(line)) return { kind: 'turn', label: line };
-  return null;
-}
-
-// parseTimeline — 把后端人性化流解析为 DSH web 风格时间线（纯字符串扫描，无状态）。
-function parseTimeline(text: string): TimelineEntry[] {
-  const entries: TimelineEntry[] = [];
-  let cur: TimelineEntry | null = null;
-  const push = () => {
-    if (cur) entries.push(cur);
-  };
-  for (const line of text.split('\n')) {
-    const start = startKind(line);
-    if (start) {
-      push();
-      cur = { kind: start.kind, label: start.label, body: '' };
-      continue;
-    }
-    if (metaLine(line)) {
-      push();
-      cur = { kind: 'meta', label: line, body: '' };
-      continue;
-    }
-    if (!cur) {
-      cur = { kind: 'meta', label: '', body: line };
-      continue;
-    }
-    cur.body += (cur.body ? '\n' : '') + line;
-  }
-  push();
-  return entries;
-}
-
-function ReasoningBody({ entry, archived }: { entry: TimelineEntry; archived: boolean }) {
-  const st = KIND_STYLE.reasoning;
-  // ADR-181：执行未收束前思考流式展开（不折叠）；归档后才允许折叠长思考。
-  // 2026-09-14 用户报障：实时态此前只有裸正文（💭 [思考] 行被 parseTimeline 消费为
-  // kind 标记后 label 未渲染），标题只在归档 summary 出现——两态不一致。实时态补
-  // 同源标题头（无"已归档"字样，收束与否由面板顶部 Tag 表达）。
-  // 标题头与正文元素两态各只持一份单源（两态样式曾手抄漂移），收束瞬间零跳变。
-  const headStyle = { fontSize: FONT, color: st.labelColor, fontWeight: 600 };
-  const body = <pre style={{ margin: '2px 0 0', fontFamily: MONO_FONT, fontSize: FONT, lineHeight: LINE_HEIGHT,
-    whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: st.bodyColor }}>{entry.body}</pre>;
-  if (!archived) {
-    return (
-      <>
-        <div style={headStyle}>💭 {entry.label}</div>
-        {body}
-      </>
-    );
-  }
-  return (
-    <details>
-      <summary style={{ cursor: 'pointer', ...headStyle }}>💭 {entry.label}（已归档，点击展开）</summary>
-      {body}
-    </details>
-  );
-}
-
-// FoldableBody — 静态长文本块（任务下发/子任务回报/子任务任务，ADR-181 补遗：
-// 人类反馈"任务下发也要可以支持折叠"）：默认折叠，摘要=图标+标签(含字节数)+
-// 首行预览，点击展开全文。
-function FoldableBody({ entry }: { entry: TimelineEntry }) {
-  const st = KIND_STYLE[entry.kind];
-  const icon = entry.kind === 'task' ? '📋' : '🤖';
-  const firstLine = entry.body.split('\n').find((l) => l.trim() !== '') ?? '';
-  const preview = firstLine.length > 48 ? `${firstLine.slice(0, 48)}…` : firstLine;
-  return (
-    <details>
-      <summary style={{ cursor: 'pointer', fontSize: FONT, color: st.labelColor, fontWeight: 600 }}>
-        {icon} {entry.label}
-        {preview && <span style={{ color: EVIDENCE.textMuted, fontWeight: 400 }}>{` · ${preview}`}</span>}
-      </summary>
-      <pre style={{ margin: '2px 0 0', fontFamily: MONO_FONT, fontSize: FONT, lineHeight: LINE_HEIGHT,
-        whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: st.bodyColor }}>
-        {entry.body}
-      </pre>
-    </details>
-  );
-}
 
 export default function AIInteractionLogPanel(
-  { text, totalBytes, complete, onRefresh, refreshing, live, degraded, fill }:
-  { text: string; totalBytes: number; complete: boolean; onRefresh: () => void; refreshing: boolean; live?: boolean; degraded?: boolean; fill?: boolean },
+  { text, totalBytes, complete, onRefresh, refreshing, live, degraded, fill, agent, granularity }:
+  { text: string; totalBytes: number; complete: boolean; onRefresh: () => void; refreshing: boolean; live?: boolean; degraded?: boolean; fill?: boolean; agent?: string; granularity?: Granularity },
 ) {
   // 内联与 Modal 各自持 ref——此前共用一个 boxRef，Modal 内容挂载后 ref 被抢占且关闭后
   // （antd Modal 默认不销毁）仍指向隐藏盒子：内联"自动滚底"永久失效、onScroll 读错盒子。
+  // 契约粒度优先，未声明回落 agent 判别（b4 后者为退役路径）
+  const turnArrival = (granularity ?? (agent && agent !== 'dsh' ? 'turn' : undefined)) === 'turn';
   const inlineBoxRef = useRef<HTMLDivElement>(null);
   const modalBoxRef = useRef<HTMLDivElement>(null);
   const stickBottom = useRef(true);
@@ -205,7 +84,9 @@ export default function AIInteractionLogPanel(
               props 传入（组件内不重复请求）——空日志如实归因，不再误导用户等待 AI 输出 */}
           {degraded
             ? 'AI 已降级（RuleScan 兜底），无 AI 交互日志。'
-            : '暂无交互日志——AI 分析启动后将在此实时展示分析过程。'}
+            : turnArrival
+              ? `${agent === 'maka' ? 'Maka' : agent ?? '该 agent'} 通道以整回合返回结论（无逐字流）——回合完成后结论进入报告与发现列表。`
+              : '暂无交互日志——AI 分析启动后将在此实时展示分析过程。'}
         </span>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -284,7 +165,7 @@ export default function AIInteractionLogPanel(
         <span style={{ fontSize: TITLE_FONT }}>
           AI 交互日志{' '}
           <Typography.Text type="secondary" style={{ fontSize: FONT, fontWeight: 400 }}>
-            （AI 分析过程时间线，实时滚动）
+            （时间线·实时滚动）
           </Typography.Text>
         </span>
       }

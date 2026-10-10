@@ -25,9 +25,10 @@ for t in protoc protoc-gen-go protoc-gen-go-grpc; do
 done
 python3 -c 'import grpc_tools' 2>/dev/null || { echo "错误: grpcio-tools 未安装"; exit 1; }
 
-# 清理旧的生成代码
-rm -rf "$OUTPUT_DIR/go" "$OUTPUT_DIR/python"
+# 清理旧的生成代码（只删生成物——go.mod/go.sum 是手维护件，rm -rf 整目录会误删
+# 导致全 module 断链，2026-09-19 ADR-249 批实测踩坑）
 mkdir -p "$OUTPUT_DIR/go" "$OUTPUT_DIR/python"
+rm -f "$OUTPUT_DIR/go/"*.go "$OUTPUT_DIR/python/"*.py
 
 # Go 代码: protoc + 本地插件(paths=source_relative 与原 buf 配置一致)
 echo "生成 Go 代码 (protoc $(protoc --version | grep -oE '[0-9.]+$'), $(protoc-gen-go --version 2>/dev/null))..."

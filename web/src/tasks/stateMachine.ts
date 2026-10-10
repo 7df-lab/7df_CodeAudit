@@ -19,7 +19,7 @@ export const ALLOWED_ACTIONS: Record<string, TaskAction[]> = {
   TASK_STATUS_CANCELLED: [],
 };
 
-// autoRunTask — 创建后直达启动（审批流废除+任务应自动执行）。
+// autoRunTask — 创建后直达启动（人类指令 2026-09-01：审批流废除+任务应自动执行）。
 // 失败即上抛，状态如实停在 CREATED，可在任务页人工点启动续走。
 export async function autoRunTask(taskId: string): Promise<void> {
   await api.post(`/v1/tasks/${taskId}/start`); // 审批流废除（2026-09-01）：创建→启动直达
@@ -36,8 +36,23 @@ export function isTerminal(status: string | undefined): boolean {
   );
 }
 
+// ADR-257 批（2026-10-10 GUI 全量测试 P2 判例）：统计条闭合分桶——四桶互斥且并集=全集，
+// 与总览页口径对齐（TIMEOUT 归失败；PAUSED/QUEUED/CREATED 归进行中；此前 !isTerminal
+// 口径把 FAILED/PAUSED 计入"进行中"，FAILED 还被"失败"重复计数，分项和恒≠总数）。
+export type TaskBucket = 'completed' | 'active' | 'failed' | 'cancelled';
+export function taskBucket(status: string | undefined): TaskBucket {
+  switch (status) {
+    case 'TASK_STATUS_COMPLETED': return 'completed';
+    case 'TASK_STATUS_FAILED':
+    case 'TASK_STATUS_TIMEOUT':
+    case 'TASK_STATUS_DEAD': return 'failed';
+    case 'TASK_STATUS_CANCELLED': return 'cancelled';
+    default: return 'active'; // CREATED/PENDING/QUEUED/RUNNING/PAUSED/UNSPECIFIED
+  }
+}
+
 // 历史：此处曾导出 progressRefetchInterval/PROGRESS_POLL_MS（3s 口径）——生产路径自
-// TaskDetailPage 内联 pollIntervalMs(10_000)（429 退避接线）后即成
+// TaskDetailPage 内联 pollIntervalMs(10_000)（2026-09-01 人类指令+429 退避接线）后即成
 // 死导出（唯一消费者是自己的测试，I-42 把它文档为活契约属漂移），B5 删除。
 
 export function actionLabel(a: TaskAction): string {

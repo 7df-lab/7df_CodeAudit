@@ -1,4 +1,4 @@
-# managed by codeaudit-umbrella/openshell-gateway (GitLab: codeaudit/openshell-gateway) — edit here, deploy with deploy.sh; do NOT edit the LXC copy.
+# managed by openshell-gateway in the main repo — edit here, deploy with deploy.sh; do NOT edit the 部署主机 copy.
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 

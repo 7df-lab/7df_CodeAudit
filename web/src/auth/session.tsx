@@ -10,7 +10,7 @@ export interface CurrentUser {
   user_id: string;
   username: string;
   email: string;
-  role?: string; // proto Role 枚举字符串（ROLE_ADMIN 等）；旧令牌/旧缓存可能缺省
+  role?: string; // proto Role 枚举字符串（ROLE_ADMIN 等）；旧令牌/旧缓存可能默认
   must_change_password?: boolean;
   state?: string;
   created_at?: string | null;
@@ -26,6 +26,14 @@ interface SessionCtx {
 }
 
 const Ctx = createContext<SessionCtx | null>(null);
+
+// ADR-257: 操作面判定（DEVELOPER/ADMIN 可操作，VIEWER 只读）。fail-open：无 Provider/
+// role 缺失（旧令牌/旧缓存）视为可操作——权限的最终防线在网关（requireOperator），
+// 前端此钩子只做按钮可见性收敛，不承担拒绝语义（嵌入组件的测试无 Provider 亦不炸）。
+export function useCanWrite(): boolean {
+  const ctx = useContext(Ctx);
+  return ctx?.user?.role !== 'ROLE_VIEWER';
+}
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
@@ -78,7 +86,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const { access_token, refresh_token } = resp.data;
     setAccessToken(access_token);
     // Q3 裁决：refresh_token 存 localStorage（XSS 下可被读取，风险显式接受）。
-    // 纵深缓解（修正口径，原注释"严格 CSP"名不副实——此前无任何响应头落地）：
+    // 纵深缓解（B4-3 修正口径，原注释"严格 CSP"名不副实——此前无任何响应头落地）：
     // nginx 已下发最小安全响应头（nosniff / frame-ancestors 'none' / object-src 'none'，
     // 见 nginx/default.conf.template）；CSP 未覆盖脚本/样式源（SPA 内联依赖），收紧待真机验证。
     saveRefreshToken(refresh_token);

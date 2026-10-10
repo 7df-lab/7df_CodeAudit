@@ -17,6 +17,8 @@ import (
 	"github.com/codeaudit/services/result-service/internal/repository"
 	"github.com/codeaudit/services/result-service/internal/service"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 func main() {
@@ -138,6 +140,14 @@ func main() {
 	)
 	pb.RegisterResultServiceServer(s, resultService)
 	pb.RegisterReportServiceServer(s, reportService)
+
+	// P0 探针补面：gRPC health 注册
+	// （此前缺失——compose 探针只测 TCP 端口，编排器无从感知业务死活；k8s 原生
+	// grpc readinessProbe 与 gateway /health 聚合探针的消费面）。
+	healthServer := health.NewServer()
+	grpc_health_v1.RegisterHealthServer(s, healthServer)
+	healthServer.SetServingStatus("ResultService", grpc_health_v1.HealthCheckResponse_SERVING)
+	healthServer.SetServingStatus("ReportService", grpc_health_v1.HealthCheckResponse_SERVING)
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://baton.codeaudit.dev/schema/spine.schema.json",
+  "title": "baton 任务脊柱（spine.json 投影 / spine.updated 载荷）",
+  "description": "跨会话任务状态契约：窗口内的事归 harness，跨会话的任务状态归平台。事实/决策/假设三层认识论不得混写。严格域中立：审计等业务语义只进 tool 载荷，不进本 schema。",
+  "type": "object",
+  "required": ["task", "updated_at_seq"],
+  "properties": {
+    "task": {"type": "string"},
+    "updated_at_seq": {"type": "integer", "minimum": 1, "description": "产生本快照的事件 seq"},
+    "goal": {"type": "string", "description": "目标（一句话，来自 task.created）"},
+    "constraints": {"type": "array", "items": {"type": "string"}, "description": "约束（不可违反项）"},
+    "facts": {
+      "type": "array",
+      "description": "已验证真值（区别于假设）。kind=lesson 的条目由投影器机械提炼（失败要点——重派种子消费面），observation 为过程观察",
+      "items": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": {"type": "string"},
+          "kind": {"type": "string", "enum": ["lesson", "observation", "progress"], "description": "认识论子类（graph-reseed 共识 2026-09-20；缺省=observation 语义）"},
+          "session": {"type": "string", "description": "产生该事实的会话（baton 原生维度——如图节点 g-<nodeId>）"},
+          "evidence": {"type": "array", "items": {"type": "integer"}, "description": "支撑事件 seq 列表（如复现测试失败的 seq）"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "description": "已做决策（含被否方案，防新 agent 重走死路）",
+      "items": {
+        "type": "object",
+        "required": ["id", "text", "status"],
+        "properties": {
+          "id": {"type": "string"},
+          "text": {"type": "string"},
+          "status": {"type": "string", "enum": ["proposed", "adopted", "rejected"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "open": {"type": "array", "items": {"type": "string"}, "description": "未决问题"},
+    "hypothesis": {"type": "string", "description": "当前工作假设（未验证）"},
+    "next": {"type": "string", "description": "下一步（衔接新 agent 首回合）"}
+  },
+  "additionalProperties": false,
+  "minProperties": 3
+}

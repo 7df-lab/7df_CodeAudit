@@ -1,14 +1,6 @@
 // 枚举中文映射（14号 §3.5 / §8 i18n 口径：纯展示翻译，值域=proto 枚举，不自造）
-// AIVerdict 依据: proto AIVerdict 六值枚举
-export const AI_VERDICT: Record<string, string> = {
-  AI_VERDICT_UNSPECIFIED: '未判定',
-  AI_VERDICT_TRUE_POSITIVE: '确认为真',
-  AI_VERDICT_LIKELY_TRUE: '可能为真',
-  AI_VERDICT_FALSE_POSITIVE: '误报',
-  AI_VERDICT_LIKELY_FALSE: '可能误报',
-  AI_VERDICT_NEEDS_MANUAL: '需人工复核',
-  AI_VERDICT_UNCERTAIN: '不确定',
-};
+// 判定枚举已拆两轴：展示/筛选/导出经 dict/verdict
+// 组合五态（确认为真/误报/可能为真/可能误报/未判定）——不再有独立 AI_VERDICT 表。
 
 // ScanMode 依据: proto ScanMode / ADR-186 五模式矩阵
 // A=纯SAST（多工具并行→去重合并） / B=纯AI / C=SAST+AI并行融合（默认推荐） /
@@ -53,7 +45,7 @@ export const SEVERITY: Record<string, string> = {
   SEVERITY_INFO: '提示',
 };
 
-// 通用回退（删除曾内嵌的 map.AI_VERDICT_UNSPECIFIED 特判——通用函数不携带具体
+// 通用回退（B3-5：删除曾内嵌的 map.AI_VERDICT_UNSPECIFIED 特判——通用函数不携带具体
 // 枚举知识）。空值/未知键行为：空值→'未知'；未知非空键→原样回显（不隐藏数据，P4）。
 // 需要"未判定"语义的 AI_VERDICT 调用点显式归一 `v || 'AI_VERDICT_UNSPECIFIED'`（查表路径）。
 export function zh(map: Record<string, string>, key: string | undefined | null): string {
@@ -80,6 +72,7 @@ export const STAGE_TYPE: Record<string, string> = {
   STAGE_TYPE_RESULT_FUSION: '结果融合',
   STAGE_TYPE_REPORT_GENERATION: '报告生成',
   STAGE_TYPE_AI_REVIEW: 'AI 审核（旧模式D）',
+  STAGE_TYPE_GRAPH: '图执行',
 };
 
 // ReviewDepth 依据: proto ReviewConfig.ReviewDepth（经 config map 传递，R1）
@@ -117,7 +110,7 @@ export const REPORT_FORMAT: Record<string, string> = {
 };
 
 // 报告下载文件扩展名（下载文件名此前恒为 <id>.bin，用户拿到无法关联格式的文件；
-// 修复后按枚举名给扩展名）。编排器当前只产 JSON（缺省）与 HTML；
+// 修复后按枚举名给扩展名）。编排器当前只产 JSON（默认）与 HTML；
 // UNSPECIFIED/未知按 JSON 兜底。
 export function reportFileExt(format: string | undefined): string {
   const ext: Record<string, string> = {

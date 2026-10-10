@@ -21,7 +21,7 @@ type Config struct {
 	ResultServiceAddr  string
 	StorageAddr        string // 通知中心（TP12-T0）
 	SastAdapterAddr    string // /v1/tools 能力探测
-	DSHRuntimeAddr       string // DSHRuntimeService（ADR-168 /v1/tasks/{id}/ai-log）
+	RuntimeAddr        string // RuntimeService（ADR-168 /v1/tasks/{id}/ai-log）
 
 	// 限流是否信任 X-Forwarded-For（仅部署于可信反向代理之后时开启）
 	// 依据: 07 §7 按请求方限流；ADR-132 防客户端伪造
@@ -79,7 +79,7 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	dshRuntimeAddr, err := cfg.Str("addresses.dsh_runtime", "CODEAUDIT_DSH_RUNTIME_ADDR")
+	dshRuntimeAddr, err := cfg.Str("addresses.runtime", "CODEAUDIT_RUNTIME_ADDR")
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func Load() (*Config, error) {
 		ResultServiceAddr:  resultAddr,
 		StorageAddr:        storageAddr,
 		SastAdapterAddr:    adapterAddr,
-		DSHRuntimeAddr:       dshRuntimeAddr,
+		RuntimeAddr:        dshRuntimeAddr,
 		TrustProxy:         trustProxy,
 		RateLimitPerMin:    rateLimit,
 		GRPCCallTimeoutS:   callTimeout,
