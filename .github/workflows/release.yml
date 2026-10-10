@@ -92,6 +92,9 @@ jobs:
               -f "engine/services/$svc-service/Dockerfile"
           done
           bpush codeaudit-web web/ --build-arg GIT_REV="$SHA"
+          # manager 构建上下文需 config.json（部署态由 ensure-config 物化、
+          # gitignore 之，fresh clone 无它——run#3 判例）；template=同源非密缺省。
+          [ -f manager/config.json ] || cp manager/deploy/config.template.json manager/config.json
           bpush openshell-manager manager/ \
             --build-arg PIP_INDEX_URL=https://pypi.org/simple \
             -f manager/deploy/Dockerfile.manager
@@ -128,12 +131,16 @@ jobs:
         run: |
           set -eu
           cd dsh-pentest-sse/sandbox-artifacts
-          bash fetch.sh
-          bash fetch-agent-tools.sh
-          bash fetch-dsh-src.sh
-          bash fetch.sh --verify          # 仓内 sbom 逐项复核（同生产部署口径）
-          bash fetch-agent-tools.sh --verify
-          bash fetch-dsh-src.sh --verify
+          mrun() {  # mrun <名> <cmd…>：失败把命令名打进注解面（免日志权限定位）
+            local n="$1"; shift
+            "$@" || { echo "::error title=materials-failed::step=$n"; exit 1; }
+          }
+          mrun fetch.sh             bash fetch.sh
+          mrun fetch-agent-tools.sh bash fetch-agent-tools.sh
+          mrun fetch-dsh-src.sh     bash fetch-dsh-src.sh
+          mrun verify-fetch         bash fetch.sh --verify
+          mrun verify-agent-tools   bash fetch-agent-tools.sh --verify
+          mrun verify-dsh-src       bash fetch-dsh-src.sh --verify
           out="$GITHUB_WORKSPACE/dist-materials"
           mkdir -p "$out"
           for d in pdtools nuclei-templates agent-tools dsh-src; do
