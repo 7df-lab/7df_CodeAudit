@@ -64,7 +64,7 @@ jobs:
             https://github.com/opengrep/opengrep/releases/download/v1.29.0/opengrep_manylinux_x86
           chmod +x "$d/opengrep"
           (cd engine && sha256sum -c services/sast-adapter-service/tools/opengrep.sha256)
-      - name: 构建并推送（linux/amd64，GHA 层缓存跨发布复用）
+      - name: 构建并推送（linux/amd64；失败服务名入注解面）
         env:
           SHA: ${{ steps.meta.outputs.sha }}
           VER: ${{ steps.meta.outputs.version }}
@@ -77,25 +77,24 @@ jobs:
             [ "$IS_TAG" = 1 ] && printf '%s\n' "-t" "$REGISTRY/$n:latest"
             return 0
           }
+          # 注：type=gha 缓存需 docker/build-push-action 的运行时接线，裸 docker
+          # buildx 在 Actions 内用必炸（run#1 实录）——首版裸跑零缓存（正确性优先）。
+          # bpush：失败把服务名打进 ::error:: 注解面（注解经 API 公开可读，免日志权限）。
+          bpush() {  # bpush <名> <ctx> 余参=build 参数
+            local n="$1" ctx="$2"; shift 2
+            echo "== $n =="
+            docker buildx build --push $(tag_args "$n") "$@" "$ctx" \
+              || { echo "::error title=build-failed::image=$n"; exit 1; }
+          }
           for svc in gateway project task storage result sast-adapter runtime; do
-            echo "== codeaudit-$svc =="
-            docker buildx build --push \
-              --cache-from type=gha --cache-to type=gha,mode=max \
-              $(tag_args "codeaudit-$svc") \
+            bpush "codeaudit-$svc" engine/ \
               --build-arg GOPROXY=https://proxy.golang.org,direct \
-              -f "engine/services/$svc-service/Dockerfile" engine/
+              -f "engine/services/$svc-service/Dockerfile"
           done
-          echo "== codeaudit-web =="
-          docker buildx build --push \
-            --cache-from type=gha --cache-to type=gha,mode=max \
-            $(tag_args codeaudit-web) \
-            --build-arg GIT_REV="$SHA" web/
-          echo "== openshell-manager =="
-          docker buildx build --push \
-            --cache-from type=gha --cache-to type=gha,mode=max \
-            $(tag_args openshell-manager) \
+          bpush codeaudit-web web/ --build-arg GIT_REV="$SHA"
+          bpush openshell-manager manager/ \
             --build-arg PIP_INDEX_URL=https://pypi.org/simple \
-            -f manager/deploy/Dockerfile.manager manager/
+            -f manager/deploy/Dockerfile.manager
       - name: digest 清单（RELEASE-MANIFEST.txt）
         env:
           VER: ${{ steps.meta.outputs.version }}
